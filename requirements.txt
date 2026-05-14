@@ -1,0 +1,35 @@
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Database drivers
+databricks-sql-connector==3.0.0
+pyodbc==5.0.1
+sqlalchemy==2.0.25
+pymssql==2.2.11
+
+# ML and Forecasting
+prophet==1.1.5
+scikit-learn==1.4.0
+pandas==2.2.0
+numpy==1.26.3
+
+# Azure OpenAI
+openai==1.10.0
+azure-identity==1.15.0
+
+# Utilities
+python-dotenv==1.0.1
+pydantic==2.5.3
+pydantic-settings==2.1.0
+requests==2.31.0
+httpx==0.26.0
+
+# Data visualization (for backend analysis)
+matplotlib==3.8.2
+seaborn==0.13.1
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3

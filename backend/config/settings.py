@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_driver: str = "ODBC Driver 18 for SQL Server"
     
-    # Azure OpenAI
-    azure_openai_endpoint: str
-    azure_openai_api_key: str
+    # Azure OpenAI (optional - for advanced insights)
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
     azure_openai_deployment: str = "gpt-4"
     azure_openai_api_version: str = "2024-02-15-preview"
     
