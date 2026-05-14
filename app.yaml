@@ -18,9 +18,8 @@ command:
   - --app-dir
   - backend
 
-# Python dependencies
-dependencies:
-  - requirements: backend/requirements.txt
+# Python dependencies (path relative to repository root)
+requirements: backend/requirements.txt
 
 # Environment configuration
 env:
