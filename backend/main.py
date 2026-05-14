@@ -41,28 +41,10 @@ forecasting_service = ForecastingService()
 insights_engine = InsightsEngine()
 metrics_calculator = MetricsCalculator()
 
-# Serve static frontend files in production
-frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_dist.exists() and settings.environment == "production":
-    app.mount("/static", StaticFiles(directory=str(frontend_dist / "assets")), name="static")
-    
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        """Serve frontend files for production deployment"""
-        # API routes are handled by FastAPI
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
-        
-        # Serve index.html for all other routes (SPA routing)
-        index_file = frontend_dist / "index.html"
-        if index_file.exists():
-            return FileResponse(index_file)
-        raise HTTPException(status_code=404, detail="Frontend not built")
 
-
-@app.get("/")
-async def root():
-    """Health check endpoint"""
+@app.get("/api/health")
+async def health_check():
+    """API health check endpoint"""
     return {
         "service": "Atlas Executive Insights API",
         "status": "running",
@@ -815,6 +797,26 @@ def _analyze_forecast_insights(forecast, metric: str, model: str) -> Dict[str, A
         "model": model,
         "metric": metric
     }
+
+
+# Serve static frontend files in production (must be last - catch-all route)
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists() and settings.environment == "production":
+    # Mount static assets
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+    
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve frontend files for production deployment (SPA routing)"""
+        # Don't intercept API routes
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        
+        # Serve index.html for root and all other routes
+        index_file = frontend_dist / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        raise HTTPException(status_code=404, detail="Frontend not built")
 
 
 if __name__ == "__main__":
