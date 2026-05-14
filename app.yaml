@@ -18,6 +18,10 @@ command:
   - --app-dir
   - backend
 
+# Python dependencies
+dependencies:
+  - requirements: backend/requirements.txt
+
 # Environment configuration
 env:
   # Port for the application (required by Databricks Apps)
