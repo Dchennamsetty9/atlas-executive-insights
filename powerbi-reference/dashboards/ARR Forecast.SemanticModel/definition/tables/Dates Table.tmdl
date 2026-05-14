@@ -1,0 +1,95 @@
+table 'Dates Table'
+	lineageTag: ba6d45ad-e0e7-4d1a-a16d-0fb976cc40c7
+
+	measure 'Forecast Adjusted' = [adjusted most_likely past_date] + [adjusted most_likely today]
+		formatString: #,0
+		lineageTag: 6e719c19-0485-4488-83ee-cf381a35dd04
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column Date
+		formatString: General Date
+		lineageTag: d948b28e-8d39-49d8-a31b-761a253db033
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Date]
+
+		variation Variation
+			isDefault
+			relationship: 3144aadf-85b0-45b4-80a1-8e34f571f193
+			defaultHierarchy: LocalDateTable_edf82b74-a1c6-401b-9eff-32aed2ceecc9.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column Today? = IF('Dates Table'[Date] = (TODAY() - 1), "Yes", IF('Dates Table'[Date] < TODAY(), "Past Date", "No"))
+		lineageTag: cb33bd53-5e43-426c-9573-2fc55bfc0c02
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Latest Refresh' = ```
+			NOW() - 7 
+			```
+		formatString: Long Date
+		lineageTag: b8d8b136-0fd9-42e8-821e-655d548cb787
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 7888e28f-1f89-423e-b67d-485279f4eee8
+			defaultHierarchy: LocalDateTable_cb08f987-c87c-46f4-a5b8-4e80da267dc0.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column Weekday = IF(WEEKDAY('Dates Table'[Date])<=2,WEEKDAY('Dates Table'[Date])-1,WEEKDAY('Dates Table'[Date])-2)
+		formatString: 0
+		lineageTag: 54f19d2b-a961-4cd1-85d1-f9a8994e3052
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Week Start' = CALCULATE(MIN('Dates Table'[Date]),FILTER('Dates Table',[Weekday]=1&&[Weeknum]=EARLIER('Dates Table'[Weeknum])))
+		lineageTag: bbefa714-5b12-4196-a717-9e0a5672d34d
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 1f0bd595-5ce2-420a-9b03-289c86a9fbde
+			defaultHierarchy: LocalDateTable_e3d21248-e741-424c-af81-0f75dd142ccf.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column Weeknum = CALCULATE(COUNT('Dates Table'[Weekday]),FILTER('Dates Table',[Weekday]=1&&[Date]<=EARLIER('Dates Table'[Date])))
+		formatString: 0
+		lineageTag: 5e08d90d-2624-4e21-838b-109d542c79dd
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Week Start date' = 'Dates Table'[Date]+-1*WEEKDAY('Dates Table'[Date],2)+1
+		formatString: General Date
+		lineageTag: 07b003a5-2f8b-4fe9-93ef-d40b0b508a71
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 99f1b0de-91de-4922-93d0-931922d31226
+			defaultHierarchy: LocalDateTable_479a461c-4c7f-4863-b11a-5f3a4953a1bf.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column Year = YEAR('Dates Table'[Date])
+		formatString: 0
+		lineageTag: 09a5a632-5058-4c10-87fa-8587399876f4
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Dates Table' = calculated
+		mode: import
+		source = CALENDAR(Date (2023,1,1), Date(2025,12,31))
+
+	annotation PBI_Id = 6425c41f16d44e59bf1be690f172a38b
+

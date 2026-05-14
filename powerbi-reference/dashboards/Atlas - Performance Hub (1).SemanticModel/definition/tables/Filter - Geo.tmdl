@@ -1,0 +1,30 @@
+table 'Filter - Geo'
+	lineageTag: 58df13d1-0f52-4405-aced-cd2634596463
+
+	column Geo
+		dataType: string
+		lineageTag: 980d6e01-d3b7-4177-a7e2-1b3b0d7f1409
+		summarizeBy: none
+		sourceColumn: Geo
+
+		annotation SummarizationSetBy = Automatic
+
+	column Market
+		dataType: string
+		lineageTag: c248eebe-172f-4aac-ac27-ebbd3d84d623
+		summarizeBy: none
+		sourceColumn: Market
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Geo' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45WUtJRUorViVYy1PNzBLKBBIhnpOfjGOLoCxSA0CAxYz1XX1eQGjAFEjHRcwxwdAaKOIYG6wf5h6MKevq5eALVxQIA", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Geo = _t, Market = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Geo", type text}, {"Market", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

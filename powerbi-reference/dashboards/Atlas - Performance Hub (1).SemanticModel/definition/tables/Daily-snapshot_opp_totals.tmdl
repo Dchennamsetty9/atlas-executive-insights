@@ -1,0 +1,45 @@
+table Daily-snapshot_opp_totals
+	lineageTag: f8d63ffa-c881-4415-bc63-ddb5883a92a3
+
+	column opportunities_created_ids
+		dataType: string
+		lineageTag: c159b364-5628-49d5-bc07-c6ef32c4cc62
+		summarizeBy: none
+		sourceColumn: opportunities_created_ids
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Opp Total'
+		dataType: double
+		lineageTag: 1c391c2e-10fe-4ba6-adb4-c8128594fcb0
+		summarizeBy: sum
+		sourceColumn: Opp Total
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Deal Bands' = if('Daily-snapshot_opp_totals'[Opp Total]<10000,"1. $0-$10K",if('Daily-snapshot_opp_totals'[Opp Total]<25000,"2. $10K-$25K",if('Daily-snapshot_opp_totals'[Opp Total]<100000,"3. $25K-$100K",if('Daily-snapshot_opp_totals'[Opp Total]<500000,"4. $100K-$500K",if('Daily-snapshot_opp_totals'[Opp Total]<1000000,"5. $500K-$1M",if('Daily-snapshot_opp_totals'[Opp Total]>1000000,"6. $1M+"))))))
+		lineageTag: f76c85dd-7655-4efb-a13d-ad201fead7ce
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Daily-snapshot_opp_totals = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("goto-data-dock.cloud.databricks.com", "/sql/1.0/warehouses/c24ee33594e13e93", [Catalog = "", Database = ""]),
+				    datagroup_mdl_Database = Source{[Name="datagroup_mdl",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = datagroup_mdl_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    gaim_pipeline_daily_snapshot_Table = mdl_sales_analytics_Schema{[Name="gaim_pipeline_daily_snapshot",Kind="Table"]}[Data],
+				    #"Removed Columns" = Table.RemoveColumns(gaim_pipeline_daily_snapshot_Table,{"xkey_ss_date", "metz_fuelmix_reword", "xoo", "xoi"}),
+				    #"Filtered Rows" = Table.SelectRows(#"Removed Columns", each ([type] <> "Migration")),
+				    #"Grouped Rows" = Table.Group(#"Filtered Rows", {"opportunities_created_ids"}, {{"Opp Total", each List.Sum([amount_towards_plan]), type nullable number}})
+				in
+				    #"Grouped Rows"
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

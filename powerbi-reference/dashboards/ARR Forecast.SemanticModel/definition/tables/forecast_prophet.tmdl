@@ -1,0 +1,855 @@
+table forecast_prophet
+	lineageTag: a83db36d-aabc-4e3a-a8d6-80cbc1c1419a
+
+	measure 'Running Totals Actuals' =
+			
+			VAR LastClosedWeekEnd =
+			    TODAY() - WEEKDAY(TODAY(), 2)   -- previous Sunday
+			
+			VAR CurrentAxisDate =
+			    MAX('forecast_prophet'[ds])
+			
+			RETURN
+			IF(
+			    CurrentAxisDate > LastClosedWeekEnd,
+			    BLANK(),
+			    CALCULATE(
+			        [2025actuals$],
+			        DATESYTD('forecast_prophet'[ds])
+			    )
+			)
+		formatString: #,0
+		lineageTag: 9e9a2d7b-2fe2-44ee-bbf5-49ff7ff7babf
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure 2025actuals$ = CALCULATE(SUM('forecast_prophet'[Actuals]))
+		lineageTag: eb05ea93-73ec-4171-b650-f11e664dac38
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 2025bestcase$ = CALCULATE(SUM('forecast_prophet'[best_case]))
+		formatString: 0
+		lineageTag: f20dda2d-1df6-4b79-a68c-802d2c1ac57f
+
+	measure 2025mostlikely$ = CALCULATE(SUM('forecast_prophet'[most_likely]))
+		formatString: 0
+		lineageTag: 682e3a8d-3327-468e-ae34-bb1980d8b8e9
+
+	measure 2025worstcase$ = CALCULATE(SUM('forecast_prophet'[worst_case]))
+		formatString: 0
+		lineageTag: bb007ed8-f8d9-4458-b5a1-bb62069e626b
+
+	measure 'Running Totals Best Case' = CALCULATE(CALCULATE([2025bestcase$], DATESYTD('forecast_prophet'[ds])))
+		formatString: #,0
+		lineageTag: 71d25474-4925-45d4-b329-9f5e92c16234
+
+	measure 'Running Totals Best Case (Quarterly)' = CALCULATE(CALCULATE([2025bestcase$], DATESQTD('forecast_prophet'[ds])))
+		formatString: #,0
+		lineageTag: 33930e8d-aff4-4ffe-9a1a-9812c02b79b3
+
+	measure 'Running Totals Most Likely' = CALCULATE(CALCULATE([2025mostlikely$], DATESYTD('forecast_prophet'[ds])))
+		formatString: #,0
+		lineageTag: bceb264c-cb3b-4d42-b255-c3a8e5af0695
+
+	measure 'Running Totals Worst Case' = CALCULATE(CALCULATE([2025worstcase$], DATESYTD('forecast_prophet'[ds])))
+		formatString: #,0
+		lineageTag: b0c63265-590c-486e-bfbd-a171be41377d
+
+	measure 'adjusted most_likely past_date' =
+			
+			CALCULATE(
+			    sum(gaim_pipeline_daily_snapshot[amount_towards_plan]),
+			    'forecast_prophet'[Today?] = "Past Date"
+			)
+		lineageTag: 9cb09e20-eac9-4ced-a8e9-037ccbe10c1f
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Today = IF('forecast_prophet'[ds] = (TODAY() - 1), 1, IF('forecast_prophet'[ds] < TODAY(), 0, 5))
+		lineageTag: 9d7c2253-8e5d-4966-8d79-ece43a3ca44d
+
+	measure 'adjusted most_likely today' =
+			
+			CALCULATE(
+			    sum(forecast_prophet[most_likely]),
+			    'forecast_prophet'[Today?] <> "Past Date"
+			)
+		formatString: #,0.00
+		lineageTag: 2d16aecd-c5a0-4634-af80-e364fc90aad7
+
+	measure Actuals_AllYears =
+			
+			CALCULATE(
+			    SUM('forecast_prophet'[ARR YTD]),
+			    REMOVEFILTERS('forecast_prophet'[year])
+			)
+		formatString: #,0
+		lineageTag: 12ed7b2c-2c8f-45f1-8953-a991fe6e524c
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure Forecast_AllYears =
+			
+			VAR y = SELECTEDVALUE('forecast_prophet'[year])
+			RETURN
+			IF(
+			    y >= 2024 && y <= 2026,                     -- show forecast only for years you have
+			    CALCULATE(
+			        SUM('forecast_prophet'[most_likely]),
+			        REMOVEFILTERS('forecast_prophet'[ISOYear])
+			    ),
+			    BLANK()
+			)
+		lineageTag: 737a0047-c144-4fd0-8478-ece24b92834b
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Series Value' =
+			
+			VAR s          = SELECTEDVALUE('Legend Series'[Series])
+			VAR IsForecast = LEFT(s, 8) = "Forecast"
+			VAR YearNum    = VALUE(RIGHT(s, 4))
+			
+			// Week number coming from the X-axis (works whether the axis is from forecast_prophet or a Date table)
+			VAR WeekNumAxis =
+			    COALESCE(
+			        SELECTEDVALUE('forecast_prophet'[ISOWeek]),
+			        SELECTEDVALUE('Dates Table'[Weekday])
+			    )
+			
+			// Build current point’s Year+Week key
+			VAR CurrentWeekKey = YearNum * 100 + WeekNumAxis
+			
+			// End of last finished week (Mon-start ISO weeks -> previous Sunday)
+			VAR LastClosedDate = TODAY() - WEEKDAY(TODAY(), 2)
+			
+			// Cutoff week key for THIS ISO year (max week whose date is on/before last closed date)
+			VAR CutoffWeekKey =
+			    CALCULATE(
+			        MAX('forecast_prophet'[WeekYearKey]),
+			        FILTER(
+			            ALL('forecast_prophet'),
+			            'forecast_prophet'[ISOYear] = YearNum &&
+			            'forecast_prophet'[ds] <= LastClosedDate
+			            // If you only want weeks that have actuals loaded, uncomment the next line:
+			            // && NOT ISBLANK('forecast_prophet'[actuals])
+			        )
+			    )
+			
+			RETURN
+			IF(
+			    IsForecast,
+			    CALCULATE(
+			        SUM('forecast_prophet'[most_likely]),
+			        // make the chart immune to Year/Date slicers on the fact
+			        REMOVEFILTERS('forecast_prophet'[ISOYear], 'forecast_prophet'[year], 'forecast_prophet'[ds]),
+			        // align to ISOYear (not calendar year)
+			        'forecast_prophet'[ISOYear] = YearNum
+			    ),
+			    VAR val =
+			        CALCULATE(
+			            SUM('forecast_prophet'[actuals]),
+			            REMOVEFILTERS('forecast_prophet'[ISOYear], 'forecast_prophet'[year], 'forecast_prophet'[ds]),
+			            'forecast_prophet'[ISOYear] = YearNum
+			        )
+			    VAR pastCutoff =
+			        NOT ISBLANK(CutoffWeekKey) &&
+			        NOT ISBLANK(WeekNumAxis) &&
+			        CurrentWeekKey > CutoffWeekKey
+			    RETURN IF(pastCutoff || val = 0, BLANK(), val)
+			)
+		lineageTag: c71b6169-4628-48cd-acd8-61d0b6d3c397
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Actuals Closed Week Start (Mon)' =
+			
+			VAR ThisWeekStart = TODAY() - WEEKDAY(TODAY(), 2) + 1   // Monday of current week
+			VAR LagWeeks = 1
+			RETURN ThisWeekStart - 7 * LagWeeks                     // Monday of last closed week
+		formatString: Short Date
+		lineageTag: 51dfc5dd-6ca4-45a2-b681-2129d722175c
+
+	measure 'Actuals Closed Week No' =
+			
+			VAR StartDate = [Actuals Closed Week Start (Mon)]
+			RETURN WEEKNUM(StartDate, 21)   // ISO week numbering
+		formatString: 0
+		lineageTag: 8642c60e-745b-41ba-b7fa-efb0412873a6
+
+	measure 'Actuals As Of (Label)' =
+			
+			VAR StartDate = [Actuals Closed Week Start (Mon)]
+			VAR EndDate   = [Actuals Closed Week End (Sun)]
+			VAR WeekNo    = [Actuals Closed Week No]
+			RETURN
+			    "Week " & WeekNo & " " &
+			    FORMAT(StartDate, "mmm d") & " - " & FORMAT(EndDate, "mmm d")
+		lineageTag: c602b068-bff0-4db9-9e12-fb64f5ddab47
+
+	measure 'Actuals As Of Week Key' =
+			
+			VAR CurrentISOWeekKey =
+			    YEAR(TODAY()) * 100 + WEEKNUM(TODAY(), 21)   // ISO week num (Mon start)
+			VAR WeeksWithTotals =
+			    SUMMARIZE(
+			        FILTER(
+			            ALL('forecast_prophet'),
+			            'forecast_prophet'[WeekYearKey] < CurrentISOWeekKey
+			        ),
+			        'forecast_prophet'[ISOYear],
+			        'forecast_prophet'[ISOWeek],
+			        'forecast_prophet'[WeekYearKey],
+			        "ActualsWeekTotal", SUM('forecast_prophet'[actuals])
+			    )
+			RETURN
+			    MAXX(
+			        FILTER(WeeksWithTotals, [ActualsWeekTotal] > 0),
+			        'forecast_prophet'[WeekYearKey]
+			    )
+		formatString: 0
+		lineageTag: c542fa87-98eb-40da-b085-061fbb504f23
+
+	measure 'Actuals Closed Week End (Sun)' =
+			
+			VAR StartDate = [Actuals Closed Week Start (Mon)]
+			RETURN StartDate + 6
+		formatString: General Date
+		lineageTag: 1b862a1f-15ec-445b-a2a6-ff617b7d692b
+
+	measure 'Tooltip Week Label' =
+			
+			VAR axisDate =
+			    COALESCE(
+			        SELECTEDVALUE('forecast_prophet'[ds]),
+			        SELECTEDVALUE('Dates Table'[Date]),
+			        MAX('forecast_prophet'[ds])       // fallback if context isn’t single-valued
+			    )
+			VAR weekStart = axisDate - WEEKDAY(axisDate, 2) + 1    // Monday
+			VAR weekEnd   = weekStart + 6                          // Sunday
+			// ISO week: take Thursday of the same week and use Monday-start week numbering
+			VAR thursday  = weekStart + 3
+			VAR isoWeek   = WEEKNUM(thursday, 2)                   // use 2 (Mon-start). DAX doesn’t support 21.
+			RETURN
+			IF(
+			    NOT ISBLANK(axisDate),
+			    "Week " & isoWeek & " " &
+			    FORMAT(weekStart, "mmm d") & " - " & FORMAT(weekEnd, "mmm d")
+			)
+		lineageTag: 5567489a-3985-489d-99c0-cfe881de6ac3
+
+	column ds
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: e609ff77-b3e2-4044-b58b-e490e275dbc3
+		summarizeBy: none
+		sourceColumn: ds
+
+		variation Variation
+			isDefault
+			relationship: fe13c9cb-4d1c-4e05-acc1-cd527c7c0d88
+			defaultHierarchy: LocalDateTable_900709ff-51f2-40ca-b89a-fe03ae691a0a.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column product
+		dataType: string
+		lineageTag: e80bf8f2-3b95-4bac-bd5d-a8865ecd1d01
+		summarizeBy: none
+		sourceColumn: product
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_market
+		dataType: string
+		lineageTag: 3937c400-0a6b-4256-bef5-cf6b76dc0054
+		summarizeBy: none
+		sourceColumn: sales_market
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_flag
+		dataType: string
+		lineageTag: a664ca39-b580-4c02-8c8e-397726b8ee22
+		summarizeBy: none
+		sourceColumn: pe_account_flag
+
+		annotation SummarizationSetBy = Automatic
+
+	column year
+		dataType: int64
+		formatString: 0
+		lineageTag: dde4bc15-834e-4e96-ad19-652ef0c15524
+		summarizeBy: sum
+		sourceColumn: year
+
+		annotation SummarizationSetBy = Automatic
+
+	column month
+		dataType: int64
+		formatString: 0
+		lineageTag: ace4959e-9642-4a00-9f35-d046f8a23130
+		summarizeBy: sum
+		sourceColumn: month
+
+		annotation SummarizationSetBy = Automatic
+
+	column week_number
+		dataType: string
+		lineageTag: 0203f9d3-d6a2-40b9-bb4f-7e5a625c0347
+		summarizeBy: none
+		sourceColumn: week_number
+
+		annotation SummarizationSetBy = Automatic
+
+	column summer
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 2d24c8c0-0b4d-488e-81b2-b2f7372caa3b
+		summarizeBy: none
+		sourceColumn: summer
+
+		annotation SummarizationSetBy = Automatic
+
+	column winter
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: ac3d5a9c-c661-45aa-9568-ada57970ace6
+		summarizeBy: none
+		sourceColumn: winter
+
+		annotation SummarizationSetBy = Automatic
+
+	column isweek1
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: e9a8d1fe-9ba9-41cb-a8d7-86229fad236f
+		summarizeBy: none
+		sourceColumn: isweek1
+
+		annotation SummarizationSetBy = Automatic
+
+	column actuals
+		dataType: double
+		formatString: #,0
+		lineageTag: dd589f4f-7f6d-4a53-99ad-bebd709c31f9
+		summarizeBy: sum
+		sourceColumn: actuals
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column avg_deal_size
+		dataType: double
+		lineageTag: cdf948d6-dd6c-47bb-91bb-1440c086705c
+		summarizeBy: sum
+		sourceColumn: avg_deal_size
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_sales_cycle
+		dataType: double
+		lineageTag: af5209bd-5b7f-4d17-a769-6df9d910c095
+		summarizeBy: sum
+		sourceColumn: avg_sales_cycle
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column all_created_arr
+		dataType: double
+		lineageTag: dda39e8a-cbcb-47fb-9dff-40dc2e904560
+		summarizeBy: sum
+		sourceColumn: all_created_arr
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column total_partner_pipeline
+		dataType: double
+		lineageTag: f362f833-c2be-424d-8cc0-a24bde0cbd5a
+		summarizeBy: sum
+		sourceColumn: total_partner_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_generated_pipeline
+		dataType: double
+		lineageTag: 3f4e105d-b56b-4124-88e2-af4163719119
+		summarizeBy: sum
+		sourceColumn: marketing_generated_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_influenced_pipeline
+		dataType: double
+		lineageTag: f0dbee08-7313-41e6-a85c-285baf116640
+		summarizeBy: sum
+		sourceColumn: marketing_influenced_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_dials
+		dataType: double
+		lineageTag: e3c0d757-2fdc-4d52-8245-9b55b1114442
+		summarizeBy: sum
+		sourceColumn: avg_dials
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_touches
+		dataType: double
+		lineageTag: 9ada20e2-d816-4233-977d-836b42609f34
+		summarizeBy: sum
+		sourceColumn: avg_touches
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_push_counter
+		dataType: double
+		lineageTag: 110c7d07-182f-4d07-9c5e-acf1a8f4a4cc
+		summarizeBy: sum
+		sourceColumn: avg_push_counter
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column number_of_opps
+		dataType: double
+		lineageTag: 7d008287-470b-46e1-aeb0-7ad89ee09378
+		summarizeBy: sum
+		sourceColumn: number_of_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column headcount
+		dataType: double
+		lineageTag: f871a8d0-4557-4a1f-ad44-e7922e9a4611
+		summarizeBy: sum
+		sourceColumn: headcount
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_opportunity_age
+		dataType: double
+		lineageTag: 5e043df1-1af0-4932-9346-fc6b6a59293f
+		summarizeBy: sum
+		sourceColumn: avg_opportunity_age
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column most_likely
+		dataType: double
+		formatString: #,0
+		lineageTag: 617ac2f8-6cf6-4593-8faf-ad647353c7e1
+		summarizeBy: sum
+		sourceColumn: most_likely
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column worst_case
+		dataType: double
+		formatString: #,0
+		lineageTag: 7708d304-f8cb-47a8-a976-736b080d740d
+		summarizeBy: sum
+		sourceColumn: worst_case
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column best_case
+		dataType: double
+		formatString: #,0
+		lineageTag: ad0783c7-6006-46a1-a014-41869603b628
+		summarizeBy: sum
+		sourceColumn: best_case
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column Today? = IF('forecast_prophet'[ds] = (TODAY() - 1), "Yes", IF('forecast_prophet'[ds] < TODAY(), "Past Date", "No"))
+		lineageTag: 1c590102-89c4-44ec-8da3-14f7e90c5b63
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'ARR YTD' =
+			
+			VAR LastClosedWeekEnd = TODAY() - WEEKDAY(TODAY(), 2)   // previous Sunday
+			RETURN
+			    CALCULATE(
+			        SUM('forecast_prophet'[actuals]),
+			        FILTER(
+			            ALL('forecast_prophet'[ds]),
+			            'forecast_prophet'[ds] <= LastClosedWeekEnd
+			        )
+			    )
+		formatString: #,0
+		lineageTag: 90ce6101-5c7e-438e-94fe-87de7613d231
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column Week = ```
+			
+			"Week" & 
+			    1 + 
+			    INT(
+			        DIVIDE(
+			            DATEDIFF(
+			                CALCULATE(MIN('forecast_prophet'[ds]), ALL('forecast_prophet')),
+			                'forecast_prophet'[ds],
+			                DAY
+			            ),
+			            7,
+			            0
+			        )
+			    )
+			```
+		lineageTag: 8576ea8b-7531-46e2-9181-a9772f55bfc3
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column MinDateThisYear = ```
+			
+			    CALCULATE(
+			        MIN('forecast_prophet'[ds]), 
+			        FILTER(
+			            'forecast_prophet', 
+			            YEAR('forecast_prophet'[ds]) = YEAR(EARLIER('forecast_prophet'[ds]))
+			        )
+			    )
+			```
+		formatString: General Date
+		lineageTag: 4c0f63df-b116-45c3-8803-ae8a19238fc6
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 73f251aa-04e8-4e1c-b6b4-bb15d0e3f45d
+			defaultHierarchy: LocalDateTable_41308ac8-7301-4af5-9fc6-e826a5016e5e.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column RelWeekNumber = ```
+			
+			    "Week" &
+			    1 +
+			    INT(
+			        DIVIDE(
+			            DATEDIFF(
+			                [MinDateThisYear],
+			                'forecast_prophet'[ds],
+			                DAY
+			            ), 
+			            7,
+			            0
+			        )
+			    )
+			```
+		lineageTag: 97f2d67e-6b8b-4395-9378-a4bc6dc25356
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'adjusted most_likely' =
+			
+			IF(
+			    'forecast_prophet'[Today?] = "Past Date",
+			    'forecast_prophet'[actuals],
+			    'forecast_prophet'[most_likely]
+			)
+		formatString: #,0
+		lineageTag: 4953b76f-f359-4545-864e-2b75b9b2f032
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column Product_group =
+			
+			SWITCH(
+			    TRUE(),
+			    [product] = "Core Collab", "UCC",
+			    [product] = "UCaaS", "UCC",
+			    [product] // fallback: original value
+			)
+		lineageTag: 8c2e07f2-c900-42c1-abc7-483c9326622f
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column xkey = CONCATENATE(forecast_prophet[ds], CONCATENATE(forecast_prophet[product], CONCATENATE(forecast_prophet[sales_market], forecast_prophet[pe_account_flag])))
+		lineageTag: eee4c30e-3c82-42cf-bbca-447409aa3833
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column WeekStart =
+			
+			VAR inputDate = [ds]
+			VAR weekdayNum = WEEKDAY(inputDate, 2)
+			RETURN inputDate - (weekdayNum - 1)
+		formatString: General Date
+		lineageTag: f9b057fc-4144-490b-ac54-386bf4fedf90
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 887fb352-f4e9-4fa5-9bbb-845f8a0537d2
+			defaultHierarchy: LocalDateTable_484ed2ef-1e99-41bc-af99-5c53e71a1289.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column WeekNumber =
+			
+			VAR ThisYear = YEAR([WeekStart])
+			VAR MinMonday =
+			    CALCULATE(
+			        MIN('forecast_prophet'[WeekStart]),
+			        ALL('forecast_prophet'),
+			        YEAR('forecast_prophet'[WeekStart]) = ThisYear
+			    )
+			RETURN
+			"Week " & (1 + DIVIDE(DATEDIFF(MinMonday, [WeekStart], DAY), 7, 0))
+		lineageTag: 59770e56-19c2-4562-89fd-7c3ee9acf767
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column mc_actuals =
+			
+			VAR y = VALUE([year])
+			VAR m = VALUE([month])
+			RETURN
+			    IF(
+			        y IN {2024, 2025} || (y = 2026 && m = 1),
+			        [marketing_generated_pipeline],
+			        [Actuals]
+			    )
+		formatString: #,0
+		lineageTag: 9108942e-6733-41ce-b3d6-bc6e1e5159f9
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column SelfServeAdjustment =
+			
+			VAR ThisYear    = forecast_prophet[year]
+			VAR ThisQuarter = QUARTER(forecast_prophet[ds])
+			VAR ThisProduct = forecast_prophet[product]
+			VAR ThisMarket  = forecast_prophet[sales_market]
+			VAR ThisFlag    = forecast_prophet[pe_account_flag]
+			VAR MaxDateInQuarter =
+			    CALCULATE(
+			        MAX(forecast_prophet[ds]),
+			        FILTER(
+			            forecast_prophet,
+			            forecast_prophet[year] = ThisYear &&
+			            QUARTER(forecast_prophet[ds]) = ThisQuarter &&
+			            forecast_prophet[product] = ThisProduct &&
+			            forecast_prophet[sales_market] = ThisMarket &&
+			            forecast_prophet[pe_account_flag] = ThisFlag
+			        )
+			    )
+			RETURN
+			    IF(
+			        forecast_prophet[ds] = MaxDateInQuarter &&
+			        forecast_prophet[product] = "UCC" &&
+			        forecast_prophet[sales_market] = "NA" &&
+			        forecast_prophet[pe_account_flag] = "false",
+			        200000,
+			        0
+			    )
+		formatString: 0
+		lineageTag: 6518a03b-823a-408a-a24d-c1a97210df8e
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column quarter =
+			
+			QUARTER(forecast_prophet[ds])
+		formatString: 0
+		lineageTag: 3672c402-cecf-477d-b8d0-5a15283b1f38
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column IsQuarterEnd =
+			
+			VAR ThisYear    = forecast_prophet[year]
+			VAR ThisQuarter = QUARTER(forecast_prophet[ds])
+			VAR ThisMarket  = forecast_prophet[sales_market]
+			VAR ThisProduct = forecast_prophet[product]
+			VAR ThisFlag    = forecast_prophet[pe_account_flag]
+			
+			VAR MaxDateInQuarter =
+			    CALCULATE(
+			        MAX(forecast_prophet[ds]),
+			        FILTER(
+			            forecast_prophet,
+			            forecast_prophet[year] = ThisYear &&
+			            QUARTER(forecast_prophet[ds]) = ThisQuarter &&
+			            forecast_prophet[product] = ThisProduct &&
+			            forecast_prophet[sales_market] = ThisMarket &&
+			            forecast_prophet[pe_account_flag] = ThisFlag
+			        )
+			    )
+			RETURN
+			    IF(forecast_prophet[ds] = MaxDateInQuarter, 1, 0)
+		formatString: 0
+		lineageTag: b080bec5-c86d-41bf-83e7-5bbd46c83b62
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Most Likely Amount (Self Serve and Miradore Adjusted)' = ```
+			
+			    forecast_prophet[most_likely] + forecast_prophet[SelfServeAdjustment] + forecast_prophet[marketing_influenced_pipeline]
+			```
+		formatString: #,0
+		lineageTag: c05a3eb9-757a-4c4a-9c56-b9963c94f7f7
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column 'Most Likely Amount' =
+			
+			VAR SwitchVal =
+			    SELECTEDVALUE('SelfServeSwitch'[Value], 0)
+			RETURN
+			    IF(
+			        SwitchVal = 1,
+			        forecast_prophet[Most Likely Amount (Self Serve and Miradore Adjusted)],
+			        forecast_prophet[most_likely]
+			    )
+		lineageTag: 21f76e00-ed7c-4744-8489-86c6db827130
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column ISOWeek =
+			
+			WEEKNUM(
+			    'forecast_prophet'[ds] - WEEKDAY('forecast_prophet'[ds], 2) + 4,
+			    2
+			)
+		formatString: 0
+		lineageTag: 1a2480e7-155d-4d2c-b6ed-4f0aaa11aefc
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column ISOYear =
+			
+			YEAR(
+			    'forecast_prophet'[ds] - WEEKDAY('forecast_prophet'[ds], 2) + 4
+			)
+		formatString: 0
+		lineageTag: 9369b890-61aa-43b2-9d57-e1d600bfcf8d
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column WeekYearKey =
+			
+			YEAR('forecast_prophet'[ds] - WEEKDAY('forecast_prophet'[ds], 2) + 4) * 100
+			+ WEEKNUM('forecast_prophet'[ds] - WEEKDAY('forecast_prophet'[ds], 2) + 4, 2)
+		formatString: 0
+		lineageTag: bccc0fcb-7fac-415a-a985-96b2666170bc
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column ISOWeekLabel =
+			
+			VAR d = 'forecast_prophet'[ds]
+			VAR isoYr = YEAR(d + 3)
+			VAR isoWk = WEEKNUM(d + 3, 2)
+			VAR firstWk =
+			CALCULATE(
+			MINX(ALL('forecast_prophet'), WEEKNUM('forecast_prophet'[ds] + 3, 2)),
+			FILTER(ALL('forecast_prophet'), YEAR('forecast_prophet'[ds] + 3) = isoYr)
+			)
+			VAR normWk = isoWk - (firstWk)
+			RETURN "Week " & FORMAT(normWk, "00")
+		lineageTag: 20f92bf2-cc9b-4b57-bd2e-1e5df2a79187
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Worst Case Amount (Self Serve and Miradore Adjusted)' = ```
+			
+			    forecast_prophet[worst_case] + forecast_prophet[SelfServeAdjustment] + forecast_prophet[marketing_influenced_pipeline]
+			```
+		formatString: #,0
+		lineageTag: cc41c36c-c2ae-465d-ba0c-cbfb687f2dc7
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column 'Best Case Amount (Self Serve and Miradore Adjusted)' = ```
+			
+			    forecast_prophet[best_case] + forecast_prophet[SelfServeAdjustment] + forecast_prophet[marketing_influenced_pipeline]
+			```
+		formatString: #,0
+		lineageTag: 4c431a98-7f8c-4b0e-9b02-e6f5d55efabb
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	partition forecast_prophet = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("goto-mdl-marketing-ds.cloud.databricks.com", "sql/protocolv1/o/243252463991105/0304-101749-yej2r68y", [Catalog=null, Database=null, EnableAutomaticProxyDiscovery="enabled"]),
+				    hive_metastore_Database = Source{[Name="hive_metastore",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = hive_metastore_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    forecast_prophet_Table = mdl_sales_analytics_Schema{[Name="forecast_prophet",Kind="Table"]}[Data]
+				in
+				    forecast_prophet_Table
+
+	annotation PBI_ResultType = Table
+

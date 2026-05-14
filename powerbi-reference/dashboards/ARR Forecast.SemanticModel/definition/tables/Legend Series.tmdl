@@ -1,0 +1,29 @@
+table 'Legend Series'
+	lineageTag: 4931c77b-9acb-4b66-963a-73d38df9568f
+
+	column Series
+		lineageTag: caf59a76-896a-417f-9294-aa519e2c4705
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Series]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Legend Series' = calculated
+		mode: import
+		source =
+				
+				DATATABLE(
+				    "Series", STRING,
+				    {
+				        {"Actuals 2024"},
+				        {"Actuals 2025"},
+				        {"Actuals 2026"},
+				        {"Forecast 2024"},
+				        {"Forecast 2025"},
+				        {"Forecast 2026"}
+				    }
+				)
+
+	annotation PBI_Id = daf2a15c62cc40d4bdf310df6636b051
+

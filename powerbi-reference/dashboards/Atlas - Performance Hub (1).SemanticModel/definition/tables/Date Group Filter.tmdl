@@ -1,0 +1,51 @@
+table 'Date Group Filter'
+	lineageTag: f69beff1-c455-459a-8d4d-133f4cad48c7
+
+	column 'Date Group Filter'
+		lineageTag: 271ff9a5-0c8c-4d3f-ac0e-a0469aaf1ed0
+		summarizeBy: none
+		sourceColumn: [Value1]
+		sortByColumn: 'Date Group Filter Order'
+
+		relatedColumnDetails
+			groupByColumn: 'Date Group Filter Fields'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Date Group Filter Fields'
+		isHidden
+		lineageTag: 4615d9b6-93f6-4d71-b68f-1cdd619cb42a
+		summarizeBy: none
+		sourceColumn: [Value2]
+		sortByColumn: 'Date Group Filter Order'
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 3,
+				  "kind": 2
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Date Group Filter Order'
+		isHidden
+		formatString: 0
+		lineageTag: 7f3cd21b-15ff-4b39-981e-81ba3d219b21
+		summarizeBy: sum
+		sourceColumn: [Value3]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Date Group Filter' = calculated
+		mode: import
+		source =
+				{
+				    ("Month", NAMEOF('Dates Table'[Months]), 0),
+				    ("Quarter (First Day of Q)", NAMEOF('Dates Table'[start of quarter]), 1),
+				    ("Week (by end of week date)", NAMEOF('Dates Table'[Week End Date]), 2),
+				    ("Date", NAMEOF('Dates Table'[Date]), 3),
+				    ("Year", NAMEOF('Dates Table'[Year]), 4)
+				}
+
+	annotation PBI_Id = 53a1f5ee03d245cdaa2336e2b3c0a074
+

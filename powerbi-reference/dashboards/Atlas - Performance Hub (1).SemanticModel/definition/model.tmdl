@@ -1,0 +1,84 @@
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: en-US
+	dataAccessOptions
+		fastCombine
+		legacyRedirects
+		returnErrorValuesAsNull
+
+annotation PBI_QueryOrder = ["gaim_pipeline_daily_snapshot","gaim_partner_sales_targets_cy_daily","gaim_mql_daily_snapshot","gaim_snapshot_pipeline_created_cq_daily","Filter - Channel","Filter - Fuel Mix","Filter - Geo","Filter - Product","Filter - Purchase Type","Filter - Revenue Type","Filter - Stages","Parameter - Target Time","Parameter - Target Type","Filter - types","Targets","Column Groups","Pipeline Selection","cds_sfdc_interest_latest","Filter - MSP","Daily-snapshot_opp_totals","Created-snapshot_opp_totals","Filter - Deal Bands","Acronis SKUs"]
+
+annotation __PBI_TimeIntelligenceEnabled = 1
+
+annotation PBI_RemovedChildren = [{"remoteItemId":{"foreignKeyRelationship":{"fromTableLocalLineageTag":"316c824f-b46a-47f9-ab25-508f406e55bc","fromColumnLocalLineageTag":"5030de0f-01ad-4800-a30c-8a9dd03e3ab1","toTableLocalLineageTag":"f8d63ffa-c881-4415-bc63-ddb5883a92a3","toColumnLocalLineageTag":"c159b364-5628-49d5-bc07-c6ef32c4cc62"}},"objectType":"Relationship"}]
+
+annotation PBIDesktopVersion = 2.144.1378.0 (25.06)+cba1e61f16ea36d44901f06fa446299040122394
+
+annotation PBI_ProTooling = ["DevMode"]
+
+ref table gaim_pipeline_daily_snapshot
+ref table gaim_partner_sales_targets_cy_daily
+ref table gaim_mql_daily_snapshot
+ref table gaim_snapshot_pipeline_created_cq_daily
+ref table 'Dates Table'
+ref table DateTableTemplate_e7aab579-4863-482d-a1fe-7925df1ba53c
+ref table LocalDateTable_b884a69b-4dee-4999-88c2-13b68406fd1e
+ref table LocalDateTable_37f29ada-0f93-461b-97b4-c9542a584051
+ref table LocalDateTable_99baac32-d2b0-4f3a-9d8f-25d336302afe
+ref table LocalDateTable_ed97f7ce-2a9b-44cd-8ac1-c3bcdc86d2da
+ref table LocalDateTable_f7efa76f-1842-41b8-89bb-a87f99c3aad3
+ref table LocalDateTable_4706054d-6cad-4d6a-b863-70c9baf600a0
+ref table LocalDateTable_b7a6e506-0ac5-4f18-adf3-df67ba6ca020
+ref table 'Today date QTD'
+ref table LocalDateTable_341c1d32-e179-4fab-8840-319087c4ff02
+ref table LocalDateTable_edd1d80c-1fe8-42dc-a51c-78b495b8c508
+ref table LocalDateTable_bfde6ed2-8fe3-45b8-9664-50d0a4de7336
+ref table 'Filter - Channel'
+ref table 'Filter - Fuel Mix'
+ref table 'Filter - Geo'
+ref table 'Filter - Product'
+ref table 'Filter - Purchase Type'
+ref table 'Filter - Revenue Type'
+ref table 'Filter - Stages'
+ref table 'Parameter - Target Time'
+ref table 'Parameter - Target Type'
+ref table 'Filter - types'
+ref table LocalDateTable_79f1f985-99a7-4e54-bfef-554b1e8c0db3
+ref table LocalDateTable_1062ec45-59cf-4895-822a-0d8d13e54952
+ref table LocalDateTable_d95323eb-ed1c-4ebc-82c5-f82170cfb23d
+ref table LocalDateTable_5074541c-c261-4ace-a7f0-989ac2ff3c62
+ref table LocalDateTable_1a6f3476-ade2-480c-af0c-dc615d6c41ce
+ref table 'View Selection'
+ref table LocalDateTable_2c6bd1a5-92ac-4cde-b180-0fc83c42ce21
+ref table Targets
+ref table 'Column Groups'
+ref table Columns
+ref table 'Pipeline Selection'
+ref table 'Date Group Filter'
+ref table cds_sfdc_interest_latest
+ref table LocalDateTable_d6af4541-9917-4ad5-a559-9e2640ca7e2b
+ref table LocalDateTable_d8045c72-a868-4d6f-a95e-245b963fe889
+ref table LocalDateTable_a4c97c3c-2ead-416e-a849-643e49d71d31
+ref table LocalDateTable_a04084f9-b002-45d4-a3b3-7f726aa31676
+ref table LocalDateTable_2e360bdf-6ec7-4098-b2b7-77e72a45ba9c
+ref table LocalDateTable_cfa5c132-8410-4281-90da-b9ae4ab0da15
+ref table LocalDateTable_f98e3221-0367-4fde-b758-0818486a756e
+ref table LocalDateTable_98161900-b6cd-43d9-ba15-750b1042ddbb
+ref table LocalDateTable_69ba8d73-5fce-4f0e-8395-da5fcf64d910
+ref table LocalDateTable_b9dc1a22-ced4-4787-a0ce-aeb52a59d5b3
+ref table LocalDateTable_5b75531f-9866-467f-a5a7-4f57ba43eb65
+ref table LocalDateTable_efc62864-f54d-4fbb-8064-61a6d3203280
+ref table LocalDateTable_0ca23378-2c4a-4647-80c7-d802fe4adf24
+ref table LocalDateTable_fddb9f56-abed-47b7-8746-bcd7797faa55
+ref table LocalDateTable_c5e086c6-b383-4b6f-8141-f31383bd0820
+ref table LocalDateTable_08841191-626d-4d1d-9d49-1497891090d9
+ref table 'Filter - MSP'
+ref table Daily-snapshot_opp_totals
+ref table Created-snapshot_opp_totals
+ref table 'Filter - Deal Bands'
+ref table 'Acronis SKUs'
+ref table 'Acronis KPIs'
+
+ref cultureInfo en-US
+

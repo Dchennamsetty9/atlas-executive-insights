@@ -1,0 +1,22 @@
+table SelfServeToggle
+	lineageTag: b4c3e4be-1f56-47ac-8b92-137a4a749749
+
+	column Column1
+		dataType: string
+		lineageTag: ecba20a2-6c53-4d6f-81ae-1d18b48ea81e
+		summarizeBy: none
+		sourceColumn: Column1
+
+		annotation SummarizationSetBy = Automatic
+
+	partition SelfServeToggle = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45W8sxLzilNSVWK1YlWcq2AsmMB", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Column1 = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Column1", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

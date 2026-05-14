@@ -1,0 +1,45 @@
+table Created-snapshot_opp_totals
+	lineageTag: 956af671-8f47-42bc-a3bc-c86d176a5e66
+
+	column opportunities_created_ids
+		dataType: string
+		lineageTag: ab303f02-888a-467e-98d4-37675039592c
+		summarizeBy: none
+		sourceColumn: opportunities_created_ids
+
+		annotation SummarizationSetBy = Automatic
+
+	column created_opp_total
+		dataType: double
+		lineageTag: 81bc7371-d0c2-4a15-9b3d-4217461d387b
+		summarizeBy: sum
+		sourceColumn: created_opp_total
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Deal Bands' = if('Created-snapshot_opp_totals'[created_opp_total]<10000,"1. $0-$10K",if('Created-snapshot_opp_totals'[created_opp_total]<25000,"2. $10K-$25K",if('Created-snapshot_opp_totals'[created_opp_total]<100000,"3. $25K-$100K",if('Created-snapshot_opp_totals'[created_opp_total]<500000,"4. $100K-$500K",if('Created-snapshot_opp_totals'[created_opp_total]<1000000,"5. $500K-$1M",if('Created-snapshot_opp_totals'[created_opp_total]>1000000,"6. $1M+"))))))
+		lineageTag: 9e5a159d-d32b-4517-81f2-c5995463d181
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Created-snapshot_opp_totals = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("goto-data-dock.cloud.databricks.com", "/sql/1.0/warehouses/c24ee33594e13e93", [Catalog = "", Database = ""]),
+				    datagroup_mdl_Database = Source{[Name="datagroup_mdl",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = datagroup_mdl_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    gaim_snapshot_pipeline_created_cq_daily_Table = mdl_sales_analytics_Schema{[Name="gaim_snapshot_pipeline_created_cq_daily",Kind="Table"]}[Data],
+				    #"Removed Columns" = Table.RemoveColumns(gaim_snapshot_pipeline_created_cq_daily_Table,{"2024_channel", "metz_fuelmix_reword", "xoo", "xoi", "xcreatedate2digyr", "xdatekeyslicer_create", "create_monthnbr_astext", "ucaas_ptb_score", "collab_ptb_score", "itsg_whitespace_score", "ucaas_whitespace_score", "collab_whitespace_score", "itsg_ptb_score"}),
+				    #"Filtered Rows" = Table.SelectRows(#"Removed Columns", each ([type] <> "Migration")),
+				    #"Grouped Rows" = Table.Group(#"Filtered Rows", {"opportunities_created_ids"}, {{"created_opp_total", each List.Sum([amount_towards_plan]), type nullable number}})
+				in
+				    #"Grouped Rows"
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

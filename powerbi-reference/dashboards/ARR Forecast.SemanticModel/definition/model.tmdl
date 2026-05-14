@@ -1,0 +1,53 @@
+model Model
+	culture: en-GB
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: en-IE
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+/// Errors in queries that were loaded on 20/02/2025 12:45:05.
+queryGroup 'Query Errors - 20/02/2025 12:45:05'
+
+	annotation PBI_QueryGroupOrder = 0
+
+annotation PBI_QueryOrder = ["scoring_2024","Errors in scoring_2024","forecast_prophet","forecast_prophet_2024","opportunity_scoring","gaim_pipeline_daily_snapshot","SelfServeToggle"]
+
+annotation __PBI_TimeIntelligenceEnabled = 1
+
+annotation PBIDesktopVersion = 2.144.1378.0 (25.06)+cba1e61f16ea36d44901f06fa446299040122394
+
+annotation PBI_ProTooling = ["DevMode"]
+
+ref table DateTableTemplate_1d6714a6-1b52-4cf9-97df-2a03330707b0
+ref table 'Dates Table'
+ref table LocalDateTable_edf82b74-a1c6-401b-9eff-32aed2ceecc9
+ref table forecast_prophet
+ref table LocalDateTable_900709ff-51f2-40ca-b89a-fe03ae691a0a
+ref table LocalDateTable_41308ac8-7301-4af5-9fc6-e826a5016e5e
+ref table LocalDateTable_cb08f987-c87c-46f4-a5b8-4e80da267dc0
+ref table LocalDateTable_479a461c-4c7f-4863-b11a-5f3a4953a1bf
+ref table 'Refresh Week'
+ref table LocalDateTable_e3d21248-e741-424c-af81-0f75dd142ccf
+ref table LocalDateTable_1bbf1f0e-eb2a-4ca0-938a-6806f55ec475
+ref table LocalDateTable_3eb97dc2-aa9b-4b73-aa41-0c145b9fa7ba
+ref table LocalDateTable_f1432c79-49b0-4e3a-8c6b-ad4543e3fa26
+ref table forecast_prophet_2024
+ref table LocalDateTable_e3102cf6-8730-4237-b329-5a354799ba86
+ref table opportunity_scoring
+ref table LocalDateTable_934ce44e-af6b-466c-bb17-5ca842e256e7
+ref table LocalDateTable_7b13d0d8-d45f-4a59-b2ec-90746e58c5a6
+ref table LocalDateTable_0fba607d-6bff-4e98-a708-67c53b688cc4
+ref table gaim_pipeline_daily_snapshot
+ref table LocalDateTable_9ebc559a-93d1-44f0-8c27-a0fd31eec6e5
+ref table LocalDateTable_d55d198c-080d-4efc-aacc-861f0a7ac173
+ref table LocalDateTable_1a2227ce-cb71-4d6e-bc48-d356130c226d
+ref table LocalDateTable_2ec12abd-6aeb-4d5e-803e-865fd23a1f6e
+ref table LocalDateTable_8868b735-7183-4c90-b76c-8fa201f9d049
+ref table LocalDateTable_484ed2ef-1e99-41bc-af99-5c53e71a1289
+ref table SelfServeToggle
+ref table SelfServeSwitch
+ref table 'Legend Series'
+
+ref cultureInfo en-GB
+

@@ -1,0 +1,30 @@
+table 'Filter - Stages'
+	lineageTag: e274021c-6fde-4331-949d-5faffaf72e58
+
+	column 'Stage Group'
+		dataType: string
+		lineageTag: 75183af5-a8a7-4220-83cf-b2df3a1a4b8e
+		summarizeBy: none
+		sourceColumn: Stage Group
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Stage Name'
+		dataType: string
+		lineageTag: dc7bb1a4-88c8-4658-99cb-71924558099e
+		summarizeBy: none
+		sourceColumn: Stage Name
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Stages' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45WMtTzL0jNU9IBMhRcMouT88tSiyqVYnWQZIz0FAJLE3My09DEjfUUXMsSc0oTS1JRJUz0FPxS0/NLMmEyRnrh+SAJUz0FEANZyDknvzg1BS5srOeTX1wCFAdTKCJQlRCJWAA=", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Stage Group" = _t, #"Stage Name" = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Stage Group", type text}, {"Stage Name", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

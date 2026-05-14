@@ -1,0 +1,33 @@
+table 'Filter - Deal Bands'
+	lineageTag: c7f82c8d-28a6-42a9-bf44-5c81a1f6a0c4
+
+	column 'Deal Bands1'
+		dataType: string
+		lineageTag: 79134212-6fbf-4250-8b7e-abcff20a1e95
+		summarizeBy: none
+		sourceColumn: Deal Bands1
+
+		annotation SummarizationSetBy = Automatic
+
+	column types
+		dataType: string
+		lineageTag: 30981839-28a2-43ce-a137-caf3d6c1b1aa
+		summarizeBy: none
+		sourceColumn: types
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Deal Bands' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45WMtRTUDHQVTE08FbSUUKw3Ivyy0sylGJ1opWMgCqAgroqRqZgNUhsJFXGQFVAQZB+iFHIHCR1JmDTQEaYQhWi8JBUmgJVmoLlDH1B6pDYSKrMQOb5aoMNAlMwuVgA", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Deal Bands1" = _t, #"Deal Bands2" = _t, types = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Deal Bands1", type text}, {"Deal Bands2", type text}}),
+				    #"Removed Columns" = Table.RemoveColumns(#"Changed Type",{"Deal Bands2"})
+				in
+				    #"Removed Columns"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation
+

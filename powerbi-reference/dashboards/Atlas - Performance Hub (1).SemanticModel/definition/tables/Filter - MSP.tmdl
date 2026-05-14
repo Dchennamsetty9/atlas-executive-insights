@@ -1,0 +1,22 @@
+table 'Filter - MSP'
+	lineageTag: 5f126c9a-1181-4920-9afe-5542f4f884a0
+
+	column MSP
+		dataType: string
+		lineageTag: 571cc663-1928-4aa2-9624-2e2335151e68
+		summarizeBy: none
+		sourceColumn: MSP
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - MSP' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45W8g0OUIrViVbyy89TALNjAQ==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [MSP = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"MSP", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

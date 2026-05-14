@@ -1,0 +1,22 @@
+table 'Acronis SKUs'
+	lineageTag: ab96f5b1-2ca0-4ef3-8392-00c1d3cde70b
+
+	column 'Acronis SKU'
+		dataType: string
+		lineageTag: bef5b1dc-4c31-4aa1-9471-d4f579000ad7
+		summarizeBy: none
+		sourceColumn: Acronis SKU
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Acronis SKUs' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("rZBNSwMxEIb/ytDTFvUg0t63VtaD7aELVig9hGS6Dk0zy2Syor/e2L31EC14CUzej3mY3W6ywch+QKjdYIJFBy3aJKSfcANPy81kf1v2vF14FsYeUw93sH3JT4syoBQM67otqK+rgjg8ek4OliRolaVs3rIcoxolDgXXM0el0P2OvSIrHPmg8DCfAVQpeDqR5tPUWQgUz1V5HBlj5jMdTnOyuS/UNsydxxG2NxYholGoPkjf4Z9WXITbMQaHfMAe5bzas3FwYoceqp+/ZvFX8OtKS5RfSa6v238D", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Acronis SKU" = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Acronis SKU", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

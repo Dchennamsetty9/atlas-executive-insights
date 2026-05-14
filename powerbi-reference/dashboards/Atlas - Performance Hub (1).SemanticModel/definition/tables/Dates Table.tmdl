@@ -1,0 +1,238 @@
+table 'Dates Table'
+	lineageTag: 9a6d93b2-3812-43df-9cd4-21845e571695
+
+	column Date
+		formatString: mm/dd/yyyy
+		lineageTag: d66ec482-5282-4810-b9c0-ab1b3646f2eb
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Date]
+
+		variation Variation
+			isDefault
+			relationship: 56a180dc-5160-459a-88ff-aa3c932623e9
+			defaultHierarchy: LocalDateTable_b884a69b-4dee-4999-88c2-13b68406fd1e.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column Quarter = 'Dates Table'[Date].[QuarterNo]
+		lineageTag: b762515c-8946-4820-9766-a5ff31bbd413
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Today? = if('Dates Table'[Date] = (TODAY() -1),"Yes",if('Dates Table'[Date] < TODAY(),"Past Date","No"))
+		lineageTag: a93587df-4b60-4bac-9cb4-706c6cdb79ec
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'start of quarter' = STARTOFQUARTER('Dates Table'[Date])
+		formatString: mm/dd/yyyy
+		lineageTag: d3d0904c-5e04-4972-b2d5-a1e867f354ab
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 14a978ab-8244-4e53-8066-8e6efef28d34
+			defaultHierarchy: LocalDateTable_37f29ada-0f93-461b-97b4-c9542a584051.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'end of quarter' = ENDOFQUARTER('Dates Table'[Date])
+		formatString: mm/dd/yyyy
+		lineageTag: ce9edbc0-ccb0-4d58-93f6-d781d012dfcc
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 8ec442ab-ef5f-4182-97a2-a13b9c15f8cf
+			defaultHierarchy: LocalDateTable_99baac32-d2b0-4f3a-9d8f-25d336302afe.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column daynumber = DATEDIFF('Dates Table'[start of quarter],'Dates Table'[Date],DAY)
+		formatString: 0
+		lineageTag: 20c8c06f-7297-4c68-9467-d62ec3c31120
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'This Quarter' = if(and('Dates Table'[Quarter] = quarter(TODAY()),'Dates Table'[Year] = year(today())),"Yes","No")
+		lineageTag: 58949982-2dc3-4dd7-aab4-717819ee4ee6
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column Year = YEAR('Dates Table'[Date])
+		formatString: 0
+		lineageTag: 49500a1c-ee7e-4423-9d8b-2e9dea45c301
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Quarter Integer' = if('Dates Table'[Quarter]< QUARTER(TODAY()-1),0,if('Dates Table'[Quarter] = QUARTER(TODAY()-1),1,if('Dates Table'[Quarter]>QUARTER(TODAY()-1),-1,0)))
+		formatString: 0
+		lineageTag: 2b9c478d-a9f8-4237-9691-ed139533fb26
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column target_quarter = "Q"&'Dates Table'[Quarter]&" "&year('Dates Table'[Date])
+		lineageTag: bcf5a2a7-3655-41e3-ad92-4791fedb787c
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'EOQ Days' = if('Dates Table'[Quarter]=1,90,if('Dates Table'[Quarter]=2,90,if('Dates Table'[Quarter]=3,90,if('Dates Table'[Quarter]=4,91,0))))
+		formatString: 0
+		lineageTag: 14ab8df9-6d49-4d4a-be8d-202bd5cbeb70
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Progression %' = if('Dates Table'[This Quarter] = "Past Quarter",1,if('Dates Table'[This Quarter]="Yes",'Dates Table'[daynumber]/'Dates Table'[EOQ Days],0))
+		lineageTag: e1292b41-4afe-4057-8453-b712f9836767
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Month = month('Dates Table'[Date])
+		formatString: 0
+		lineageTag: eb0e2b9b-7a7c-4431-b699-a10603c87f98
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column Months = month('Dates Table'[Date])&" "&Year('Dates Table'[Date])
+		dataType: dateTime
+		formatString: mmmm yyyy
+		lineageTag: 8c756393-a24f-4f26-b38b-98800ea517ff
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: ed1cef6d-9bad-4ab0-9f77-313f3543f202
+			defaultHierarchy: LocalDateTable_ed97f7ce-2a9b-44cd-8ac1-c3bcdc86d2da.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'Week num' = weeknum('Dates Table'[Date])
+		formatString: 0
+		lineageTag: 890485dd-3da4-4f32-84ee-8680e8b8fc51
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column Week = if(and('Dates Table'[Week num] = 14, 'Dates Table'[Quarter] =1) , 13,if(and('Dates Table'[Week num] = 27, 'Dates Table'[Quarter] = 2), 13,if(and('Dates Table'[Week num] = 40, 'Dates Table'[Quarter] = 3), 13,if(and('Dates Table'[Week num] = 53, 'Dates Table'[Quarter] = 4), 13,if('Dates Table'[Quarter] = 1, WEEKNUM('Dates Table'[Date]),if('Dates Table'[Quarter] = 2, WEEKNUM('Dates Table'[Date]) -13, if('Dates Table'[Quarter] = 3, WEEKNUM('Dates Table'[Date]) -26,if('Dates Table'[Quarter] = 4, WEEKNUM('Dates Table'[Date]) -39,0))))))))
+		formatString: 0
+		lineageTag: bb25c7d2-142c-4c0b-8ffc-8ffab276372a
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column tgt_quarter = year('Dates Table'[Date])&"-"&"Q"&'Dates Table'[Quarter]
+		lineageTag: d7ef9cfe-254b-423b-9974-e8f80db21fb1
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column tgt_Month = month('Dates Table'[Date])&"-"&YEAR('Dates Table'[Date])
+		lineageTag: 7acffb76-cdd0-4e63-8718-26d6ac2dfde4
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Year As Text' = 'Dates Table'[Year]
+		dataType: string
+		lineageTag: 4dde8182-4305-46e2-a555-a26d5b034e03
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column This_Quarter_Filter = IF('Dates Table'[This Quarter]="Yes","Current Quarter","No")
+		lineageTag: 816310c8-1ba0-420d-aa14-df248e88ee2a
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column Week_Q = CONCATENATE(CONCATENATE('Dates Table'[target_quarter]," "),CONCATENATE(CONCATENATE("Week"," "),'Dates Table'[Week]))
+		lineageTag: a30a1c87-564f-4703-a29c-0dbe99c39f20
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Date Test' = date('Dates Table'[Year],'Dates Table'[Month],day('Dates Table'[Date]))
+		formatString: Short Date
+		lineageTag: 184bdfae-cb1d-46d4-bdcc-d5c9f89af348
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 7f64ffa8-b94e-488a-9855-5f4a7ed92796
+			defaultHierarchy: LocalDateTable_f7efa76f-1842-41b8-89bb-a87f99c3aad3.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Week Start Date' = 'Dates Table'[Date] - WEEKDAY('Dates Table'[Date],2) + 1
+		formatString: mm/dd/yyyy
+		lineageTag: 9e3fa694-91ff-4ed9-963d-9508ddbaf970
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 4dbb69d2-2f98-44ac-88b7-d5b4237170f9
+			defaultHierarchy: LocalDateTable_4706054d-6cad-4d6a-b863-70c9baf600a0.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'Week End Date' = 'Dates Table'[Date] - WEEKDAY('Dates Table'[Date],2) + 5
+		formatString: mm/dd/yyyy
+		lineageTag: 5dc5bef3-7558-4b31-8a9d-80c98f1eb6dd
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 3c6d25d7-c5d0-40a7-a63b-05fa9d45cd73
+			defaultHierarchy: LocalDateTable_b7a6e506-0ac5-4f18-adf3-df67ba6ca020.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'Pro-Rated QTD' = if('Dates Table'[daynumber] <='Today date QTD'[qtd day],"Pro-Rated","Not Pro-Rated")
+		lineageTag: ddfa20c7-3aa5-4b84-9c4f-8fd6968f3231
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column Acronis_First_Date =
+			
+			IF('Dates Table'[Date] >= DATE(2025, 6, 13), "Yes", "No")
+		lineageTag: e1357fb6-7557-4d21-b99f-06ffd2c992f1
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Dates Table' = calculated
+		mode: import
+		source = CALENDAR(Date (2023,1,1), Date(2026,12,31))
+
+	annotation PBI_Id = cbc3c771c9a7418fb55971be145775a0
+

@@ -1,0 +1,56 @@
+table 'Filter - Product'
+	lineageTag: 950aa717-f68d-47f6-b999-12b76f927ed8
+
+	column product_major
+		dataType: string
+		lineageTag: f0a21e17-0545-43e9-903a-7065900d6196
+		summarizeBy: none
+		sourceColumn: product_major
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product_Genus
+		dataType: string
+		lineageTag: 56f25f06-b9d7-4c33-993c-f472437ec2b4
+		summarizeBy: none
+		sourceColumn: Product_Genus
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product_Family
+		dataType: string
+		lineageTag: 6d1ef5cd-24b2-4591-8582-821e52086ab6
+		summarizeBy: none
+		sourceColumn: Product_Family
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product_Group
+		dataType: string
+		lineageTag: 3a2847e1-7543-471e-a07c-6b028cff42da
+		summarizeBy: none
+		sourceColumn: Product_Group
+
+		annotation SummarizationSetBy = Automatic
+
+	column Business_Unit
+		dataType: string
+		lineageTag: 6c47bb23-d61f-4c63-9ad7-af7cb653a43d
+		summarizeBy: none
+		sourceColumn: Business_Unit
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Product' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("nZRha4MwEIb/ivi5+xFOxHUgK2rZoPTD1d5sIOYkF4X9+120WzsGNu0XEy7Pmzvey7nbxWkKUMWrePtvTeVbbufz/UpINM6C9tEqf1rXslnXVX5ZymmdUNIaDmTBKTLR82COGlmIAtEp0/ptShajmbvONgf8HTnVJIBx0Lig+mbBwI46tFFmWmixk5rDxRmz8Ao0h2tKZNIjLrhyBn4UCbNiF+LihRYfbO/tXMrzRyfGGVwwLq/TX/bclQf6U3xtfDxpGmS+UVFJ1D2QoragzFxdNkp3goXveFAG7C3dNTpJLTCfqO/RBj2CF+igOakQF15JmQ7v9KBQFo4ChTT+rUczkmruzbGxFFK/YJ9CyEiDjiq0o2QKm5QyCblfJqUZlifJn1//HPwbj9KP5We+/wY=", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Product_Genus = _t, #"Product_Family#(lf)" = _t, Product_Group = _t, Business_Unit = _t, product_major = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Product_Genus", type text}, {"Product_Family#(lf)", type text}, {"Product_Group", type text}, {"Business_Unit", type text}, {"product_major", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation
+

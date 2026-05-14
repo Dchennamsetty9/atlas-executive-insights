@@ -1,0 +1,386 @@
+table gaim_mql_daily_snapshot
+	lineageTag: d0624e8f-6509-40ec-b48d-94bade088245
+
+	measure 'MQL Distinct Count' = CALCULATE(DISTINCTCOUNT(gaim_mql_daily_snapshot[interest_name]),gaim_mql_daily_snapshot[cds_sfdc_interest_latest.mqls] = "True")
+		formatString: #,0
+		lineageTag: 2e34dad5-508c-4a4b-8bb6-523afe092968
+
+	measure Daily_Lead_Target_FY = CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_lead_target]),gaim_partner_sales_targets_cy_daily[plan_version] = "FY")
+		lineageTag: 7ed61ba7-6123-4667-9b0f-caf68c2566f7
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Daily_Lead_Target_Plan = CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_lead_target]),gaim_partner_sales_targets_cy_daily[plan_version] = "Plan")
+		lineageTag: 728f986c-e27e-4228-a1cf-715197776246
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Daily_Lead_mqls_Target =
+			
+			IF (
+			    HASONEVALUE ( Targets[Column1]),
+			    SWITCH (
+			        VALUES ( Targets[Column1]),
+			        "F07", [Daily_Lead_Target_FY],
+			        "Plan", [Daily_Lead_Target_Plan],
+			    [Daily_Lead_Target_FY])
+			)
+		formatString: #,0
+		lineageTag: e2f69002-3e89-43af-81d0-28f5a3901829
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure '% to MQLs' = IFERROR([MQL Distinct Count]/[Daily_Lead_mqls_Target],0)
+		formatString: 0%;-0%;0%
+		lineageTag: 88ec91a6-c7bd-45b8-8acf-1014c828c407
+
+	measure MarketingCreateDateOppCount = calculate(distinctcount(gaim_snapshot_pipeline_created_cq_daily[opportunities_created_ids]),gaim_snapshot_pipeline_created_cq_daily[category]="Marketing")
+		formatString: 0
+		lineageTag: 64a2306d-14a0-46de-b54b-3bb2762fd2a7
+
+	measure 'MQL to Opp %' = [MarketingCreateDateOppCount]/[MQL Distinct Count]
+		formatString: 0%;-0%;0%
+		lineageTag: 517fe043-94b4-46d7-bc1e-b833aa04b2ad
+
+	measure 'MQL to Opp Target' = CALCULATE([Daily_Target_Pipevol],gaim_partner_sales_targets_cy_daily[fuel_mix]="Marketing")/[Daily_Lead_mqls_Target]
+		formatString: 0%;-0%;0%
+		lineageTag: fb97188a-9185-4788-8379-a8609f8877b1
+
+	measure 'Trial MQL Distinct Count' = CALCULATE(DISTINCTCOUNT(gaim_mql_daily_snapshot[interest_name]),gaim_mql_daily_snapshot[cds_sfdc_interest_latest.mqls] = "True",gaim_mql_daily_snapshot[cds_sfdc_interest_latest.trial] = "True")
+		formatString: #,0
+		lineageTag: 3cc8f33d-067b-44c0-8344-21e644a94bc9
+
+	measure MSP_MQLs = CALCULATE(DISTINCTCOUNT(gaim_mql_daily_snapshot[interest_name]),gaim_mql_daily_snapshot[cds_sfdc_interest_latest.mqls] = "True",gaim_mql_daily_snapshot[msp_target_account]="true")
+		formatString: #,0
+		lineageTag: 7d42b862-04d3-40f0-b814-a0090741706d
+
+	measure MSP_MQL_to_Opp = iferror([MSP_Marketing_Opps]/[MSP_MQLs],0)
+		formatString: 0%;-0%;0%
+		lineageTag: d3eadcac-5c15-4716-be66-1b8fd3543c71
+
+	column data_day
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 34868da9-eae0-4867-ab80-473a4dd1fb71
+		summarizeBy: none
+		sourceColumn: data_day
+
+		annotation SummarizationSetBy = Automatic
+
+	column sfdc_id
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 9d1f7f2e-488b-4597-a58f-a9c1bfb40de0
+		summarizeBy: none
+		sourceColumn: sfdc_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column interest_name
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: adecf3d6-bb9a-48eb-952e-5c59260f4b6a
+		summarizeBy: none
+		sourceColumn: interest_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column market
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: c3ff4950-1a44-47a8-91d1-67ddfe32c546
+		summarizeBy: none
+		sourceColumn: market
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_genus
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e3c5f55c-ca9a-403e-bfe4-f8f115131bf1
+		summarizeBy: none
+		sourceColumn: product_genus
+
+		annotation SummarizationSetBy = Automatic
+
+	column category
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 71d4a7ed-e561-4d34-a7e3-84f5286b8ae1
+		summarizeBy: none
+		sourceColumn: category
+
+		annotation SummarizationSetBy = Automatic
+
+	column partner_type
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e466abaf-a33b-4e07-8d4f-3866ae44f063
+		summarizeBy: none
+		sourceColumn: partner_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_flag
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: fee41745-0089-406d-8ace-8b4ebe53162f
+		summarizeBy: none
+		sourceColumn: pe_account_flag
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_group
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: b1a2def9-094c-4845-a089-edebf9b89b56
+		summarizeBy: none
+		sourceColumn: product_group
+
+		annotation SummarizationSetBy = Automatic
+
+	column create_date
+		dataType: dateTime
+		formatString: Long Date
+		sourceProviderType: date
+		lineageTag: d621adb8-71df-446c-870e-a62bfef435ec
+		summarizeBy: none
+		sourceColumn: create_date
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column create_month
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: c1f09d3f-0c9b-4e54-90a0-4c1c3ed109e1
+		summarizeBy: none
+		sourceColumn: create_month
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_family
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 0cd0327f-5cdb-44bc-a1cc-dfcd764acdb8
+		summarizeBy: none
+		sourceColumn: product_family
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_lob
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 2dc10d0c-13ab-4ce4-b1fc-9b9de3f07a40
+		summarizeBy: none
+		sourceColumn: product_lob
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_mix
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 12289dd8-4c6a-447e-b56e-c46353f50e2b
+		summarizeBy: none
+		sourceColumn: fuel_mix
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e6570093-5e23-4256-b874-d9848ea11d6d
+		summarizeBy: none
+		sourceColumn: sales_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column xtxtype
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 278571ee-ce22-40d8-a03f-b625421e60f8
+		summarizeBy: none
+		sourceColumn: xtxtype
+
+		annotation SummarizationSetBy = Automatic
+
+	column xdatekeyslicer
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: c8411859-acc3-4598-9549-3ae5608a44e4
+		summarizeBy: none
+		sourceColumn: xdatekeyslicer
+
+		annotation SummarizationSetBy = Automatic
+
+	column updated_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 14eaff36-77f9-4e44-b10e-957c71f34596
+		summarizeBy: none
+		sourceColumn: updated_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_code
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: ce2c2728-0204-4366-a5fb-0babb3ed29d7
+		summarizeBy: none
+		sourceColumn: product_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column msp_target_account
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 4d599f50-3a43-49d0-b897-bf6f00aaa81a
+		summarizeBy: none
+		sourceColumn: msp_target_account
+
+		annotation SummarizationSetBy = Automatic
+
+	column 2024_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 1c5a6363-0c0e-4d79-b4e1-7a08b9aa0901
+		summarizeBy: none
+		sourceColumn: 2024_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column metz_fuelmix_reword
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 3ae1b279-cb96-4353-bc80-6fe39e9de964
+		summarizeBy: none
+		sourceColumn: metz_fuelmix_reword
+
+		annotation SummarizationSetBy = Automatic
+
+	column xkey_ss
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e8bf50f4-6985-49d0-8aa3-33140684926c
+		summarizeBy: none
+		sourceColumn: xkey_ss
+
+		annotation SummarizationSetBy = Automatic
+
+	column xkey_superslicer
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e15d4a81-bc2e-45d0-aa9b-4c2878abd2d9
+		summarizeBy: none
+		sourceColumn: xkey_superslicer
+
+		annotation SummarizationSetBy = Automatic
+
+	column xsaleschannel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 13c33aaa-4d7d-4f94-83b7-51408b59ae57
+		summarizeBy: none
+		sourceColumn: xsaleschannel
+
+		annotation SummarizationSetBy = Automatic
+
+	column xchannelmatchtgts
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: a295848e-00bb-455f-9f6e-e26e133d631d
+		summarizeBy: none
+		sourceColumn: xchannelmatchtgts
+
+		annotation SummarizationSetBy = Automatic
+
+	column xgenusmatchslicer
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 5658c7fb-1fc1-45b1-98e4-74ba60424947
+		summarizeBy: none
+		sourceColumn: xgenusmatchslicer
+
+		annotation SummarizationSetBy = Automatic
+
+	column xgenusmajor_t
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 3ca29512-902a-408b-bf6e-41a5789c6dd6
+		summarizeBy: none
+		sourceColumn: xgenusmajor_t
+
+		annotation SummarizationSetBy = Automatic
+
+	column smoothed_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 54eeb81b-94a8-4afe-8104-a607ea612edb
+		summarizeBy: none
+		sourceColumn: smoothed_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column MSP = IF(gaim_mql_daily_snapshot[msp_target_account]="True","MSP","Non MSP")
+		lineageTag: 2d760032-fc56-4c0e-b731-f3390e30e5e7
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'cds_sfdc_interest_latest.salesforce_record_id'
+		dataType: string
+		lineageTag: 52f0db2e-b081-47b5-b6d6-172936415816
+		summarizeBy: none
+		sourceColumn: cds_sfdc_interest_latest.salesforce_record_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'cds_sfdc_interest_latest.interest_name'
+		dataType: string
+		lineageTag: 0a2b32c5-eccc-4ae9-9c06-82cc2a34a540
+		summarizeBy: none
+		sourceColumn: cds_sfdc_interest_latest.interest_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'cds_sfdc_interest_latest.mqls'
+		dataType: string
+		lineageTag: 1fea77b4-5d1c-443f-9b95-5eb2f10d1922
+		summarizeBy: none
+		sourceColumn: cds_sfdc_interest_latest.mqls
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'cds_sfdc_interest_latest.trial'
+		dataType: string
+		lineageTag: 7e6c62aa-2212-4bc3-8f9a-6d1b0194c761
+		summarizeBy: none
+		sourceColumn: cds_sfdc_interest_latest.trial
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'MSP Filter' = IF(gaim_mql_daily_snapshot[msp_target_account]="true","MSP","Non-MSP")
+		lineageTag: d76df468-b877-41d6-b988-b2dd648a5006
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition gaim_mql_daily_snapshot = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("goto-data-dock.cloud.databricks.com", "/sql/1.0/warehouses/c24ee33594e13e93", [Catalog = "", Database = ""]),
+				    datagroup_mdl_Database = Source{[Name="datagroup_mdl",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = datagroup_mdl_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    gaim_mql_daily_snapshot_Table = mdl_sales_analytics_Schema{[Name="gaim_mql_daily_snapshot",Kind="Table"]}[Data],
+				    #"Removed Columns" = Table.RemoveColumns(gaim_mql_daily_snapshot_Table,{"xoo", "xoi"}),
+				    #"Merged Queries" = Table.NestedJoin(#"Removed Columns", {"interest_name"}, cds_sfdc_interest_latest, {"interest_name"}, "cds_sfdc_interest_latest", JoinKind.LeftOuter),
+				    #"Expanded cds_sfdc_interest_latest" = Table.ExpandTableColumn(#"Merged Queries", "cds_sfdc_interest_latest", {"salesforce_record_id", "interest_name", "mqls", "trial"}, {"cds_sfdc_interest_latest.salesforce_record_id", "cds_sfdc_interest_latest.interest_name", "cds_sfdc_interest_latest.mqls", "cds_sfdc_interest_latest.trial"})
+				in
+				    #"Expanded cds_sfdc_interest_latest"
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

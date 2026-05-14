@@ -1,0 +1,369 @@
+table forecast_prophet_2024
+	lineageTag: f6f614d3-ef26-468a-8bf7-ca12b1dc2443
+
+	column ds
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: e53a962b-8292-4028-9d66-2532352ff04c
+		summarizeBy: none
+		sourceColumn: ds
+
+		variation Variation
+			isDefault
+			relationship: b15b7afd-9b37-4e91-88a7-c3c1dde282b3
+			defaultHierarchy: LocalDateTable_e3102cf6-8730-4237-b329-5a354799ba86.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column product
+		dataType: string
+		lineageTag: b40f6d14-8302-4128-bb84-9565f4f6ce7b
+		summarizeBy: none
+		sourceColumn: product
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_market
+		dataType: string
+		lineageTag: 76522d61-80bc-449f-8b2b-df534f3120d6
+		summarizeBy: none
+		sourceColumn: sales_market
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_flag
+		dataType: string
+		lineageTag: ac3c3d3c-130b-463b-883c-8875eae11eaa
+		summarizeBy: none
+		sourceColumn: pe_account_flag
+
+		annotation SummarizationSetBy = Automatic
+
+	column year
+		dataType: int64
+		formatString: 0
+		lineageTag: 1d484553-3d8d-4e61-b5ca-304596508ad3
+		summarizeBy: sum
+		sourceColumn: year
+
+		annotation SummarizationSetBy = Automatic
+
+	column month
+		dataType: int64
+		formatString: 0
+		lineageTag: f3776cc7-3a0a-469b-9081-d50a17fe1f59
+		summarizeBy: sum
+		sourceColumn: month
+
+		annotation SummarizationSetBy = Automatic
+
+	column week_number
+		dataType: string
+		lineageTag: 997b3e2e-122c-4516-ab87-f0ec399b49ef
+		summarizeBy: none
+		sourceColumn: week_number
+
+		annotation SummarizationSetBy = Automatic
+
+	column summer
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 899e110d-11f0-4ea9-a111-4c292a72fc5d
+		summarizeBy: none
+		sourceColumn: summer
+
+		annotation SummarizationSetBy = Automatic
+
+	column winter
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 0dd8fa05-89b4-4d4e-85cf-f7a7cdfef1c9
+		summarizeBy: none
+		sourceColumn: winter
+
+		annotation SummarizationSetBy = Automatic
+
+	column isweek1
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 73facfb8-cad9-483a-a2ae-9abc8a82d0fe
+		summarizeBy: none
+		sourceColumn: isweek1
+
+		annotation SummarizationSetBy = Automatic
+
+	column actuals
+		dataType: double
+		formatString: #,0
+		lineageTag: a4937e9f-c860-472f-b675-cbf6b356d7a1
+		summarizeBy: sum
+		sourceColumn: actuals
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column avg_deal_size
+		dataType: double
+		lineageTag: f5052c5d-0677-4cfa-8a83-537380810a6a
+		summarizeBy: sum
+		sourceColumn: avg_deal_size
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_sales_cycle
+		dataType: double
+		lineageTag: fd0fb7ad-16b0-4af5-ae3c-4ff8ab1bc9de
+		summarizeBy: sum
+		sourceColumn: avg_sales_cycle
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column all_created_arr
+		dataType: double
+		lineageTag: 06672830-f4da-4db3-8f4e-74d500bcef22
+		summarizeBy: sum
+		sourceColumn: all_created_arr
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column total_partner_pipeline
+		dataType: double
+		lineageTag: 4fe4e2e6-50e6-440d-ba72-c15f6d736be1
+		summarizeBy: sum
+		sourceColumn: total_partner_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_generated_pipeline
+		dataType: double
+		lineageTag: c95570e4-31ee-45c3-b95f-1bb877fcbaf6
+		summarizeBy: sum
+		sourceColumn: marketing_generated_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_influenced_pipeline
+		dataType: double
+		lineageTag: 68e6c9c6-4654-4a08-bf33-5ab22625bf8c
+		summarizeBy: sum
+		sourceColumn: marketing_influenced_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_dials
+		dataType: double
+		lineageTag: 82a0a420-1a2b-48b9-8463-7eb10207e5ad
+		summarizeBy: sum
+		sourceColumn: avg_dials
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_touches
+		dataType: double
+		lineageTag: a3e477eb-5c68-41f1-9505-e450fb247b22
+		summarizeBy: sum
+		sourceColumn: avg_touches
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_push_counter
+		dataType: double
+		lineageTag: 692fee82-d836-425b-b401-0177b9126884
+		summarizeBy: sum
+		sourceColumn: avg_push_counter
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column number_of_opps
+		dataType: double
+		lineageTag: 30e25000-e90e-4952-ac7a-ca35090b70bb
+		summarizeBy: sum
+		sourceColumn: number_of_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column headcount
+		dataType: double
+		lineageTag: cd7d0139-70cd-4adf-9963-7694dbf6bc73
+		summarizeBy: sum
+		sourceColumn: headcount
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_opportunity_age
+		dataType: double
+		lineageTag: 9a848055-adb3-491a-8f2e-926f3f4b33a2
+		summarizeBy: sum
+		sourceColumn: avg_opportunity_age
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column most_likely
+		dataType: double
+		formatString: #,0
+		lineageTag: 6d31e004-afaa-4c4b-9a96-8a2a01aeb542
+		summarizeBy: sum
+		sourceColumn: most_likely
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column worst_case
+		dataType: double
+		formatString: #,0
+		lineageTag: a6c91126-447b-423d-b582-f631d3ac02ac
+		summarizeBy: sum
+		sourceColumn: worst_case
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column best_case
+		dataType: double
+		formatString: #,0
+		lineageTag: 03e00fe0-df16-4303-9942-589b8adca93f
+		summarizeBy: sum
+		sourceColumn: best_case
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column 'Running Total Actuals' =
+			
+			IF(
+			    YEAR('forecast_prophet_2024'[ds]) = 2024,
+			    CALCULATE(
+			        SUM('forecast_prophet_2024'[Actuals]),
+			        FILTER(
+			            'forecast_prophet_2024',
+			            'forecast_prophet_2024'[ds] <= EARLIER('forecast_prophet_2024'[ds]) &&
+			            YEAR('forecast_prophet_2024'[ds]) = 2024
+			        )
+			    ),
+			    BLANK()
+			)
+		lineageTag: 43c76d2b-0d0d-4f23-b55e-7752b67ae1cd
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Running Total Best Case' =
+			CALCULATE(
+			    SUM('forecast_prophet_2024'[best_case]),
+			    FILTER(
+			        'forecast_prophet_2024',
+			        'forecast_prophet_2024'[ds] <= EARLIER('forecast_prophet_2024'[ds])
+			    )
+			)
+		lineageTag: 6f7981e1-d663-4266-9b8e-2c50bf027408
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Running Total Most Likely' =
+			CALCULATE(
+			    SUM('forecast_prophet_2024'[most_likely]),
+			    FILTER(
+			        'forecast_prophet_2024',
+			        'forecast_prophet_2024'[ds] <= EARLIER('forecast_prophet_2024'[ds])
+			    )
+			)
+		lineageTag: 902e3494-7669-47b7-9569-726b9c193c02
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Running Total Worst Case' =
+			CALCULATE(
+			    SUM('forecast_prophet_2024'[worst_case]),
+			    FILTER(
+			        'forecast_prophet_2024',
+			        'forecast_prophet_2024'[ds] <= EARLIER('forecast_prophet_2024'[ds])
+			    )
+			)
+		lineageTag: a3153ed4-11ea-4f5e-b7f0-b030d938c779
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Product_group =
+			
+			SWITCH(
+			    TRUE(),
+			    [product] = "Core Collab", "UCC",
+			    [product] = "UCaaS", "UCC",
+			    [product] // fallback: original value
+			)
+		lineageTag: bbd6f211-d156-4eb0-97cc-251541f79075
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column Difference = forecast_prophet_2024[most_likely] - forecast_prophet_2024[actuals]
+		lineageTag: 78f71758-4765-48b2-ac01-71338b0fad2a
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Percent Difference (%)' = ```
+			
+			    DIVIDE(forecast_prophet_2024[Difference], forecast_prophet_2024[actuals], 0)
+			```
+		lineageTag: a721a94b-5f54-4ac0-96cd-6eef3a0ac3d7
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition forecast_prophet_2024 = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("goto-mdl-marketing-ds.cloud.databricks.com", "sql/protocolv1/o/243252463991105/0304-101749-yej2r68y", [Catalog=null, Database=null, EnableAutomaticProxyDiscovery="enabled"]),
+				    hive_metastore_Database = Source{[Name="hive_metastore",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = hive_metastore_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    forecast_prophet_2024_Table = mdl_sales_analytics_Schema{[Name="forecast_prophet_2024",Kind="Table"]}[Data]
+				in
+				    forecast_prophet_2024_Table
+

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "SemanticModel",
+    "displayName": "Atlas - Performance Hub (1)"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "bd155486-e841-4cb9-a75b-c6136d6dbcc9"
+  }
+}

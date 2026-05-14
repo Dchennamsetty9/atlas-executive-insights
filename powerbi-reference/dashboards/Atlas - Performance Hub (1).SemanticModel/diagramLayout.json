@@ -1,0 +1,398 @@
+{
+  "version": "1.1.0",
+  "diagrams": [
+    {
+      "ordinal": 0,
+      "scrollPosition": {
+        "x": 0,
+        "y": 7.5
+      },
+      "nodes": [
+        {
+          "location": {
+            "x": 761.25,
+            "y": 540
+          },
+          "nodeIndex": "gaim_mql_daily_snapshot",
+          "nodeLineageTag": "d0624e8f-6509-40ec-b48d-94bade088245",
+          "size": {
+            "height": 300,
+            "width": 271
+          },
+          "zIndex": 19
+        },
+        {
+          "location": {
+            "x": 300,
+            "y": 0
+          },
+          "nodeIndex": "gaim_partner_sales_targets_cy_daily",
+          "nodeLineageTag": "8584903b-d288-417d-a9d6-d7336aa191c3",
+          "size": {
+            "height": 351,
+            "width": 330
+          },
+          "zIndex": 9
+        },
+        {
+          "location": {
+            "x": 0,
+            "y": 558
+          },
+          "nodeIndex": "gaim_pipeline_daily_snapshot",
+          "nodeLineageTag": "316c824f-b46a-47f9-ab25-508f406e55bc",
+          "size": {
+            "height": 300,
+            "width": 308
+          },
+          "zIndex": 20
+        },
+        {
+          "location": {
+            "x": 345.5,
+            "y": 551
+          },
+          "nodeIndex": "gaim_snapshot_pipeline_created_cq_daily",
+          "nodeLineageTag": "856e1091-f006-4359-830c-265c5d11f7d5",
+          "size": {
+            "height": 300,
+            "width": 377
+          },
+          "zIndex": 22
+        },
+        {
+          "location": {
+            "x": 0,
+            "y": 0
+          },
+          "nodeIndex": "Dates Table",
+          "nodeLineageTag": "9a6d93b2-3812-43df-9cd4-21845e571695",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 10
+        },
+        {
+          "location": {
+            "x": 0,
+            "y": 210
+          },
+          "nodeIndex": "Today date QTD",
+          "nodeLineageTag": "d81a571b-5bb8-469f-b4d2-b433ab960c65",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 17
+        },
+        {
+          "location": {
+            "x": 1016.25,
+            "y": 0
+          },
+          "nodeIndex": "Filter - Channel",
+          "nodeLineageTag": "2b70e9be-00f4-471e-a2cb-715b4416e5fd",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 23
+        },
+        {
+          "location": {
+            "x": 723,
+            "y": 125.75
+          },
+          "nodeIndex": "Filter - Fuel Mix",
+          "nodeLineageTag": "279e1ba7-8334-42c9-8385-091b7ee224f2",
+          "size": {
+            "height": 128,
+            "width": 234
+          },
+          "zIndex": 24
+        },
+        {
+          "location": {
+            "x": 680,
+            "y": 295
+          },
+          "nodeIndex": "Filter - Geo",
+          "nodeLineageTag": "58df13d1-0f52-4405-aced-cd2634596463",
+          "size": {
+            "height": 128,
+            "width": 234
+          },
+          "zIndex": 11
+        },
+        {
+          "location": {
+            "x": 1179.75,
+            "y": 5
+          },
+          "nodeIndex": "Filter - Product",
+          "nodeLineageTag": "950aa717-f68d-47f6-b999-12b76f927ed8",
+          "size": {
+            "height": 146,
+            "width": 234
+          },
+          "zIndex": 18
+        },
+        {
+          "location": {
+            "x": 1058,
+            "y": 231.5
+          },
+          "nodeIndex": "Filter - Purchase Type",
+          "nodeLineageTag": "ae363084-e273-436f-828f-2b0f42c04412",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 21
+        },
+        {
+          "location": {
+            "x": 1297.25,
+            "y": 438.75
+          },
+          "nodeIndex": "Filter - Revenue Type",
+          "nodeLineageTag": "5da7aede-be67-4517-9da7-5c8d6426d415",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 12
+        },
+        {
+          "location": {
+            "x": 1294,
+            "y": 570.5
+          },
+          "nodeIndex": "Filter - Stages",
+          "nodeLineageTag": "e274021c-6fde-4331-949d-5faffaf72e58",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 13
+        },
+        {
+          "location": {
+            "x": 1454,
+            "y": 0
+          },
+          "nodeIndex": "Parameter - Target Time",
+          "nodeLineageTag": "bf4dc7cd-4c24-471c-a6de-24d8704e0d01",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 14
+        },
+        {
+          "location": {
+            "x": 1456,
+            "y": 170
+          },
+          "nodeIndex": "Parameter - Target Type",
+          "nodeLineageTag": "e08cc550-acc3-4132-ba37-7c3e8ba95593",
+          "size": {
+            "height": 145,
+            "width": 234
+          },
+          "zIndex": 15
+        },
+        {
+          "location": {
+            "x": 1296.25,
+            "y": 740
+          },
+          "nodeIndex": "Filter - types",
+          "nodeLineageTag": "03b74ba2-a243-41d5-8a6a-04bb91b3a28d",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 16
+        },
+        {
+          "location": {
+            "x": 1740,
+            "y": 331.5
+          },
+          "nodeIndex": "View Selection",
+          "nodeLineageTag": "cbae2df1-b37d-4dcf-a5a8-d6bc634c7308",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 4
+        },
+        {
+          "location": {
+            "x": 2024,
+            "y": 355.5
+          },
+          "nodeIndex": "Targets",
+          "nodeLineageTag": "3f848104-f5cf-4402-96a9-6e352d832a27",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 5
+        },
+        {
+          "location": {
+            "x": 2308,
+            "y": 331.5
+          },
+          "nodeIndex": "Column Groups",
+          "nodeLineageTag": "ec5421d1-82ad-456c-8c06-0290f1ce32b6",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 6
+        },
+        {
+          "location": {
+            "x": 2592,
+            "y": 331.5
+          },
+          "nodeIndex": "Columns",
+          "nodeLineageTag": "e2eace76-cf93-43ea-afe8-0778e4b9ac45",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 7
+        },
+        {
+          "location": {
+            "x": 2876,
+            "y": 355.5
+          },
+          "nodeIndex": "Pipeline Selection",
+          "nodeLineageTag": "d2374192-b7f1-4b24-ba82-3baff1c563f9",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 8
+        },
+        {
+          "location": {
+            "x": 3160,
+            "y": 350.5
+          },
+          "nodeIndex": "Date Group Filter",
+          "nodeLineageTag": "f69beff1-c455-459a-8d4d-133f4cad48c7",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 2
+        },
+        {
+          "location": {
+            "x": 2306.5,
+            "y": 0
+          },
+          "nodeIndex": "cds_sfdc_interest_latest",
+          "nodeLineageTag": "790da174-5b8e-4863-8dc4-84b5a47109c5",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 3
+        },
+        {
+          "location": {
+            "x": 964.25,
+            "y": 355.75
+          },
+          "nodeIndex": "Filter - MSP",
+          "nodeLineageTag": "5f126c9a-1181-4920-9afe-5542f4f884a0",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 1
+        },
+        {
+          "location": {
+            "x": 1574,
+            "y": 738.75
+          },
+          "nodeIndex": "Daily-snapshot_opp_totals",
+          "nodeLineageTag": "f8d63ffa-c881-4415-bc63-ddb5883a92a3",
+          "size": {
+            "height": 189.25,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1583,
+            "y": 546.25
+          },
+          "nodeIndex": "Created-snapshot_opp_totals",
+          "nodeLineageTag": "956af671-8f47-42bc-a3bc-c86d176a5e66",
+          "size": {
+            "height": 178,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1055.75,
+            "y": 632.5
+          },
+          "nodeIndex": "Filter - Deal Bands",
+          "nodeLineageTag": "c7f82c8d-28a6-42a9-bf44-5c81a1f6a0c4",
+          "size": {
+            "height": 128,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 4012,
+            "y": 396.375
+          },
+          "nodeIndex": "Acronis SKUs",
+          "nodeLineageTag": "ab96f5b1-2ca0-4ef3-8392-00c1d3cde70b",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 4296,
+            "y": 372.375
+          },
+          "nodeIndex": "Acronis KPIs",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 0
+        }
+      ],
+      "name": "All tables",
+      "zoomValue": 80,
+      "pinKeyFieldsToTop": false,
+      "showExtraHeaderInfo": false,
+      "hideKeyFieldsWhenCollapsed": false,
+      "tablesLocked": false
+    }
+  ],
+  "selectedDiagram": "All tables",
+  "defaultDiagram": "All tables"
+}

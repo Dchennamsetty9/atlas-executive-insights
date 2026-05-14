@@ -1,0 +1,239 @@
+relationship 56a180dc-5160-459a-88ff-aa3c932623e9
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.Date
+	toColumn: LocalDateTable_b884a69b-4dee-4999-88c2-13b68406fd1e.Date
+
+relationship 14a978ab-8244-4e53-8066-8e6efef28d34
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.'start of quarter'
+	toColumn: LocalDateTable_37f29ada-0f93-461b-97b4-c9542a584051.Date
+
+relationship 8ec442ab-ef5f-4182-97a2-a13b9c15f8cf
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.'end of quarter'
+	toColumn: LocalDateTable_99baac32-d2b0-4f3a-9d8f-25d336302afe.Date
+
+relationship ed1cef6d-9bad-4ab0-9f77-313f3543f202
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.Months
+	toColumn: LocalDateTable_ed97f7ce-2a9b-44cd-8ac1-c3bcdc86d2da.Date
+
+relationship 7f64ffa8-b94e-488a-9855-5f4a7ed92796
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.'Date Test'
+	toColumn: LocalDateTable_f7efa76f-1842-41b8-89bb-a87f99c3aad3.Date
+
+relationship 4dbb69d2-2f98-44ac-88b7-d5b4237170f9
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.'Week Start Date'
+	toColumn: LocalDateTable_4706054d-6cad-4d6a-b863-70c9baf600a0.Date
+
+relationship 3c6d25d7-c5d0-40a7-a63b-05fa9d45cd73
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Dates Table'.'Week End Date'
+	toColumn: LocalDateTable_b7a6e506-0ac5-4f18-adf3-df67ba6ca020.Date
+
+relationship d41e421f-0a7c-428e-be5b-cf799187070f
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Today date QTD'.Date
+	toColumn: LocalDateTable_341c1d32-e179-4fab-8840-319087c4ff02.Date
+
+relationship 63c64ef0-5b94-4d69-85f0-5e8880756f12
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Today date QTD'.'Start of quarter'
+	toColumn: LocalDateTable_edd1d80c-1fe8-42dc-a51c-78b495b8c508.Date
+
+relationship 6d20d66c-9c9c-42c0-b561-47c664238a7c
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'Today date QTD'.Startofquarter
+	toColumn: LocalDateTable_bfde6ed2-8fe3-45b8-9664-50d0a4de7336.Date
+
+relationship 93d13320-8909-4006-907a-897c6756de98
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_pipeline_daily_snapshot.pipeline_entered_date
+	toColumn: LocalDateTable_79f1f985-99a7-4e54-bfef-554b1e8c0db3.Date
+
+relationship d05c2392-dc31-42eb-b280-8257ab83b038
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_pipeline_daily_snapshot.lastmodifieddate
+	toColumn: LocalDateTable_1062ec45-59cf-4895-822a-0d8d13e54952.Date
+
+relationship 5ec50767-590e-47f6-8745-99ee3ec6716e
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.close_date
+	toColumn: LocalDateTable_d95323eb-ed1c-4ebc-82c5-f82170cfb23d.Date
+
+relationship 3f0defe9-27b6-405a-bee8-6c4c7a4a268f
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.lastmodifieddate
+	toColumn: LocalDateTable_5074541c-c261-4ace-a7f0-989ac2ff3c62.Date
+
+relationship 004e090c-c8c4-4167-b67f-3be2e3a82705
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.xkey_ss_create_date
+	toColumn: LocalDateTable_1a6f3476-ade2-480c-af0c-dc615d6c41ce.Date
+
+relationship 4bba8ae2-1a87-fa9f-b682-1428f2a3deec
+	fromColumn: gaim_partner_sales_targets_cy_daily.target_date
+	toColumn: 'Dates Table'.Date
+
+relationship 0128e13e-501c-f78b-7d50-65a759ab531a
+	crossFilteringBehavior: bothDirections
+	toCardinality: many
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.xkey_ss_create
+	toColumn: gaim_partner_sales_targets_cy_daily.xkey_ss
+
+relationship 5877317b-2788-83b8-d382-a93d2a16e5cd
+	fromColumn: gaim_partner_sales_targets_cy_daily.fuel_mix
+	toColumn: 'Filter - Fuel Mix'.'Fuel Mix'
+
+relationship 350556ab-fbf3-2f06-b8a9-f717b03b92a3
+	fromColumn: gaim_partner_sales_targets_cy_daily.sales_market
+	toColumn: 'Filter - Geo'.Market
+
+relationship aee9de5e-9ffc-4253-b1d2-6a016a4c3bf7
+	joinOnDateBehavior: datePartOnly
+	fromColumn: gaim_pipeline_daily_snapshot.'Data as of:'
+	toColumn: LocalDateTable_2c6bd1a5-92ac-4cde-b180-0fc83c42ce21.Date
+
+relationship 46566e01-75a3-b8f3-83b5-0dd0447cea4b
+	fromColumn: gaim_pipeline_daily_snapshot.close_date
+	toColumn: 'Dates Table'.Date
+
+relationship 2cf70635-721e-3c89-6355-06ca388bc81d
+	fromColumn: gaim_pipeline_daily_snapshot.product_genus
+	toColumn: 'Filter - Product'.Product_Genus
+
+relationship 30fbaf2f-e6f1-f649-29a4-2d0ead50501c
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.product_genus
+	toColumn: 'Filter - Product'.Product_Genus
+
+relationship 5683a0dd-5406-481b-9724-0f0e3e901e87
+	fromColumn: gaim_partner_sales_targets_cy_daily.product_genus
+	toColumn: 'Filter - Product'.Product_Genus
+
+relationship 9b93b08c-e00f-1d88-70fd-fa6b2b442a75
+	crossFilteringBehavior: bothDirections
+	toCardinality: many
+	fromColumn: gaim_partner_sales_targets_cy_daily.xkey_ss
+	toColumn: gaim_pipeline_daily_snapshot.xkey_ss
+
+relationship b9163d0b-89f7-d059-ab16-b8932dfb339f
+	crossFilteringBehavior: bothDirections
+	toCardinality: many
+	fromColumn: 'Filter - Purchase Type'.Purchase_type
+	toColumn: gaim_partner_sales_targets_cy_daily.purchase_type
+
+relationship 5bad5114-fce5-41dc-a270-ad85c3923e42
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.trial_date
+	toColumn: LocalDateTable_d6af4541-9917-4ad5-a559-9e2640ca7e2b.Date
+
+relationship 4ccd19cc-bedd-4e15-bfad-2d20ce31c468
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.pipeline_entered_date
+	toColumn: LocalDateTable_d8045c72-a868-4d6f-a95e-245b963fe889.Date
+
+relationship 2838668f-ef5e-41f9-8f5b-f557a63e62ee
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.opportunity_close_date
+	toColumn: LocalDateTable_a4c97c3c-2ead-416e-a849-643e49d71d31.Date
+
+relationship 404422c9-1cf3-417b-bfec-90e2532995bd
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.interest_campaign_date
+	toColumn: LocalDateTable_a04084f9-b002-45d4-a3b3-7f726aa31676.Date
+
+relationship 41fa89a2-4a06-4973-897e-03ac54d503ae
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.followed_up_date_time
+	toColumn: LocalDateTable_2e360bdf-6ec7-4098-b2b7-77e72a45ba9c.Date
+
+relationship 8a6338f6-8191-401b-a63a-c12cb8a1f4a0
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.create_date
+	toColumn: LocalDateTable_cfa5c132-8410-4281-90da-b9ae4ab0da15.Date
+
+relationship 034a834b-aff0-48f8-8a2d-c355ee69de9b
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.create_date_time
+	toColumn: LocalDateTable_f98e3221-0367-4fde-b758-0818486a756e.Date
+
+relationship 72ca7b94-b19d-4b6e-ad10-50e9619165c8
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.due_date
+	toColumn: LocalDateTable_98161900-b6cd-43d9-ba15-750b1042ddbb.Date
+
+relationship a66db7a3-059f-4619-a4de-9809d3a60d0e
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.due_date_timestamp
+	toColumn: LocalDateTable_69ba8d73-5fce-4f0e-8395-da5fcf64d910.Date
+
+relationship 34172256-1b5a-4f1a-b091-7ebb883485c3
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.rejected_date_time
+	toColumn: LocalDateTable_b9dc1a22-ced4-4787-a0ce-aeb52a59d5b3.Date
+
+relationship 8db4ec50-e8d1-428d-a37d-a09925afdd0b
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.rejected_date
+	toColumn: LocalDateTable_5b75531f-9866-467f-a5a7-4f57ba43eb65.Date
+
+relationship f9eb3a64-721d-4c97-9470-654e09276482
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.converted_date__c
+	toColumn: LocalDateTable_efc62864-f54d-4fbb-8064-61a6d3203280.Date
+
+relationship b0bcd796-7793-422e-b72d-be6e48dd8e85
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.date_distributed__c
+	toColumn: LocalDateTable_0ca23378-2c4a-4647-80c7-d802fe4adf24.Date
+
+relationship 0b7834a4-6a49-451b-89e5-7b2783b7fd9b
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.date_in_working__c
+	toColumn: LocalDateTable_fddb9f56-abed-47b7-8746-bcd7797faa55.Date
+
+relationship f644d6f2-ac56-4aaa-a2f1-692a2e58e3db
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.opened_date__c
+	toColumn: LocalDateTable_c5e086c6-b383-4b6f-8141-f31383bd0820.Date
+
+relationship 0ce7bcb0-c95e-4605-8422-4c2e3629856b
+	joinOnDateBehavior: datePartOnly
+	fromColumn: cds_sfdc_interest_latest.interest_assigned_datetime
+	toColumn: LocalDateTable_08841191-626d-4d1d-9d49-1497891090d9.Date
+
+relationship 388d5b42-d07c-00c9-ee36-37dd8ea9f638
+	crossFilteringBehavior: bothDirections
+	toCardinality: many
+	fromColumn: gaim_partner_sales_targets_cy_daily.xkey_ss
+	toColumn: gaim_mql_daily_snapshot.xkey_superslicer
+
+relationship a81ef09f-afe0-e666-d794-c6db1e1f38ee
+	fromColumn: gaim_mql_daily_snapshot.product_genus
+	toColumn: 'Filter - Product'.Product_Genus
+
+relationship 7403197e-c7b7-cea2-3d82-ca8546d7ee43
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.pipeline_entered_date
+	toColumn: 'Dates Table'.Date
+
+relationship f04a3e44-8fb6-a42e-e07d-806d4b9a3dbb
+	fromColumn: gaim_mql_daily_snapshot.create_date
+	toColumn: 'Dates Table'.Date
+
+relationship AutoDetected_2bc8c3b1-b694-48c1-aa79-c9d48dab4191
+	fromColumn: gaim_pipeline_daily_snapshot.'Acronis SKUs.Acronis SKU'
+	toColumn: 'Acronis SKUs'.'Acronis SKU'
+
+relationship AutoDetected_ac312d28-f8ba-447f-b143-438a1e395fbc
+	isActive: false
+	fromColumn: gaim_snapshot_pipeline_created_cq_daily.'Acronis SKUs.Acronis SKU'
+	toColumn: 'Acronis SKUs'.'Acronis SKU'
+
+relationship e7d0829d-df72-9008-9ffe-7f40131eec09
+	crossFilteringBehavior: bothDirections
+	toCardinality: many
+	fromColumn: gaim_partner_sales_targets_cy_daily.smoothed_channel
+	toColumn: 'Filter - Channel'.'Smoothed Channel'
+

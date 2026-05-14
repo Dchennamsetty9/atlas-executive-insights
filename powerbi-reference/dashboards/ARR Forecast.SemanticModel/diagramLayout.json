@@ -1,0 +1,136 @@
+{
+  "version": "1.1.0",
+  "diagrams": [
+    {
+      "ordinal": 0,
+      "scrollPosition": {
+        "x": 569.33331298828125,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "location": {
+            "x": 569,
+            "y": 485.59285261388868
+          },
+          "nodeIndex": "Dates Table",
+          "nodeLineageTag": "ba6d45ad-e0e7-4d1a-a16d-0fb976cc40c7",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 6
+        },
+        {
+          "location": {
+            "x": 1223,
+            "y": 265.68179301079363
+          },
+          "nodeIndex": "forecast_prophet",
+          "nodeLineageTag": "a83db36d-aabc-4e3a-a8d6-80cbc1c1419a",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 9
+        },
+        {
+          "location": {
+            "x": 1759,
+            "y": 489.68179301079363
+          },
+          "nodeIndex": "Refresh Week",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 8
+        },
+        {
+          "location": {
+            "x": 2043,
+            "y": 439.68179301079363
+          },
+          "nodeIndex": "forecast_prophet_2024",
+          "nodeLineageTag": "f6f614d3-ef26-468a-8bf7-ca12b1dc2443",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 2327,
+            "y": 439.68179301079363
+          },
+          "nodeIndex": "opportunity_scoring",
+          "nodeLineageTag": "bb54dbac-8ffb-45be-97ac-658a95e343be",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1494,
+            "y": 272.20143883582205
+          },
+          "nodeIndex": "gaim_pipeline_daily_snapshot",
+          "nodeLineageTag": "f3d1becb-8900-4793-a7d6-456a33165c78",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 2326,
+            "y": 371.96126174833626
+          },
+          "nodeIndex": "SelfServeToggle",
+          "nodeLineageTag": "b4c3e4be-1f56-47ac-8b92-137a4a749749",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 2042,
+            "y": 284.60099611710757
+          },
+          "nodeIndex": "SelfServeSwitch",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 2042,
+            "y": 225.56059767026454
+          },
+          "nodeIndex": "Legend Series",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 0
+        }
+      ],
+      "name": "All tables",
+      "zoomValue": 100,
+      "pinKeyFieldsToTop": false,
+      "showExtraHeaderInfo": false,
+      "hideKeyFieldsWhenCollapsed": false,
+      "tablesLocked": false
+    }
+  ],
+  "selectedDiagram": "All tables",
+  "defaultDiagram": "All tables"
+}

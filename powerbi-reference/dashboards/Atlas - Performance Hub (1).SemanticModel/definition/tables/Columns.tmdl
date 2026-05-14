@@ -1,0 +1,117 @@
+table Columns
+	lineageTag: e2eace76-cf93-43ea-afe8-0778e4b9ac45
+
+	column KPI
+		lineageTag: ecbbe66f-ddbe-43e4-a168-c308e69af740
+		summarizeBy: none
+		sourceColumn: [Value1]
+		sortByColumn: 'Columns Order'
+
+		relatedColumnDetails
+			groupByColumn: 'Columns Fields'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Columns Fields'
+		isHidden
+		lineageTag: 7e08ed39-9b1c-4156-9061-17eb7a459fda
+		summarizeBy: none
+		sourceColumn: [Value2]
+		sortByColumn: 'Columns Order'
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 3,
+				  "kind": 2
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Columns Order'
+		isHidden
+		formatString: 0
+		lineageTag: a9a307a7-8522-4328-ae12-c5d85acc837f
+		summarizeBy: sum
+		sourceColumn: [Value3]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Metrics Group'
+		lineageTag: 4864ff48-7cb0-4525-8a76-2e80274416d3
+		summarizeBy: none
+		sourceColumn: [Value4]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Won or Pipe'
+		lineageTag: 80774409-2e18-40c8-b787-9a33ad542ea7
+		summarizeBy: none
+		sourceColumn: [Value5]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Category
+		lineageTag: f9fa093c-0617-432a-bd87-01cf4cddbcb5
+		summarizeBy: none
+		sourceColumn: [Value6]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'KPI Type'
+		lineageTag: dd475fb7-67e9-4c0c-abdb-53619475f900
+		summarizeBy: none
+		sourceColumn: [Value7]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Columns = calculated
+		mode: import
+		source = ```
+				{
+				    ("Won ARR", NAMEOF('gaim_pipeline_daily_snapshot'[Won_Pipeline]), 0,"Won Actuals","Won","1.Actuals","1.Won ARR"),
+				    ("Target Bookings", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Plan$]), 1,"Won Targets","Won","2.Targets","1.Won ARR Target"),
+				    ("Won ARR % to Target", NAMEOF([xWon/FuelPlan__mdl]), 2,"Won Attainment","Won","3.Attainment","1.Won ARR Attainment"),
+				    ("Won Delta to Target", NAMEOF([xWon-TgtPR_mdl]), 3,"Won Attainment","Won","3.Attainment","1.Won ARR Delta to Target"),
+				    ("# Deals Won", NAMEOF('gaim_pipeline_daily_snapshot'[Won_Volume]), 4,"Won Actuals","Won","1.Actuals","2.Won Volume"),
+				    ("# Deals Won Target", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Target_WonVol]), 5,"Won Targets","Won","2.Targets","2.Won Volume Target"),
+				    ("# Deals Won % to Target", NAMEOF([xdealswonvol/target__mdl]), 6,"Won Attainment","Won","3.Attainment","2.Won Volume Attainment"),
+				    ("ADS", NAMEOF('gaim_pipeline_daily_snapshot'[ADS]), 7,"Won Actuals","Won","1.Actuals","3.ADS"),
+				    ("ADS Target", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Target_ADS]), 8,"Won Targets","Won","2.Targets","3.ADS Target"),
+				    ("ADS delta vs Target", NAMEOF([xADS_Attain_mdl_diff]), 9,"Won Attainment","Won","3.Attainment","3.ADS Delta to Target"),
+				    ("Close Rate (Vol)", NAMEOF([close_rate_vol]), 10,"Won Actuals","Won","1.Actuals","4.Close Rate"),
+				    ("Close Rate Target (Vol)", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Target_CRVol]), 11,"Won Targets","Won","2.Targets","4.Close Rate Target"),
+				    ("Close Rate (Vol) Delta vs Target (Vol)", NAMEOF([xCR_Attain_mdl_delta]), 12,"Won Attainment","Won","3.Attainment","4.Close Rate Delta to Target"),
+				    ("Close Rate ($)", NAMEOF([close_rate_$]), 13,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("Created Pipeline $", NAMEOF('gaim_snapshot_pipeline_created_cq_daily'[xCreated_Pipeline]), 14,"Pipeline Actuals","Created","1.Actuals","5.Created Pipeline"),
+				    ("Created Pipeline $ Target", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Target_Pipeline]), 15,"Pipeline Targets","Created","2.Targets","5.Created Pipeline Target"),
+				    ("Created Pipeline $ % to Target", NAMEOF([xtgt_PipeCreate_attain_mdl]), 16,"Pipeline Attainment","Created","3.Attainment","5.Created Pipeline Attainment"),
+				    ("# Opps Created", NAMEOF('gaim_snapshot_pipeline_created_cq_daily'[x_OppsCreated_mdl]), 17,"Pipeline Actuals","Created","1.Actuals","6.Created Volume"),
+				    ("# Opps Created Target", NAMEOF('gaim_partner_sales_targets_cy_daily'[Daily_Target_Pipevol]), 18,"Pipeline Targets","Created","2.Targets","6.Created Volume Targets"),
+				    ("# Opps Created % to Target", NAMEOF([xcreatedvol/target__mdl]), 19,"Pipeline Attainment","Created","3.Attainment","6.Created Volume Attainment"),
+				    ("AOS", NAMEOF([Pipeline Opp Size]), 20,"Pipeline Actuals","Created","1.Actuals","7.AOS"),
+				    ("AOS Target", NAMEOF([POS Target]), 21,"Pipeline Targets","Created","2.Targets","7.AOS Target"),
+				    ("AOS delta vs Target", NAMEOF([delta_to_pos]), 22,"Pipeline Targets","Created","2.Targets","7.AOS Delta to Target"),
+				    ("Active Pipeline", NAMEOF(gaim_pipeline_daily_snapshot[Active_Pipeline]), 23,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Coverage (Active/Target)", NAMEOF([xCvg_mdl]), 24,"Pipeline Attainment","Created","3.Attainment","8.Other KPIs"),
+				    ("Created Pipe in Qtr Close", NAMEOF('gaim_pipeline_daily_snapshot'[Same Create and Close Quarter $]), 25,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("# Opps Created in Qtr Close", NAMEOF('gaim_pipeline_daily_snapshot'[Same Close and Create Q Count]), 26,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Created Pipeline in Qtr - Won", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[created_won_pipeline_same_q]), 27,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Created Pipeline in Qtr - Lost", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[created_lost_pipeline_same_q]), 28,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Created Pipeline in Qtr - Open", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[created_open_pipeline_same_q]), 29,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Won ARR Created in Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[Won Pipeline in Same Q]), 30,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("% of Won ARR Created in Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[% of Won Pipeline Created in Same Q]), 31,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("Won ARR Created out of Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[Won Pipeline NOT in Same Q]), 32,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("% of Won ARR Created out of Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[% of Won Pipeline NOT Created in Same Q]), 33,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("Won ADS Created in Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[ADS in Same Q]), 34,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("Won ADS Created out of Qtr", NAMEOF('gaim_pipeline_daily_snapshot'[ADS NOT in Same Q]), 35,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				    ("% of Created Pipe Won in Qtr", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[% of Created Pipeline $ Won in Quarter]), 36,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("% of Created Pipe Lost in Qtr", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[% of Created Pipeline $ Lost in Quarter]), 37,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("% of Created Pipe still Open in Qtr", NAMEOF(gaim_snapshot_pipeline_created_cq_daily[% of Created Pipeline $ Open in Quarter]), 38,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs"),
+				    ("Win Rate", NAMEOF('gaim_pipeline_daily_snapshot'[Win Rate %]), 39,"Won Actuals","Won","1.Actuals","8.Other KPIs"),
+				     ("Coverage", NAMEOF([Coverage]), 40,"Pipeline Actuals","Created","1.Actuals","8.Other KPIs")
+				    
+				}
+				```
+
+	annotation PBI_Id = 66c3a3ef371f47e0a206368b994a2d66
+

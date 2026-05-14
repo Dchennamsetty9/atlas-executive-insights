@@ -1,0 +1,68 @@
+# Databricks Apps Configuration
+# Deploy this app to your Databricks workspace
+
+name: atlas-executive-insights
+version: 1.0.0
+description: AI-Powered Executive Analytics Dashboard
+
+# Application entry point - starts the FastAPI backend
+command:
+  - python
+  - -m
+  - uvicorn
+  - main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "8000"
+  - --app-dir
+  - backend
+
+# Environment configuration
+env:
+  # Port for the application (required by Databricks Apps)
+  - name: PORT
+    value: "8000"
+  
+  # Databricks connection (automatically provided in workspace)
+  - name: DATABRICKS_HOST
+    value: "$DATABRICKS_HOST"
+  
+  - name: DATABRICKS_TOKEN
+    value: "$DATABRICKS_TOKEN"
+  
+  # Data source configuration
+  - name: DATABRICKS_CATALOG
+    value: "datagroup_mdl"
+  
+  - name: DATABRICKS_SCHEMA
+    value: "mdl_sales_analytics"
+  
+  - name: DATABRICKS_HTTP_PATH
+    value: "/sql/1.0/warehouses/c24ee33594e13e93"
+  
+  # Application settings
+  - name: ENVIRONMENT
+    value: "production"
+  
+  - name: DEBUG
+    value: "False"
+
+# Resource requirements
+resources:
+  cpu: 2
+  memory: 4Gi
+
+# Health check
+health_check:
+  path: /
+  port: 8000
+  interval_seconds: 30
+
+# Serve static frontend files
+static_files:
+  - source: frontend/dist
+    destination: /
+
+# Port mapping
+port: 8000

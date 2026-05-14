@@ -1,0 +1,1062 @@
+table opportunity_scoring
+	lineageTag: bb54dbac-8ffb-45be-97ac-658a95e343be
+
+	measure PercWonAboveThreshold =
+			
+			VAR threshold = 0.5
+			RETURN
+			DIVIDE(
+			    CALCULATE(
+			        COUNTROWS('opportunity_scoring'),
+			        'opportunity_scoring'[is_won] = 1,
+			        'opportunity_scoring'[Probability Bins] >= threshold,
+			        'opportunity_scoring'[data_split] IN {"test", "validation"}
+			    ),
+			    CALCULATE(
+			        COUNTROWS('opportunity_scoring'),
+			        'opportunity_scoring'[is_won] = 1,
+			        'opportunity_scoring'[data_split] IN {"test", "validation"}
+			    )
+			) * 100
+		lineageTag: c098edc8-b576-4fe3-81c5-7bac6917f60c
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure PercLostAboveThreshold =
+			
+			VAR threshold = 0.5
+			RETURN
+			DIVIDE(
+			    CALCULATE(
+			        COUNTROWS('opportunity_scoring'),
+			        'opportunity_scoring'[is_won] = 0,
+			        'opportunity_scoring'[Probability Bins] >= threshold,
+			        'opportunity_scoring'[data_split] IN {"test", "validation"}
+			    ),
+			    CALCULATE(
+			        COUNTROWS('opportunity_scoring'),
+			        'opportunity_scoring'[is_won] = 0,
+			        'opportunity_scoring'[data_split] IN {"test", "validation"}
+			    )
+			) * 100
+		lineageTag: c9f07bdf-900a-4a68-8a5e-8c061fc0f52b
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure TP =
+			-- True Positive (actual = Won, predicted = Won)
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Won",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			)
+		formatString: 0
+		lineageTag: 22711943-9f6d-401c-9889-c855ee7efc43
+
+	measure TN =
+			-- True Negative (actual = Lost, predicted = Lost)
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Lost",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Lost (<0.5)"
+			)
+		formatString: 0
+		lineageTag: d6f61f98-8866-4437-ab89-12b3ab2cd3cf
+
+	measure FP =
+			-- False Positive (actual = Lost, predicted = Won)
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Lost",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			)
+		formatString: 0
+		lineageTag: fe2e1432-6ac5-454e-906c-657b1dcc895c
+
+	measure FN =
+			-- False Negative (actual = Won, predicted = Lost)
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Won",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Lost (<0.5)"
+			)
+		formatString: 0
+		lineageTag: b606c6ad-7efe-4726-b194-167dc2f55f9a
+
+	measure Accuracy =
+			
+			VAR TP = CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Won",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			)
+			VAR TN = CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Lost",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Lost (<0.5)"
+			)
+			VAR TOTAL = CALCULATE(DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]))
+			RETURN
+			DIVIDE(TP + TN, TOTAL)
+		lineageTag: 61ff6630-41c6-4a91-97bf-3113b0c5c737
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Precision =
+			
+			VAR TP = CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Won",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			)
+			VAR FP = CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    'opportunity_scoring'[Actual Won/Lost] = "Lost",
+			    'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			)
+			RETURN
+			DIVIDE(TP, TP + FP)
+		lineageTag: f1570afc-e195-4754-9de7-d0ec51fcc56f
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Recall = DIVIDE([TP_only], [TP_only] + [FN_only])
+		lineageTag: 17c5ca53-2182-48a3-8a0f-56e27efcd243
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure FN_only = ```
+			
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]), 
+			    FILTER(
+			        'opportunity_scoring', 
+			        'opportunity_scoring'[Actual Won/Lost] = "Won" 
+			        && 'opportunity_scoring'[Predicted Won/Lost] = "Predicted Lost (<0.5)"
+			    )
+			)
+			```
+		formatString: 0
+		lineageTag: d0aec525-03b4-46fe-a6b9-5b0184d70b3a
+
+	measure TP_only =
+			
+			CALCULATE(
+			    DISTINCTCOUNT('opportunity_scoring'[salesforce_opportunity_line_item_id]),
+			    FILTER(
+			        'opportunity_scoring',
+			        'opportunity_scoring'[Actual Won/Lost] = "Won"
+			            && 'opportunity_scoring'[Predicted Won/Lost] = "Predicted Won (>=0.5)"
+			    )
+			)
+		formatString: 0
+		lineageTag: ea434281-89ef-41ba-8912-0b2f2c8e5e70
+
+	column salesforce_opportunity_line_item_id
+		dataType: string
+		lineageTag: 650b914b-a3a9-4af9-8fb8-d1e3fe7031ed
+		summarizeBy: none
+		sourceColumn: salesforce_opportunity_line_item_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column owner_id
+		dataType: string
+		lineageTag: 73b757ad-d706-444b-a6a5-dd8d6f83e714
+		summarizeBy: none
+		sourceColumn: owner_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column account_id_18_char
+		dataType: string
+		lineageTag: 8bc81479-c0e9-4b47-bcae-fd1fa547258b
+		summarizeBy: none
+		sourceColumn: account_id_18_char
+
+		annotation SummarizationSetBy = Automatic
+
+	column product
+		dataType: string
+		lineageTag: 4033d53b-52a0-43d9-b77e-45e2c44995d4
+		summarizeBy: none
+		sourceColumn: product
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_group
+		dataType: string
+		lineageTag: 652170f2-5c14-413f-a413-079dfea33057
+		summarizeBy: none
+		sourceColumn: product_group
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_family
+		dataType: string
+		lineageTag: f494a39a-31b6-4a51-a682-ae1c25f786d9
+		summarizeBy: none
+		sourceColumn: product_family
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_market
+		dataType: string
+		lineageTag: e997b458-b123-43bf-8686-372cae7110a2
+		summarizeBy: none
+		sourceColumn: sales_market
+
+		annotation SummarizationSetBy = Automatic
+
+	column competitor
+		dataType: string
+		lineageTag: 7eb24ed5-a415-4f81-b9db-0412c10e89fa
+		summarizeBy: none
+		sourceColumn: competitor
+
+		annotation SummarizationSetBy = Automatic
+
+	column dnb_sic_description
+		dataType: string
+		lineageTag: 3c03dc4d-5d92-40e0-a45a-be19c5273509
+		summarizeBy: none
+		sourceColumn: dnb_sic_description
+
+		annotation SummarizationSetBy = Automatic
+
+	column dnb_naics_description
+		dataType: string
+		lineageTag: 2f0deea8-f851-4136-ae1f-d2ca06370d80
+		summarizeBy: none
+		sourceColumn: dnb_naics_description
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_mix
+		dataType: string
+		lineageTag: 0487616e-275f-4827-9cf9-45828fba6434
+		summarizeBy: none
+		sourceColumn: fuel_mix
+
+		annotation SummarizationSetBy = Automatic
+
+	column purchase_type
+		dataType: string
+		lineageTag: b66288d5-9434-44a9-ac2d-fb63ee1dbd9c
+		summarizeBy: none
+		sourceColumn: purchase_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column stage_name
+		dataType: string
+		lineageTag: f029ae37-569f-4a9b-bb01-541987ac63f3
+		summarizeBy: none
+		sourceColumn: stage_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column manager_comments
+		dataType: string
+		lineageTag: 5b03c713-f24e-4f15-b4a7-c563ce838c9d
+		summarizeBy: none
+		sourceColumn: manager_comments
+
+		annotation SummarizationSetBy = Automatic
+
+	column pipeline_entered_date
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: e0432ebc-bc47-4e5f-94a2-3d8eef2f9c8e
+		summarizeBy: none
+		sourceColumn: pipeline_entered_date
+
+		variation Variation
+			isDefault
+			relationship: fda9c6a5-5747-43c0-9035-0abc6adea3d4
+			defaultHierarchy: LocalDateTable_934ce44e-af6b-466c-bb17-5ca842e256e7.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column data_day
+		dataType: string
+		lineageTag: 5a9a73c5-e431-4d73-925a-358074b05a1a
+		summarizeBy: none
+		sourceColumn: data_day
+
+		annotation SummarizationSetBy = Automatic
+
+	column data_day_date
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: 8455d5e6-1549-49db-8e99-d03f4bd90321
+		summarizeBy: none
+		sourceColumn: data_day_date
+
+		variation Variation
+			isDefault
+			relationship: e545e7d0-882d-4372-b459-66f506455320
+			defaultHierarchy: LocalDateTable_7b13d0d8-d45f-4a59-b2ec-90746e58c5a6.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column close_date
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: 75b4eb8f-4f21-4a3f-8671-a4953c3940b2
+		summarizeBy: none
+		sourceColumn: close_date
+
+		variation Variation
+			isDefault
+			relationship: b9efe259-6166-406b-bc8b-1a58048e0f5d
+			defaultHierarchy: LocalDateTable_0fba607d-6bff-4e98-a708-67c53b688cc4.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column opportunity_age
+		dataType: double
+		lineageTag: d78aa893-0495-41fc-a638-917d945c136e
+		summarizeBy: sum
+		sourceColumn: opportunity_age
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column amount_towards_plan
+		dataType: double
+		formatString: #,0
+		lineageTag: aba261ea-0d35-45f5-b1e2-cc5cf8de7f07
+		summarizeBy: sum
+		sourceColumn: amount_towards_plan
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column purchase_type_new
+		dataType: int64
+		formatString: 0
+		lineageTag: 4b6cc229-fc96-4ba9-ba47-e6c2f124e9aa
+		summarizeBy: sum
+		sourceColumn: purchase_type_new
+
+		annotation SummarizationSetBy = Automatic
+
+	column total_partner_pipeline
+		dataType: double
+		lineageTag: d5ff5be1-b50e-482a-8c2a-49f7e7a11c0a
+		summarizeBy: sum
+		sourceColumn: total_partner_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_generated_pipeline
+		dataType: double
+		lineageTag: 4dbef7bb-1dd5-427d-a656-a67b07478e45
+		summarizeBy: sum
+		sourceColumn: marketing_generated_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column marketing_influenced_pipeline
+		dataType: double
+		lineageTag: b7230ce6-d2d0-4ec5-b82a-5da96d817df9
+		summarizeBy: sum
+		sourceColumn: marketing_influenced_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column has_competitor
+		dataType: int64
+		formatString: 0
+		lineageTag: 81f73555-b318-4534-9e3c-8cd0cdec0075
+		summarizeBy: sum
+		sourceColumn: has_competitor
+
+		annotation SummarizationSetBy = Automatic
+
+	column number_of_free_months
+		dataType: double
+		lineageTag: 9114c366-48a5-4828-8607-2bd35e60db08
+		summarizeBy: sum
+		sourceColumn: number_of_free_months
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column fuel_marketing
+		dataType: int64
+		formatString: 0
+		lineageTag: 4d4a0164-3129-43f2-9c63-ddf9e577e165
+		summarizeBy: sum
+		sourceColumn: fuel_marketing
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_partner
+		dataType: int64
+		formatString: 0
+		lineageTag: d33a1801-a0ff-4e5e-b0d7-c123aa953fc0
+		summarizeBy: sum
+		sourceColumn: fuel_partner
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_ae
+		dataType: int64
+		formatString: 0
+		lineageTag: eef0a4e8-e13e-4bcc-926b-a5a8375a18a0
+		summarizeBy: sum
+		sourceColumn: fuel_ae
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_bdr
+		dataType: int64
+		formatString: 0
+		lineageTag: d4bceed2-5b02-4206-9131-29fb7a210d0e
+		summarizeBy: sum
+		sourceColumn: fuel_bdr
+
+		annotation SummarizationSetBy = Automatic
+
+	column market_emea
+		dataType: int64
+		formatString: 0
+		lineageTag: 0b070476-70f1-4772-8b6e-fac8258eb27a
+		summarizeBy: sum
+		sourceColumn: market_emea
+
+		annotation SummarizationSetBy = Automatic
+
+	column market_na
+		dataType: int64
+		formatString: 0
+		lineageTag: 73ce7b2b-9520-47f8-8939-b7792f5008f1
+		summarizeBy: sum
+		sourceColumn: market_na
+
+		annotation SummarizationSetBy = Automatic
+
+	column market_latam
+		dataType: int64
+		formatString: 0
+		lineageTag: 7e0f02a1-c451-4082-a529-592a4091d45b
+		summarizeBy: sum
+		sourceColumn: market_latam
+
+		annotation SummarizationSetBy = Automatic
+
+	column ucaas
+		dataType: int64
+		formatString: 0
+		lineageTag: 5feb4c70-999c-4cf7-b85a-a9f5405de730
+		summarizeBy: sum
+		sourceColumn: ucaas
+
+		annotation SummarizationSetBy = Automatic
+
+	column itsg
+		dataType: int64
+		formatString: 0
+		lineageTag: 08b4b0fd-45f7-43c6-af7c-58a9f5e7d95a
+		summarizeBy: sum
+		sourceColumn: itsg
+
+		annotation SummarizationSetBy = Automatic
+
+	column comment_lenght
+		dataType: int64
+		formatString: 0
+		lineageTag: 1d8b6abd-be4c-4967-a89e-e256bfcac839
+		summarizeBy: sum
+		sourceColumn: comment_lenght
+
+		annotation SummarizationSetBy = Automatic
+
+	column industry_services
+		dataType: int64
+		formatString: 0
+		lineageTag: 55fceb0c-08d1-440f-b9a9-ccfd9b256556
+		summarizeBy: sum
+		sourceColumn: industry_services
+
+		annotation SummarizationSetBy = Automatic
+
+	column industry_education
+		dataType: int64
+		formatString: 0
+		lineageTag: a97d81cf-a6db-42d4-9198-a93423ef9be2
+		summarizeBy: sum
+		sourceColumn: industry_education
+
+		annotation SummarizationSetBy = Automatic
+
+	column industry_healthcare
+		dataType: int64
+		formatString: 0
+		lineageTag: 5a72fcad-eab2-4c71-a92d-424cc6ab3db9
+		summarizeBy: sum
+		sourceColumn: industry_healthcare
+
+		annotation SummarizationSetBy = Automatic
+
+	column industry_commerceandmanufacturing
+		dataType: int64
+		formatString: 0
+		lineageTag: 25144613-a1ba-43e1-b3e0-984d5e65a7ac
+		summarizeBy: sum
+		sourceColumn: industry_commerceandmanufacturing
+
+		annotation SummarizationSetBy = Automatic
+
+	column industry_techandfinance
+		dataType: int64
+		formatString: 0
+		lineageTag: 2b8d7280-f5c5-4b9f-a191-0c0ff4aed09c
+		summarizeBy: sum
+		sourceColumn: industry_techandfinance
+
+		annotation SummarizationSetBy = Automatic
+
+	column dials
+		dataType: double
+		lineageTag: d4ac4c19-b4ae-4b73-9d20-524fd0354319
+		summarizeBy: sum
+		sourceColumn: dials
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column touches
+		dataType: double
+		lineageTag: 16d12191-8ad1-48e2-b02c-e6438da5bfc9
+		summarizeBy: sum
+		sourceColumn: touches
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column push_counter
+		dataType: double
+		lineageTag: 0ad9a9b4-b1b1-4b34-a31a-b09f325e1404
+		summarizeBy: sum
+		sourceColumn: push_counter
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column stage_group
+		dataType: int64
+		formatString: 0
+		lineageTag: 0e4ab888-980a-4a6d-8679-82e7480e556b
+		summarizeBy: sum
+		sourceColumn: stage_group
+
+		annotation SummarizationSetBy = Automatic
+
+	column week_sin
+		dataType: double
+		lineageTag: fce36eea-0f14-4df2-b253-c04b3cbc5ebf
+		summarizeBy: sum
+		sourceColumn: week_sin
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column week_cos
+		dataType: double
+		lineageTag: 9b4f154f-f004-4601-ad57-2d92a87f4229
+		summarizeBy: sum
+		sourceColumn: week_cos
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column month_sin
+		dataType: double
+		lineageTag: 1dbf1ad7-525b-475a-8413-b30a8bda9b3b
+		summarizeBy: sum
+		sourceColumn: month_sin
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column month_cos
+		dataType: double
+		lineageTag: 2a1f1304-6e43-4914-8e33-41beecd6ff83
+		summarizeBy: sum
+		sourceColumn: month_cos
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column qoy_sin
+		dataType: double
+		lineageTag: d229a461-db4c-4386-9f72-f4c44d9bb9ba
+		summarizeBy: sum
+		sourceColumn: qoy_sin
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column qoy_cos
+		dataType: double
+		lineageTag: ad4f9b9e-fb88-42cc-a58b-4010f19b0336
+		summarizeBy: sum
+		sourceColumn: qoy_cos
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column moq_sin
+		dataType: double
+		lineageTag: e40a0a88-f650-46a2-a533-97e104bf3556
+		summarizeBy: sum
+		sourceColumn: moq_sin
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column moq_cos
+		dataType: double
+		lineageTag: 3303bb8f-d276-4777-ad56-bff1190b85b4
+		summarizeBy: sum
+		sourceColumn: moq_cos
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column week_of_quarter
+		dataType: int64
+		formatString: 0
+		lineageTag: 19cb07bf-dc93-4562-a66b-8405eca141bd
+		summarizeBy: sum
+		sourceColumn: week_of_quarter
+
+		annotation SummarizationSetBy = Automatic
+
+	column month_of_quarter
+		dataType: int64
+		formatString: 0
+		lineageTag: 801403cd-5710-4de4-a187-55ae6032b7c4
+		summarizeBy: sum
+		sourceColumn: month_of_quarter
+
+		annotation SummarizationSetBy = Automatic
+
+	column quarter_of_year
+		dataType: int64
+		formatString: 0
+		lineageTag: 4088eea0-7bf8-4980-818e-e0863b87962e
+		summarizeBy: sum
+		sourceColumn: quarter_of_year
+
+		annotation SummarizationSetBy = Automatic
+
+	column win_rate_per_rep
+		dataType: double
+		lineageTag: 4eae52e3-5766-49eb-9ca7-d281093cd2ff
+		summarizeBy: sum
+		sourceColumn: win_rate_per_rep
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column win_rate_per_product_market
+		dataType: double
+		lineageTag: a89136a0-914d-49e0-bb65-9497031e0dd8
+		summarizeBy: sum
+		sourceColumn: win_rate_per_product_market
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column win_rate_per_month
+		dataType: double
+		lineageTag: a4b63f26-42c9-4e05-9cbc-e451e12debfd
+		summarizeBy: sum
+		sourceColumn: win_rate_per_month
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column age_x_stage_group
+		dataType: double
+		lineageTag: 1b9622ef-d8ee-4c81-bd3c-b314426da1bc
+		summarizeBy: sum
+		sourceColumn: age_x_stage_group
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column win_rate_rep_x_pmgroup
+		dataType: double
+		lineageTag: 1e691877-7afc-4b3a-bd5d-ce96ba6c6b72
+		summarizeBy: sum
+		sourceColumn: win_rate_rep_x_pmgroup
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column push_x_stage
+		dataType: double
+		lineageTag: e9eed549-5ca6-4312-8cee-ee0252ce6561
+		summarizeBy: sum
+		sourceColumn: push_x_stage
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column new_x_partner
+		dataType: double
+		lineageTag: 6dcadb9b-41a0-4026-a66e-3e398815aa2f
+		summarizeBy: sum
+		sourceColumn: new_x_partner
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column existing_arr_by_product
+		dataType: double
+		lineageTag: 8cf91ec2-5079-460d-bb39-e23954a1e4f3
+		summarizeBy: sum
+		sourceColumn: existing_arr_by_product
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column existing_arr_total
+		dataType: double
+		lineageTag: 379dc1e1-3b14-4bfa-b19f-637ce146e94d
+		summarizeBy: sum
+		sourceColumn: existing_arr_total
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_deal_size_product
+		dataType: double
+		lineageTag: 25c46b85-d4f5-48b9-9488-1621eac77e47
+		summarizeBy: sum
+		sourceColumn: avg_deal_size_product
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_deal_size_market
+		dataType: double
+		lineageTag: beee7ff6-5542-4982-ab1e-e43dd9bfe410
+		summarizeBy: sum
+		sourceColumn: avg_deal_size_market
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_deal_size_rep
+		dataType: double
+		lineageTag: 102efdf8-b235-42c7-acd2-5b7fe814be68
+		summarizeBy: sum
+		sourceColumn: avg_deal_size_rep
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_deal_size_rpm
+		dataType: double
+		lineageTag: 9ec51aad-957c-4889-b429-61742b0fd169
+		summarizeBy: sum
+		sourceColumn: avg_deal_size_rpm
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column rep_x_market_dealsize
+		dataType: double
+		lineageTag: a7696773-fdc4-40b5-9948-17945f14c003
+		summarizeBy: sum
+		sourceColumn: rep_x_market_dealsize
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column product_x_market_dealsize
+		dataType: double
+		lineageTag: c65dfb76-02a7-4816-9280-9f70c343dfbe
+		summarizeBy: sum
+		sourceColumn: product_x_market_dealsize
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column product_x_rep_dealsize
+		dataType: double
+		lineageTag: f3a29cf6-9bd6-4f6c-be61-4d5df628f7f8
+		summarizeBy: sum
+		sourceColumn: product_x_rep_dealsize
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column deal_size_to_rep_avg
+		dataType: double
+		lineageTag: eaadfa3d-bfa3-49cd-90dd-8625719b9da0
+		summarizeBy: sum
+		sourceColumn: deal_size_to_rep_avg
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column deal_size_to_market_avg
+		dataType: double
+		lineageTag: e3881f31-7343-4277-bdad-227b4f56ce55
+		summarizeBy: sum
+		sourceColumn: deal_size_to_market_avg
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column prob_won
+		dataType: double
+		lineageTag: 67b16bff-8007-43ea-82ca-006f377b5827
+		summarizeBy: sum
+		sourceColumn: prob_won
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column is_won
+		dataType: int64
+		formatString: 0
+		lineageTag: ef84e9d5-a4df-40cf-b5af-02aa3a7e2721
+		summarizeBy: sum
+		sourceColumn: is_won
+
+		annotation SummarizationSetBy = Automatic
+
+	column data_split
+		dataType: string
+		lineageTag: 352cd522-435b-49ef-9288-075fa00af219
+		summarizeBy: none
+		sourceColumn: data_split
+
+		annotation SummarizationSetBy = Automatic
+
+	column SalesforceURL = "https://lmi.lightning.force.com/lightning/r/Account/" & [salesforce_opportunity_line_item_id] & "/view"
+		lineageTag: c185c8e9-cca5-4eef-9545-205517a24571
+		dataCategory: WebUrl
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Probability Bins' = SWITCH(TRUE(), 'opportunity_scoring'[prob_won]<0.1, 0.1, 'opportunity_scoring'[prob_won]<0.2, 0.2, 'opportunity_scoring'[prob_won]<0.3, 0.3, 'opportunity_scoring'[prob_won]<0.4, 0.4, 'opportunity_scoring'[prob_won]<0.5, 0.5, 'opportunity_scoring'[prob_won]<0.6, 0.6, 'opportunity_scoring'[prob_won]<0.7, 0.7, 'opportunity_scoring'[prob_won]<0.8, 0.8, 'opportunity_scoring'[prob_won]<0.9, 0.9, 1)
+		lineageTag: ce79a4a4-3b26-4b70-afbd-17c4e01f93c8
+		summarizeBy: none
+
+		changedProperty = SortByColumn
+
+		annotation SummarizationSetBy = User
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column deal_size_group
+		dataType: string
+		lineageTag: 21e4ac5d-91f5-44cc-8e21-e741486b0c83
+		summarizeBy: none
+		sourceColumn: deal_size_group
+
+		annotation SummarizationSetBy = Automatic
+
+	column opportunity_name
+		dataType: string
+		lineageTag: a8387a87-eabc-43ac-b98a-4c40913ac9c8
+		summarizeBy: none
+		sourceColumn: opportunity_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column owner_name
+		dataType: string
+		lineageTag: 90ffd507-b9f1-444c-80d1-30bec5cc9cd8
+		summarizeBy: none
+		sourceColumn: owner_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_id
+		dataType: string
+		lineageTag: a4b06293-6bb4-4f1b-b2bf-ebdae5a98a57
+		summarizeBy: none
+		sourceColumn: pe_account_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_flag
+		dataType: string
+		lineageTag: 26227d11-3b2b-4ba9-aa52-990bea74ce4b
+		summarizeBy: none
+		sourceColumn: pe_account_flag
+
+		annotation SummarizationSetBy = Automatic
+
+	column pe_account_name
+		dataType: string
+		lineageTag: 15511edb-a8a6-4315-a618-0ec5eef80ce6
+		summarizeBy: none
+		sourceColumn: pe_account_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column TotalClass =
+			
+			CALCULATE(
+			    COUNTROWS('opportunity_scoring'),
+			    ALLEXCEPT('opportunity_scoring', 'opportunity_scoring'[data_split], 'opportunity_scoring'[Actual Won/Lost])
+			)
+		formatString: 0
+		lineageTag: ee5d0828-df2b-43af-8ed8-ef9ae47e150b
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column PercInBin =
+			
+			VAR Denominator =
+			    CALCULATE(
+			        COUNTROWS('opportunity_scoring'),
+			        REMOVEFILTERS('opportunity_scoring'[Probability Bins])
+			    )
+			RETURN
+			DIVIDE(
+			    COUNTROWS('opportunity_scoring'),
+			    Denominator
+			) * 100
+		lineageTag: f862d16e-9c22-4ed9-a7dc-176bcc8633b9
+		summarizeBy: none
+
+		annotation SummarizationSetBy = User
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column TotalClassRows =
+			
+			CALCULATE(
+			    COUNTROWS('opportunity_scoring'),
+			    REMOVEFILTERS('opportunity_scoring'[Probability Bins]),
+			    FILTER(
+			        'opportunity_scoring',
+			        'opportunity_scoring'[data_split] IN {"test", "validation"}
+			    )
+			)
+		formatString: 0
+		lineageTag: 8a6bf78a-4e7d-4fa7-9b25-42ec5db79478
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Actual Won/Lost' = IF('opportunity_scoring'[is_won] = 1, "Won", "Lost")
+		lineageTag: 7938aab9-8e97-4375-8674-128d72ea2d9d
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	column Threshold = 0.5
+		lineageTag: 31b33e3f-3170-4831-bb03-3f361020af15
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Predicted Probability Bin' =
+			
+			SWITCH (
+			    TRUE(),
+			    'opportunity_scoring'[prob_won] < 0.1,  "0.0-0.1",
+			    'opportunity_scoring'[prob_won] < 0.2,  "0.1-0.2",
+			    'opportunity_scoring'[prob_won] < 0.3,  "0.2-0.3",
+			    'opportunity_scoring'[prob_won] < 0.4,  "0.3-0.4",
+			    'opportunity_scoring'[prob_won] < 0.5,  "0.4-0.5",
+			    'opportunity_scoring'[prob_won] < 0.6,  "0.5-0.6",
+			    'opportunity_scoring'[prob_won] < 0.7,  "0.6-0.7",
+			    'opportunity_scoring'[prob_won] < 0.8,  "0.7-0.8",
+			    'opportunity_scoring'[prob_won] < 0.9,  "0.8-0.9",
+			    'opportunity_scoring'[prob_won] <= 1,   "0.9-1.0",
+			    BLANK()
+			)
+		lineageTag: a4740905-27b4-4597-b490-a75cf97ca744
+		summarizeBy: none
+		sortByColumn: 'Probability Bins'
+
+		changedProperty = SortByColumn
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Predicted Won/Lost' =
+			
+			IF(
+			    'opportunity_scoring'[prob_won] < 0.5,
+			    "Predicted Lost (<0.5)",
+			    "Predicted Won (>=0.5)"
+			)
+		lineageTag: 6f571cd8-1d93-4c93-9e05-1591ee1b8592
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition opportunity_scoring = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("goto-mdl-marketing-ds.cloud.databricks.com", "sql/protocolv1/o/243252463991105/0304-101749-yej2r68y", [Catalog=null, Database=null, EnableAutomaticProxyDiscovery=null]),
+				    hive_metastore_Database = Source{[Name="hive_metastore",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = hive_metastore_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    opportunity_scoring_Table = mdl_sales_analytics_Schema{[Name="opportunity_scoring",Kind="Table"]}[Data]
+				in
+				    opportunity_scoring_Table
+

@@ -1,0 +1,54 @@
+table 'Acronis KPIs'
+	lineageTag: 84697573-01b6-4a89-8f03-7504457d9978
+
+	column Parameter
+		lineageTag: 0f6d7d21-fbaa-49d0-8948-6d508513f1e3
+		summarizeBy: none
+		sourceColumn: [Value1]
+		sortByColumn: 'Parameter Order'
+
+		relatedColumnDetails
+			groupByColumn: 'Parameter Fields'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Parameter Fields'
+		isHidden
+		lineageTag: 747cefd7-ad9f-4b2e-b79e-0b0473e2b3fd
+		summarizeBy: none
+		sourceColumn: [Value2]
+		sortByColumn: 'Parameter Order'
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 3,
+				  "kind": 2
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Parameter Order'
+		isHidden
+		formatString: 0
+		lineageTag: 6f450832-c739-441d-a7fa-0780dec01f2b
+		summarizeBy: sum
+		sourceColumn: [Value3]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Acronis KPIs' = calculated
+		mode: import
+		source =
+				{
+				    ("Won ARR", NAMEOF('gaim_pipeline_daily_snapshot'[Acronis_Won_Pipeline]), 0),
+				    ("Won Volume", NAMEOF('gaim_pipeline_daily_snapshot'[Acronis_Won_Volume]), 1),
+				    ("ADS", NAMEOF('gaim_pipeline_daily_snapshot'[Acronis_xADS_Won_mdl]), 2),
+				    ("Attach Rate %", NAMEOF('gaim_pipeline_daily_snapshot'[Acronis_Attach_Rate]), 3),
+				    ("Created Pipeline", NAMEOF('gaim_snapshot_pipeline_created_cq_daily'[Acronis_xCreated_Pipeline]), 4),
+				    ("Created Volume", NAMEOF('gaim_snapshot_pipeline_created_cq_daily'[Acronis_x_OppsCreated_mdl]), 5),
+				    ("AOS", NAMEOF('gaim_snapshot_pipeline_created_cq_daily'[Acronis Pipeline Opp Size]), 6),
+				    ("Close Rate %", NAMEOF([Acronis_close_rate_vol]), 7)
+				}
+
+	annotation PBI_Id = a79012e88cc3462ebba53bacea2067dc
+

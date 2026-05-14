@@ -1,0 +1,539 @@
+table gaim_partner_sales_targets_cy_daily
+	lineageTag: 8584903b-d288-417d-a9d6-d7336aa191c3
+
+	measure Daily_Plan$_FY = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_acv_generated_target]),gaim_partner_sales_targets_cy_daily[plan_version] = "FY"),"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: d9d40b34-b13c-4046-b0f9-666b7dff9a0d
+
+	measure Daily_Plan$_Plan = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_acv_generated_target]),gaim_partner_sales_targets_cy_daily[plan_version] = "Plan"),"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 9069ffb9-7d87-4f8a-b966-f4a7adcade6c
+
+	measure Daily_Plan$ =
+			
+			IF (
+			    HASONEVALUE ( Targets[Column1]),
+			    SWITCH (
+			        VALUES ( Targets[Column1]),
+			        "F10", [Daily_Plan$_FY],
+			        "Plan", [Daily_Plan$_Plan],
+			    [Daily_Plan$_FY])
+			)
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: d6606d44-14bd-4770-af45-14f08eb40bff
+
+	measure xWon/Fuelplan_mdl_orginal = [Won_Pipeline]/[Daily_Plan$]
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 8680c288-6469-437d-a523-118575681005
+
+	measure xWon/FuelPlan__mdl = iferror(if([xWon/Fuelplan_mdl_orginal]>10,10,[xWon/Fuelplan_mdl_orginal]),"")
+		formatString: 0%;-0%;0%
+		lineageTag: 2a780971-de93-46ff-a685-875acbb40dd0
+
+	measure xWon-TgtPR_mdl = iferror([Won_Pipeline] - [Daily_Plan$],"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: ef4878b7-3abc-4af0-9919-8909158faa15
+
+	measure xdealswonvol/target__mdl = iferror(if([Won_Volume]/[Daily_Target_WonVol]>10,10,[Won_Volume]/[Daily_Target_WonVol]),"")
+		formatString: 0%;-0%;0%
+		lineageTag: b91a8b81-f99b-4ef7-ad8c-ff03cb67ac57
+
+	measure xADS_Attain_mdl_diff = iferror([ADS] - [Daily_Target_ADS],"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 31af26b3-65ff-4e04-8666-27ebcd18d088
+
+	measure Daily_Target_Pipeline_FY = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_pipeline]),gaim_partner_sales_targets_cy_daily[plan_version]="FY"),"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 1b67f2db-29a9-4e04-b1f6-f8a1dab51e10
+
+	measure Daily_Target_Pipeline_Plan = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_pipeline]),gaim_partner_sales_targets_cy_daily[plan_version]="Plan"),"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 1f8bc8a2-3407-4735-9a2a-31dbb116b0de
+
+	measure Daily_Target_Pipeline =
+			IF (
+			    HASONEVALUE ( Targets[Column1]),
+			    SWITCH (
+			        VALUES ( Targets[Column1]),
+			        "F10", [Daily_Target_Pipeline_FY],
+			        "Plan", [Daily_Target_Pipeline_Plan],
+			    [Daily_Target_Pipeline_FY])
+			)
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 3d72ac2e-9f80-485c-bcb0-2fd44cb2dfdf
+
+	measure xtgt_PipeCreate_attain_mdl = IFERROR((if([xCreated_Pipeline]/[Daily_Target_Pipeline]>10,10,[xCreated_Pipeline]/[Daily_Target_Pipeline])),1)
+		formatString: 0%;-0%;0%
+		lineageTag: 818ae619-d623-4b9f-b4d2-cffaaaaba85e
+
+	measure Daily_Target_Pipevol_FY = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_num_pipe_opps]),gaim_partner_sales_targets_cy_daily[plan_version]="FY"),"")
+		formatString: #,0
+		lineageTag: daeee956-d5d4-4958-8341-39bbf047964b
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure Daily_Target_Pipevol_Plan = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_num_pipe_opps]),gaim_partner_sales_targets_cy_daily[plan_version]="Plan"),"")
+		formatString: #,0
+		lineageTag: 61c25bf6-ca2d-44d0-927f-40f505ab1559
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure Daily_Target_Pipevol =
+			IF (
+			    HASONEVALUE ( Targets[Column1]),
+			    SWITCH (
+			        VALUES ( Targets[Column1]),
+			        "F10", [Daily_Target_Pipevol_FY],
+			        "Plan", [Daily_Target_Pipevol_Plan],
+			    [Daily_Target_Pipevol_FY])
+			)
+		formatString: #,0
+		lineageTag: 0838b788-d6d7-4c87-8f9f-23421f07b3ba
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure xcreatedvol/target__mdl = iferror(if([x_OppsCreated_mdl]/[Daily_Target_Pipevol]>10,10,[x_OppsCreated_mdl]/[Daily_Target_Pipevol]),"")
+		formatString: 0%;-0%;0%
+		lineageTag: 1af921ac-918e-4821-96ad-878df47b1215
+
+	measure Daily_Target_CRVol = iferror([Daily_Target_WonVol]/[Daily_Target_Pipevol],0)
+		formatString: 0%;-0%;0%
+		lineageTag: 90e9291b-96e8-4847-8916-d798b4b6e498
+
+	measure xCR_Attain_mdl_delta = iferror([close_rate_vol] -[Daily_Target_CRVol],"")
+		formatString: 0%;-0%;0%
+		lineageTag: 44cd2414-8ef9-47d4-a86a-cadb806c7a3a
+
+	measure Daily_Target_WonVol =
+			
+			IF (
+			    HASONEVALUE ( Targets[Column1]),
+			    SWITCH (
+			        VALUES ( Targets[Column1]),
+			        "F10", [Daily_Target_WonVol_FY],
+			        "Plan", [Daily_Target_WonVol_Plan],
+			    [Daily_Target_WonVol_FY])
+			)
+		formatString: #,0
+		lineageTag: f6118ba3-f549-403c-b2ff-671c57bb657a
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure Daily_Target_ADS = iferror([Daily_Plan$]/[Daily_Target_WonVol],"")
+		formatString: \$#,0;(\$#,0);\$#,0
+		lineageTag: 4ec21753-6ecf-4509-bc2b-595e522edb18
+
+	measure Daily_Target_WonVol_FY = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_num_won_opps]),gaim_partner_sales_targets_cy_daily[plan_version]="FY"),"")
+		formatString: #,0
+		lineageTag: c5cab35a-4e3e-4828-8d0d-f20cc6e9b2b1
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	measure Daily_Target_WonVol_Plan = iferror(CALCULATE(SUM(gaim_partner_sales_targets_cy_daily[daily_num_won_opps]),gaim_partner_sales_targets_cy_daily[plan_version]="Plan"),"")
+		formatString: #,0
+		lineageTag: 8d818412-3e88-4a66-826d-d2307ddca736
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column category
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 89d03472-9386-47ef-a3a9-31151690c8fb
+		summarizeBy: none
+		sourceColumn: category
+
+		annotation SummarizationSetBy = Automatic
+
+	column purchase_type_rollup
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: fc79f904-f44c-4df5-a82b-b5e7278c3b11
+		summarizeBy: none
+		sourceColumn: purchase_type_rollup
+
+		annotation SummarizationSetBy = Automatic
+
+	column revenue_type
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 1d0f2ccb-5e5c-4b18-a691-bacc7ea51b48
+		summarizeBy: none
+		sourceColumn: revenue_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_region
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 4ec6e1f1-18d0-4dae-9616-df2e6862157d
+		summarizeBy: none
+		sourceColumn: sales_region
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_market
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 0a6170bc-78f7-46e7-8871-e072ab555e44
+		summarizeBy: none
+		sourceColumn: sales_market
+
+		annotation SummarizationSetBy = Automatic
+
+	column submarket
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 35e9857c-c279-40e1-bba1-bc815f412caf
+		summarizeBy: none
+		sourceColumn: submarket
+
+		annotation SummarizationSetBy = Automatic
+
+	column sales_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: b3e6a3d2-e444-4309-9a70-b10014bf25b0
+		summarizeBy: none
+		sourceColumn: sales_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column product
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: ec1edbbd-7876-4604-a019-524093e1fb3a
+		summarizeBy: none
+		sourceColumn: product
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_group
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: e04cbca3-dd3f-4d9f-b549-8d964f45be67
+		summarizeBy: none
+		sourceColumn: product_group
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_family
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 410615ae-d49a-474b-adc4-20ac4eb6c3fc
+		summarizeBy: none
+		sourceColumn: product_family
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_genus
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: d1d8792c-bbad-41de-899c-92560309ff2c
+		summarizeBy: none
+		sourceColumn: product_genus
+
+		annotation SummarizationSetBy = Automatic
+
+	column month
+		dataType: int64
+		formatString: 0
+		sourceProviderType: int
+		lineageTag: 83b23341-e325-4f9a-a0e9-367d929d9cc9
+		summarizeBy: sum
+		sourceColumn: month
+
+		annotation SummarizationSetBy = Automatic
+
+	column quarter
+		dataType: int64
+		formatString: 0
+		sourceProviderType: int
+		lineageTag: abfb1553-5912-44f3-a5e4-7ad839c61398
+		summarizeBy: sum
+		sourceColumn: quarter
+
+		annotation SummarizationSetBy = Automatic
+
+	column target_date
+		dataType: dateTime
+		formatString: Long Date
+		sourceProviderType: date
+		lineageTag: a62e9354-4f52-49cb-a51c-7f8842516843
+		summarizeBy: none
+		sourceColumn: target_date
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column purchase_type
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 08998a0a-7357-4ab4-8740-be9aa388382c
+		summarizeBy: none
+		sourceColumn: purchase_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column fuel_mix
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 0a9ee370-376e-46d4-b26b-8f3fe75e14a4
+		summarizeBy: none
+		sourceColumn: fuel_mix
+
+		annotation SummarizationSetBy = Automatic
+
+	column 2digmo_target
+		dataType: int64
+		formatString: 0
+		sourceProviderType: int
+		lineageTag: 146b5c5e-4966-41f1-94de-0a3e9de4ffa1
+		summarizeBy: sum
+		sourceColumn: 2digmo_target
+
+		annotation SummarizationSetBy = Automatic
+
+	column datetext
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: c8f346a9-df4c-4114-b40b-8a0b9c47b756
+		summarizeBy: none
+		sourceColumn: datetext
+
+		annotation SummarizationSetBy = Automatic
+
+	column geo
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 4693e1f4-4992-4c54-8092-23c6adab8d0b
+		summarizeBy: none
+		sourceColumn: geo
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_family_nbr
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 5d1e50ee-c10e-4af7-bd8b-e4b9b766fd32
+		summarizeBy: none
+		sourceColumn: product_family_nbr
+
+		annotation SummarizationSetBy = Automatic
+
+	column product_lob
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: ac709c20-1ff8-4d76-9a4f-be3ee5e54351
+		summarizeBy: none
+		sourceColumn: product_lob
+
+		annotation SummarizationSetBy = Automatic
+
+	column xgenusmajor_t
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: ec66ba3a-b4fa-449e-be58-bd60f1ec4ea4
+		summarizeBy: none
+		sourceColumn: xgenusmajor_t
+
+		annotation SummarizationSetBy = Automatic
+
+	column xhub_key_slicer
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 3c5e876c-8ebd-46e2-99cc-b7162ca83a5c
+		summarizeBy: none
+		sourceColumn: xhub_key_slicer
+
+		annotation SummarizationSetBy = Automatic
+
+	column xsaleschannelmatchgrp
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: ca339e54-dd7e-42a0-8b85-49d3952c1a23
+		summarizeBy: none
+		sourceColumn: xsaleschannelmatchgrp
+
+		annotation SummarizationSetBy = Automatic
+
+	column xkey_ss
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: 0ea25ffd-3cff-43d4-9e91-ce9219d61293
+		summarizeBy: none
+		sourceColumn: xkey_ss
+
+		annotation SummarizationSetBy = Automatic
+
+	column daily_pipeline
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 9ab0a1b7-7d52-4d6a-8b1d-14cd3bb85615
+		summarizeBy: sum
+		sourceColumn: daily_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column daily_acv_generated_target
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 30298908-078b-4b07-be1c-72db6234dd2a
+		summarizeBy: sum
+		sourceColumn: daily_acv_generated_target
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column pipeline
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 54430a79-6625-4c9f-89a4-102446141b76
+		summarizeBy: sum
+		sourceColumn: pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column acv_generated_target
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 5641ff12-cf86-46c2-a6cf-7e231f7d8763
+		summarizeBy: sum
+		sourceColumn: acv_generated_target
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column daily_num_pipe_opps
+		dataType: double
+		sourceProviderType: double
+		lineageTag: d1464398-b7a7-4b6a-ab2f-64b026c9d952
+		summarizeBy: sum
+		sourceColumn: daily_num_pipe_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column daily_num_won_opps
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 06b2c8c3-3688-49d3-b359-d6013de7bd61
+		summarizeBy: sum
+		sourceColumn: daily_num_won_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column smoothed_daily_pipeline
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 295e7472-c7d6-441a-a0ed-ac16aff1b8dd
+		summarizeBy: sum
+		sourceColumn: smoothed_daily_pipeline
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column smoothed_daily_acv_generated_target
+		dataType: double
+		sourceProviderType: double
+		lineageTag: 30d55dff-6ae2-4053-b53d-0e3be2ecc4df
+		summarizeBy: sum
+		sourceColumn: smoothed_daily_acv_generated_target
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column smoothed_daily_num_pipe_opps
+		dataType: double
+		sourceProviderType: double
+		lineageTag: eea55412-70e3-48bc-bdd5-1a2ed1552010
+		summarizeBy: sum
+		sourceColumn: smoothed_daily_num_pipe_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column smoothed_daily_num_won_opps
+		dataType: double
+		sourceProviderType: double
+		lineageTag: c30189b3-d3fe-41d6-b572-bbeca1e432f8
+		summarizeBy: sum
+		sourceColumn: smoothed_daily_num_won_opps
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column year
+		dataType: int64
+		formatString: 0
+		sourceProviderType: int
+		lineageTag: 5f061dd1-25d5-4c0d-96f3-3d4cc234b74b
+		summarizeBy: sum
+		sourceColumn: year
+
+		annotation SummarizationSetBy = Automatic
+
+	column smoothed_channel
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: c0fa9e57-bb3a-4842-8213-e8d08aad6be1
+		summarizeBy: none
+		sourceColumn: smoothed_channel
+
+		annotation SummarizationSetBy = Automatic
+
+	column plan_version
+		dataType: string
+		sourceProviderType: nvarchar(65535)
+		lineageTag: b7135166-ce1c-4ab3-83ab-819af819af45
+		summarizeBy: none
+		sourceColumn: plan_version
+
+		annotation SummarizationSetBy = Automatic
+
+	column daily_lead_target
+		dataType: double
+		sourceProviderType: double
+		lineageTag: a4af98e3-f6f3-43fd-aeec-a45df38becbe
+		summarizeBy: sum
+		sourceColumn: daily_lead_target
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column product_major = if(gaim_partner_sales_targets_cy_daily[product_genus] = "Rescue","Rescue",if(gaim_partner_sales_targets_cy_daily[product_genus]="GoTo Resolve","Resolve",if(gaim_partner_sales_targets_cy_daily[product_group]="ITSG","RITSG",if(gaim_partner_sales_targets_cy_daily[product_genus]="GoToWebinar","GoToWebinar",if(gaim_partner_sales_targets_cy_daily[product_genus]="GoToConnect","GTC",if(gaim_partner_sales_targets_cy_daily[product_family]="UCaaS","RUCaaS",if(gaim_partner_sales_targets_cy_daily[product_family]="Core Collab","RUCollab",gaim_partner_sales_targets_cy_daily[product_group])))))))
+		lineageTag: 8ec4cfa3-29b2-49ea-9676-a7a5862ea5e0
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition gaim_partner_sales_targets_cy_daily = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("goto-data-dock.cloud.databricks.com", "/sql/1.0/warehouses/c24ee33594e13e93", [Catalog = "", Database = ""]),
+				    datagroup_mdl_Database = Source{[Name="datagroup_mdl",Kind="Database"]}[Data],
+				    mdl_sales_analytics_Schema = datagroup_mdl_Database{[Name="mdl_sales_analytics",Kind="Schema"]}[Data],
+				    gaim_partner_sales_targets_cy_daily_Table = mdl_sales_analytics_Schema{[Name="gaim_partner_sales_targets_cy_daily",Kind="Table"]}[Data],
+				    #"Removed Columns" = Table.RemoveColumns(gaim_partner_sales_targets_cy_daily_Table,{"xoi", "xoo", "channel_group"})
+				in
+				    #"Removed Columns"
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

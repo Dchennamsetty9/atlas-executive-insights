@@ -1,0 +1,35 @@
+table SelfServeSwitch
+	lineageTag: 073346df-95be-4b37-bac9-a490f2987422
+
+	column Value
+		formatString: 0
+		lineageTag: dd225f29-7250-4b55-88e8-f85cd95b03cf
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: [Value]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Label
+		lineageTag: a19cf2ac-93c0-4c8b-946d-9466284d923e
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Label]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition SelfServeSwitch = calculated
+		mode: import
+		source =
+				
+				DATATABLE (
+				    "Value", INTEGER,
+				    "Label", STRING,
+				    {
+				        { 0, "Baseline" },
+				        { 1, "Adjusted" }
+				    }
+				)
+
+	annotation PBI_Id = 85d64a1fe8334f0da8c85f4a7795646e
+

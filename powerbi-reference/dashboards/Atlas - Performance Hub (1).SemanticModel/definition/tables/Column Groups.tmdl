@@ -1,0 +1,39 @@
+table 'Column Groups'
+	lineageTag: ec5421d1-82ad-456c-8c06-0290f1ce32b6
+
+	column 'Col Name'
+		dataType: string
+		lineageTag: 1456f3b2-685e-43ae-bce2-9244b7b9af27
+		summarizeBy: none
+		sourceColumn: Col Name
+
+		annotation SummarizationSetBy = Automatic
+
+	column Index
+		dataType: int64
+		formatString: 0
+		lineageTag: 0e45ad0c-de8c-4b56-a10e-4bfbeb858ded
+		summarizeBy: sum
+		sourceColumn: Index
+
+		annotation SummarizationSetBy = Automatic
+
+	column Group
+		dataType: string
+		lineageTag: befd351c-b619-404e-b78a-80f7a58f059f
+		summarizeBy: none
+		sourceColumn: Group
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Column Groups' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("jZNfT4MwFMW/SkN8nNkK7t/jxMwYH2SOOJNlIc24I8TSErjM+e1tocxFVvSB9KG/c+7J7WG7dU4bKYI0hyiLuTNwqPrupfxIRVI6u8HWWQOHPUJMAs4EuVHX7m9EWwyXFXCNGB/vGnQbPmLwaoi7DvGS5/jlC4wUaqBxfxwFkjepwUnHLQbGy08pjpIPkRUJoPGcdtDFw/pi5qy+R5QZWVZCACfPwZMhwwQjTTfkvIfU1AKRpbVtFKeHg17vqEfit6uh9I8IP6Tb73eZADgyLfHskvdFGPittX6gUOYd6PwEfgFMn2G93bobdGwRnVDF1j1rRBE7B9OqiU0VqU6U7aCWnv4vmGkGndnM941tpyB0bhvAMmjNmVBzuGQlkFXFCoSi+TlGvVouSyNtXFbEl5VALaS2mGFgcrmuDfGPSct415jdNw==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Col Name" = _t, Index = _t, Group = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Col Name", type text}, {"Index", Int64.Type}, {"Group", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

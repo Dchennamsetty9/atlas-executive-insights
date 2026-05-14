@@ -1,0 +1,58 @@
+table 'View Selection'
+	lineageTag: cbae2df1-b37d-4dcf-a5a8-d6bc634c7308
+
+	column 'View Selection'
+		lineageTag: 9d6a0979-f628-4206-a502-df156e75cad9
+		summarizeBy: none
+		sourceColumn: [Value1]
+		sortByColumn: 'View Selection Order'
+
+		relatedColumnDetails
+			groupByColumn: 'View Selection Fields'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'View Selection Fields'
+		isHidden
+		lineageTag: 1641445f-d5a0-4999-a844-938a1cbd6798
+		summarizeBy: none
+		sourceColumn: [Value2]
+		sortByColumn: 'View Selection Order'
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 3,
+				  "kind": 2
+				}
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'View Selection Order'
+		isHidden
+		formatString: 0
+		lineageTag: 63c52ff6-8600-4b59-84fd-187ebdd2dbdf
+		summarizeBy: sum
+		sourceColumn: [Value3]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'View Selection' = calculated
+		mode: import
+		source = ```
+				{
+				    
+				    ("Fuel Source", NAMEOF('Filter - Fuel Mix'[Fuel Source]), 1),
+				    ("Geo", NAMEOF('Filter - Geo'[Geo]), 2),
+				    ("Business Unit", NAMEOF('Filter - Product'[Business_Unit]), 3),
+				    ("Product Group", NAMEOF('Filter - Product'[Product_Group]), 4),
+				    ("Product Family", NAMEOF('Filter - Product'[Product_Family]), 5),
+				    ("Product Major", NAMEOF('Filter - Product'[product_major]), 6),
+				    ("Product Genus", NAMEOF('Filter - Product'[Product_Genus]), 7),
+				    ("Purchase Type", NAMEOF('Filter - Purchase Type'[Purchase_type]), 8),
+				    ("Channel", NAMEOF(gaim_partner_sales_targets_cy_daily[smoothed_channel]), 9),
+				    ("Deal Band", NAMEOF('Filter - Deal Bands'[Deal Bands1]), 10)
+				}
+				```
+
+	annotation PBI_Id = 070f19077a9e400da2e36520808901c9
+

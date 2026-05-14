@@ -1,0 +1,31 @@
+table 'Filter - Channel'
+	lineageTag: 2b70e9be-00f4-471e-a2cb-715b4416e5fd
+
+	column Channels
+		dataType: string
+		lineageTag: 42a64bb2-0a70-4e5d-af43-34fdf2b9fdb2
+		summarizeBy: none
+		sourceColumn: Channels
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Smoothed Channel' = if('Filter - Channel'[Channels] = "Strategic","Enterprise",'Filter - Channel'[Channels])
+		lineageTag: 64bacb83-0fc7-4933-bc6c-30023da49f42
+		summarizeBy: none
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Channel' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("XY7BDoIwEER/ZdOzfkRFNJo0EnokHFbYQCMUs7v9f0nLydPMm9lkp+uM6U+dqZApmzoq8ZeDFLz7R1YXxrND/pAW9E3WBlkjcfZt4102HhcSeOl8FH7FZYFLkhBJpETKqDSFIZMdhi1FBYcRJ1oplidVhejB1gVmVLAiQUp5OxZc94DDOymN8Ld9P4Fna/r+Bw==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Channnels = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Channnels", type text}}),
+				    #"Renamed Columns" = Table.RenameColumns(#"Changed Type",{{"Channnels", "Channels"}})
+				in
+				    #"Renamed Columns"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation
+

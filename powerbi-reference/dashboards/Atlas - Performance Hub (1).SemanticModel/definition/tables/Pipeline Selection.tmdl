@@ -1,0 +1,22 @@
+table 'Pipeline Selection'
+	lineageTag: d2374192-b7f1-4b24-ba82-3baff1c563f9
+
+	column Column1
+		dataType: string
+		lineageTag: 1eaf6701-f31a-4f69-96dd-b4799e073cec
+		summarizeBy: none
+		sourceColumn: Column1
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Pipeline Selection' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45WCs/PU4rViVZyLkpNLElNAbP9C1KBgrEA", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Column1 = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Column1", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,51 @@
+table 'Refresh Week'
+	lineageTag: 7d5c8c8d-6c22-4099-a194-511092ee4c9c
+
+	column Date
+		formatString: General Date
+		lineageTag: d4b21baf-a83b-464d-868c-cb487d2becb6
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Date]
+
+		variation Variation
+			isDefault
+			relationship: 0f774963-f95d-4d84-9443-de3d0619eb60
+			defaultHierarchy: LocalDateTable_1bbf1f0e-eb2a-4ca0-938a-6806f55ec475.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Week Start date' = 'Refresh Week'[Date]+-1*WEEKDAY('Refresh Week'[Date],2)+1
+		formatString: General Date
+		lineageTag: dbf0e37e-20fa-4d21-a9ea-3ebee53c5c5e
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 625e9489-fcfc-4428-8a0b-c5d73cfc3c69
+			defaultHierarchy: LocalDateTable_3eb97dc2-aa9b-4b73-aa41-0c145b9fa7ba.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+	column Data_as_of = 'Refresh Week'[Week Start date].[Date]
+		formatString: d mmmm
+		lineageTag: 468dde39-4fab-415e-801e-734e22684619
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: a113ea92-337c-4b0c-8fa6-12a7e3de185b
+			defaultHierarchy: LocalDateTable_f1432c79-49b0-4e3a-8c6b-ad4543e3fa26.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	partition 'Refresh Week' = calculated
+		mode: import
+		source = CALENDAR(TODAY(), TODAY())
+
+	annotation PBI_Id = 6bd5508da95f45238d33d4131b76d57c
+

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "SemanticModel",
+    "displayName": "ARR Forecast"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "b8a2b6ab-cc14-4039-9804-c83bd74ddbff"
+  }
+}

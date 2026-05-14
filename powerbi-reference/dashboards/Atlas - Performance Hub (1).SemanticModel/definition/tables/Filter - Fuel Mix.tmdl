@@ -1,0 +1,40 @@
+table 'Filter - Fuel Mix'
+	lineageTag: 279e1ba7-8334-42c9-8385-091b7ee224f2
+
+	column 'Fuel Mix'
+		dataType: string
+		lineageTag: b18a037b-3a00-4fb8-80c9-cdcaa45a6e12
+		summarizeBy: none
+		sourceColumn: Fuel Mix
+
+		annotation SummarizationSetBy = Automatic
+
+	column Horsemen
+		dataType: string
+		lineageTag: 3ebec20f-6a4a-4a0d-acbe-b1c64edea71f
+		summarizeBy: none
+		sourceColumn: Horsemen
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Fuel Source'
+		dataType: string
+		lineageTag: d6da3922-30f3-49a2-8a76-f408c785e327
+		summarizeBy: none
+		sourceColumn: Fuel Source
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Fuel Mix' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45W8k0syk4tycxLV9LBwY7ViVYKSCwqyUstAopjskDycNUK5ZklGQqElDu6AgWCE3NSi4E0kAMSc3IJQhIE8WJjAQ==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Fuel Mix" = _t, Horsemen = _t, #"Fuel Source" = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Fuel Mix", type text}, {"Horsemen", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation
+

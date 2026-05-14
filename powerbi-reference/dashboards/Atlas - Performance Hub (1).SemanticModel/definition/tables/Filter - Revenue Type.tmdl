@@ -1,0 +1,22 @@
+table 'Filter - Revenue Type'
+	lineageTag: 5da7aede-be67-4517-9da7-5c8d6426d415
+
+	column Rev_type
+		dataType: string
+		lineageTag: df1be9b8-47ff-4742-bcc8-d9421b82b766
+		summarizeBy: none
+		sourceColumn: Rev_type
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Revenue Type' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45W8svP0w1KTS4tKsrMS1eK1YlWQuLFAgA=", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Rev_type = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Rev_type", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

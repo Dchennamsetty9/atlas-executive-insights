@@ -1,0 +1,22 @@
+table 'Parameter - Target Time'
+	lineageTag: bf4dc7cd-4c24-471c-a6de-24d8704e0d01
+
+	column 'Selected Target'
+		dataType: string
+		lineageTag: bc835129-38f8-4e64-b215-8a1d6b356f15
+		summarizeBy: none
+		sourceColumn: Selected Target
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Parameter - Target Time' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i45WcivNyVEILE0sKkktUghJLEpPLVGK1YlWCijK1w1KLElNgQvGAgA=", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [#"Selected Target" = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Selected Target", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

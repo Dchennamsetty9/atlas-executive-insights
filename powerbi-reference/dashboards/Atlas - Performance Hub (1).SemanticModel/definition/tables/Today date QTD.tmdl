@@ -1,0 +1,64 @@
+table 'Today date QTD'
+	lineageTag: d81a571b-5bb8-469f-b4d2-b433ab960c65
+
+	measure 'qtd day' = sum('Today date QTD'[qtd daynumber])
+		formatString: 0
+		lineageTag: 57e0079d-1c63-4f1c-ae0d-3d3b4da8fb23
+
+	column Date
+		formatString: mm/dd/yyyy
+		lineageTag: 91a4e49a-63d9-4b5f-81e2-62c0b2d3bc19
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: [Date]
+
+		variation Variation
+			isDefault
+			relationship: d41e421f-0a7c-428e-be5b-cf799187070f
+			defaultHierarchy: LocalDateTable_341c1d32-e179-4fab-8840-319087c4ff02.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'Start of quarter' = STARTOFQUARTER('Today date QTD'[Date])
+		formatString: mm/dd/yyyy
+		lineageTag: 4840aade-859e-49ad-a0f2-1c7d0467bcac
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 63c64ef0-5b94-4d69-85f0-5e8880756f12
+			defaultHierarchy: LocalDateTable_edd1d80c-1fe8-42dc-a51c-78b495b8c508.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column Startofquarter = if('Today date QTD'[Date]<date(2026,4,1),date(2026,1,1),if('Today date QTD'[Date]<date(2026,7,1),date(2026,4,1),if('Today date QTD'[Date]<date(2026,10,1),date(2026,7,1),if('Today date QTD'[Date]<date(2026,1,1),date(2026,10,1),if('Today date QTD'[Date]<date(2026,4,1),date(2026,1,1))))))
+		formatString: mm/dd/yyyy
+		lineageTag: 2f851a94-e052-4416-aa95-c05014400fe1
+		summarizeBy: none
+
+		variation Variation
+			isDefault
+			relationship: 6d20d66c-9c9c-42c0-b561-47c664238a7c
+			defaultHierarchy: LocalDateTable_bfde6ed2-8fe3-45b8-9664-50d0a4de7336.'Date Hierarchy'
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDateTimeCustom":true}
+
+	column 'qtd daynumber' = DATEDIFF('Today date QTD'[Startofquarter],'Today date QTD'[Date],DAY)
+		formatString: 0
+		lineageTag: ad215c9c-0688-4b0c-a386-f2f51fbddc0f
+		summarizeBy: sum
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Today date QTD' = calculated
+		mode: import
+		source = CALENDAR(TODAY()-1,TODAY()-1)
+
+	annotation PBI_Id = cd0537f3eb5c469f9bb19e469ce9bdf2
+

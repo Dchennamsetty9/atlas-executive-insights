@@ -1,0 +1,32 @@
+table 'Filter - Purchase Type'
+	lineageTag: ae363084-e273-436f-828f-2b0f42c04412
+
+	column Purchase_type
+		dataType: string
+		lineageTag: 16650ba6-31cf-4ba6-ad70-dce372d94e2c
+		summarizeBy: none
+		sourceColumn: Purchase_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column type
+		dataType: string
+		lineageTag: 03efd1c7-25e3-4029-9080-d06ff49befbc
+		summarizeBy: none
+		sourceColumn: type
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Filter - Purchase Type' = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("bZDLCoMwEEV/JWStHyGhXbVaLLgRFyEOEtCJTBLt5zdBLfWxm5x753FT1/z2GSVabZAnXPQa0LE30KQVWN4kez1r27TAE36Rab0KfbMcr3o0dmGmdOeBT92RdLE+Ko9wAFpgJcTRV468YsLgBGQ3VUhU0MccSxFZDnP0wszWKw80U8p4PNJ7uNbT+gM//PcSZhi0jZtZMS6hc4NpCcoThbzBskG2h80X", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [opportunity_type = _t, #"type" = _t]),
+				    #"Renamed Columns" = Table.RenameColumns(Source,{{"opportunity_type", "Purchase_type"}})
+				in
+				    #"Renamed Columns"
+
+	annotation PBI_ResultType = Table
+
+	annotation PBI_NavigationStepName = Navigation
+
