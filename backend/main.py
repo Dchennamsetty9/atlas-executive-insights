@@ -45,14 +45,42 @@ metrics_calculator = MetricsCalculator()
 @app.get("/api/health")
 async def health_check():
     """API health check endpoint"""
+    # Test Databricks connection
+    connection_status = "unknown"
+    connection_error = None
+    
+    try:
+        if data_fetcher.use_databricks:
+            # Try to connect
+            conn = data_fetcher.get_connection()
+            if conn:
+                connection_status = "connected"
+                # Try a simple query
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 as test")
+                cursor.fetchall()
+                cursor.close()
+                connection_status = "healthy"
+        else:
+            connection_status = "mock_mode"
+    except Exception as e:
+        connection_status = "error"
+        connection_error = str(e)
+    
     return {
         "service": "Atlas Executive Insights API",
         "status": "running",
         "version": "0.3.0",
         "timestamp": datetime.now().isoformat(),
-        "mode": "direct_databricks",
+        "mode": "direct_databricks" if data_fetcher.use_databricks else "mock",
         "environment": settings.environment,
-        "deployed_in_databricks": os.getenv("DATABRICKS_HOST") is not None
+        "deployed_in_databricks": os.getenv("DATABRICKS_HOST") is not None,
+        "databricks_connection": connection_status,
+        "connection_error": connection_error,
+        "databricks_host": settings.databricks_server_hostname[:50] if settings.databricks_server_hostname else "not set",
+        "has_token": bool(os.getenv("DATABRICKS_TOKEN")),
+        "catalog": settings.databricks_catalog,
+        "schema": settings.databricks_schema
     }
 
 
@@ -117,11 +145,21 @@ async def get_kpis(
         # Fetch raw data from database with filters
         raw_data = await data_fetcher.fetch_kpi_data(start_date, end_date, filters)
         
+        # Log the result for debugging
+        print(f"Fetched KPI data: {len(raw_data)} rows")
+        if len(raw_data) == 0:
+            print("WARNING: No KPI data returned from database")
+        
         # Calculate KPI metrics
         kpis = metrics_calculator.calculate_kpis(raw_data)
         
+        print(f"Calculated {len(kpis)} KPIs")
+        
         return kpis
     except Exception as e:
+        print(f"ERROR in /api/kpis: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching KPIs: {str(e)}")
 
 
