@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import pandas as pd
 import os
+import asyncio
 
 try:
     from databricks import sql as databricks_sql
@@ -95,25 +96,43 @@ class DataFetcher:
             return self.engine
     
     def execute_query(self, query: str, params: List = None) -> pd.DataFrame:
-        """Execute SQL query and return DataFrame"""
-        if self.use_databricks:
-            connection = self.get_connection()
-            cursor = connection.cursor()
-            cursor.execute(query)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            cursor.close()
-            df = pd.DataFrame(data, columns=columns)
-        else:
-            engine = self.get_connection()
-            df = pd.read_sql(query, engine, params=params if params else None)
-        
-        # Replace NaN/Inf values with None for JSON serialization
-        # This prevents "Out of range float values are not JSON compliant" errors
-        df = df.replace([float('inf'), float('-inf')], None)
-        df = df.fillna(value=None)
-        
-        return df
+        """Execute SQL query and return DataFrame - SYNCHRONOUS (use in thread pool)"""
+        try:
+            if self.use_databricks:
+                connection = self.get_connection()
+                cursor = connection.cursor()
+                cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                data = cursor.fetchall()
+                cursor.close()
+                df = pd.DataFrame(data, columns=columns)
+            else:
+                engine = self.get_connection()
+                df = pd.read_sql(query, engine, params=params if params else None)
+            
+            # Replace NaN/Inf values with None for JSON serialization
+            df = df.replace([float('inf'), float('-inf')], None)
+            df = df.fillna(value=None)
+            
+            return df
+        except Exception as e:
+            print(f"ERROR in execute_query: {str(e)}")
+            raise
+    
+    async def execute_query_async(self, query: str, params: List = None, timeout: int = 30) -> pd.DataFrame:
+        """Execute SQL query asynchronously with timeout"""
+        try:
+            # Run blocking query in thread pool with timeout
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.execute_query, query, params),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            print(f"Query timeout after {timeout}s")
+            raise Exception(f"Database query timed out after {timeout} seconds")
+        except Exception as e:
+            print(f"Query error: {str(e)}")
+            raise
     
     async def fetch_kpi_data(
         self, 
@@ -335,7 +354,7 @@ class DataFetcher:
         FROM active_metrics a, created_metrics c
         """
         
-        return self.execute_query(query)
+        return await self.execute_query_async(query)
     
     async def fetch_chart_data(
         self, 
@@ -554,7 +573,7 @@ class DataFetcher:
         ORDER BY data_month, {segment_col}
         """
         
-        return self.execute_query(query)
+        return await self.execute_query_async(query)
     
     def _get_mock_arr_segments(self) -> pd.DataFrame:
         """Mock ARR segment data"""
@@ -604,7 +623,7 @@ class DataFetcher:
         
         query += "ORDER BY ds"
         
-        return self.execute_query(query)
+        return await self.execute_query_async(query)
     
     async def fetch_win_probability_data(self) -> pd.DataFrame:
         """Fetch win probability data from opportunity_scoring table"""
@@ -630,7 +649,7 @@ class DataFetcher:
         ORDER BY close_date
         """
         
-        return self.execute_query(query)
+        return await self.execute_query_async(query)
     
     async def fetch_forecast_accuracy_2024(self) -> pd.DataFrame:
         """Fetch 2024 forecast vs actuals for accuracy analysis"""
@@ -655,7 +674,7 @@ class DataFetcher:
         ORDER BY ds
         """
         
-        return self.execute_query(query)
+        return await self.execute_query_async(query)
     
     def _get_mock_prophet_data(self) -> pd.DataFrame:
         """Mock Prophet forecast data"""
