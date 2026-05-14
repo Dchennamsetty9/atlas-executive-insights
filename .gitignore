@@ -29,7 +29,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnp.*
-dist/
+# dist/ - NOT ignored because we deploy built frontend to Databricks
 build/
 
 # IDEs
