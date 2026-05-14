@@ -816,7 +816,9 @@ def _analyze_forecast_insights(forecast, metric: str, model: str) -> Dict[str, A
         "metric": metric
     }
 
-# Use PORT environment variable (for Databricks Apps) or default to 8000
+
+if __name__ == "__main__":
+    # Use PORT environment variable (for Databricks Apps) or default to 8000
     port = int(os.getenv("PORT", "8000"))
     # Reload only in development
     reload = settings.environment == "development"
@@ -826,6 +828,4 @@ def _analyze_forecast_insights(forecast, metric: str, model: str) -> Dict[str, A
         host="0.0.0.0", 
         port=port, 
         reload=reload
-    
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    )
