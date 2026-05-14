@@ -27,12 +27,8 @@ env:
   - name: PORT
     value: "8000"
   
-  # Databricks connection (automatically provided in workspace)
-  - name: DATABRICKS_HOST
-    value: "$DATABRICKS_HOST"
-  
-  - name: DATABRICKS_TOKEN
-    value: "$DATABRICKS_TOKEN"
+  # Note: DATABRICKS_HOST and DATABRICKS_TOKEN are automatically provided by Databricks Apps
+  # Do NOT set them here - they are injected at runtime
   
   # Data source configuration
   - name: DATABRICKS_CATALOG
