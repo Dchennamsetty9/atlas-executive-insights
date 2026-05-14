@@ -71,23 +71,33 @@ class DataFetcher:
         """Get database connection - supports both local and Databricks Apps deployment"""
         if self.use_databricks:
             if not self.databricks_connection:
+                print(f"Connecting to Databricks: {settings.databricks_server_hostname[:50]}...")
                 # When running in Databricks Apps, use workspace authentication
                 # Otherwise use provided token for local development
-                if self.in_databricks:
-                    # Databricks Apps - use environment credentials
-                    self.databricks_connection = databricks_sql.connect(
-                        server_hostname=settings.databricks_server_hostname,
-                        http_path=settings.databricks_http_path,
-                        # Token is automatically provided by Databricks Apps
-                        access_token=os.getenv("DATABRICKS_TOKEN")
-                    )
-                else:
-                    # Local development - use provided token
-                    self.databricks_connection = databricks_sql.connect(
-                        server_hostname=settings.databricks_server_hostname,
-                        http_path=settings.databricks_http_path,
-                        access_token=settings.databricks_access_token
-                    )
+                try:
+                    if self.in_databricks:
+                        # Databricks Apps - use environment credentials
+                        print("Using Databricks Apps authentication")
+                        self.databricks_connection = databricks_sql.connect(
+                            server_hostname=settings.databricks_server_hostname,
+                            http_path=settings.databricks_http_path,
+                            # Token is automatically provided by Databricks Apps
+                            access_token=os.getenv("DATABRICKS_TOKEN"),
+                            _socket_timeout=10  # 10 second connection timeout
+                        )
+                    else:
+                        # Local development - use provided token
+                        print("Using provided access token")
+                        self.databricks_connection = databricks_sql.connect(
+                            server_hostname=settings.databricks_server_hostname,
+                            http_path=settings.databricks_http_path,
+                            access_token=settings.databricks_access_token,
+                            _socket_timeout=10  # 10 second connection timeout
+                        )
+                    print("✅ Connected to Databricks successfully")
+                except Exception as e:
+                    print(f"❌ Failed to connect to Databricks: {str(e)}")
+                    raise
             return self.databricks_connection
         else:
             if not self.engine:
