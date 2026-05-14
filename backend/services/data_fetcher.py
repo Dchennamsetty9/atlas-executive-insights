@@ -72,17 +72,27 @@ class DataFetcher:
         if self.use_databricks:
             if not self.databricks_connection:
                 print(f"Connecting to Databricks: {settings.databricks_server_hostname[:50]}...")
+                
+                # Debug: Check what's in the environment
+                token = os.getenv("DATABRICKS_TOKEN")
+                print(f"DATABRICKS_TOKEN present: {token is not None}")
+                print(f"DATABRICKS_TOKEN length: {len(token) if token else 0}")
+                print(f"In Databricks Apps: {self.in_databricks}")
+                
                 # When running in Databricks Apps, use workspace authentication
                 # Otherwise use provided token for local development
                 try:
                     if self.in_databricks:
                         # Databricks Apps - use environment credentials
                         print("Using Databricks Apps authentication")
+                        if not token:
+                            raise Exception("DATABRICKS_TOKEN environment variable is not set! The app may not have SQL warehouse permissions.")
+                        
                         self.databricks_connection = databricks_sql.connect(
                             server_hostname=settings.databricks_server_hostname,
                             http_path=settings.databricks_http_path,
                             # Token is automatically provided by Databricks Apps
-                            access_token=os.getenv("DATABRICKS_TOKEN"),
+                            access_token=token,
                             _socket_timeout=10  # 10 second connection timeout
                         )
                     else:
