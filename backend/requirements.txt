@@ -5,6 +5,7 @@ python-multipart==0.0.6
 
 # Database drivers
 databricks-sql-connector==3.0.0
+databricks-sdk==0.20.0
 pyodbc==5.0.1
 sqlalchemy==2.0.25
 pymssql==2.2.11
