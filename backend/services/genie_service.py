@@ -30,20 +30,41 @@ class GenieService:
     def _authenticate(self):
         """Get OAuth access token using service principal credentials"""
         try:
-            # Use the config's authenticate method to get token
-            auth = self.config.authenticate()
-            if auth and hasattr(auth, '__call__'):
-                # Get the Authorization header
-                header = auth()
-                if isinstance(header, dict) and 'Authorization' in header:
-                    self.access_token = header['Authorization'].replace('Bearer ', '')
-                elif isinstance(header, str):
-                    self.access_token = header.replace('Bearer ', '')
+            import os
+            
+            # In Databricks Apps, these are auto-provided
+            client_id = os.environ.get('DATABRICKS_CLIENT_ID')
+            client_secret = os.environ.get('DATABRICKS_CLIENT_SECRET')
+            
+            if not client_id or not client_secret:
+                raise Exception("Missing DATABRICKS_CLIENT_ID or DATABRICKS_CLIENT_SECRET")
+            
+            # OAuth token endpoint
+            token_url = f"{self.base_url}/oidc/v1/token"
+            
+            # Client credentials grant
+            response = requests.post(
+                token_url,
+                data={
+                    'grant_type': 'client_credentials',
+                    'scope': 'all-apis'
+                },
+                auth=(client_id, client_secret)
+            )
+            response.raise_for_status()
+            
+            token_data = response.json()
+            self.access_token = token_data.get('access_token')
             
             if not self.access_token:
-                print("Warning: Could not get OAuth token for Genie")
+                raise Exception("No access_token in response")
+                
+            print("✅ Genie service authenticated successfully")
+            
         except Exception as e:
-            print(f"Warning: Genie authentication failed: {e}")
+            print(f"❌ Genie authentication failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make authenticated request to Databricks API"""
