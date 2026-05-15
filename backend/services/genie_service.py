@@ -6,9 +6,10 @@ to provide AI-powered insights and natural language queries.
 """
 
 from typing import Dict, Any, Optional
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
+import requests
 import os
+import time
 
 
 class GenieService:
@@ -17,10 +18,47 @@ class GenieService:
     def __init__(self):
         """Initialize Genie service with app credentials"""
         self.config = Config()
-        self.workspace = WorkspaceClient(config=self.config)
         
         # Genie space ID from app resources
         self.genie_space_id = "01f10b2015dc1186928a78ee0bb4869f"
+        
+        # Get OAuth credentials
+        self.base_url = f"https://{self.config.host}"
+        self.access_token = None
+        self._authenticate()
+    
+    def _authenticate(self):
+        """Get OAuth access token using service principal credentials"""
+        try:
+            # Use the config's authenticate method to get token
+            auth = self.config.authenticate()
+            if auth and hasattr(auth, '__call__'):
+                # Get the Authorization header
+                header = auth()
+                if isinstance(header, dict) and 'Authorization' in header:
+                    self.access_token = header['Authorization'].replace('Bearer ', '')
+                elif isinstance(header, str):
+                    self.access_token = header.replace('Bearer ', '')
+            
+            if not self.access_token:
+                print("Warning: Could not get OAuth token for Genie")
+        except Exception as e:
+            print(f"Warning: Genie authentication failed: {e}")
+    
+    def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+        """Make authenticated request to Databricks API"""
+        if not self.access_token:
+            raise Exception("Not authenticated - no access token available")
+        
+        url = f"{self.base_url}{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.request(method, url, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response.json()
         
     async def ask_question(self, question: str) -> Dict[str, Any]:
         """
@@ -33,34 +71,76 @@ class GenieService:
             Dict with answer, SQL query, and any visualizations
         """
         try:
-            # Create a conversation in the Genie space
-            conversation = self.workspace.genie.create_conversation(
-                space_id=self.genie_space_id
+            # Step 1: Create a conversation
+            conversation_response = self._make_request(
+                "POST",
+                f"/api/2.0/genie/spaces/{self.genie_space_id}/conversations",
+                json={}
             )
+            conversation_id = conversation_response.get("conversation_id")
             
-            # Ask the question
-            message = self.workspace.genie.create_message(
-                space_id=self.genie_space_id,
-                conversation_id=conversation.conversation_id,
-                content=question
+            if not conversation_id:
+                raise Exception("Failed to create conversation")
+            
+            # Step 2: Send the message
+            message_response = self._make_request(
+                "POST",
+                f"/api/2.0/genie/spaces/{self.genie_space_id}/conversations/{conversation_id}/messages",
+                json={"content": question}
             )
+            message_id = message_response.get("id")
             
-            # Wait for the response
-            response = self.workspace.genie.get_message(
-                space_id=self.genie_space_id,
-                conversation_id=conversation.conversation_id,
-                message_id=message.id
-            )
+            if not message_id:
+                raise Exception("Failed to send message")
             
+            # Step 3: Poll for the response (Genie is async)
+            max_attempts = 30  # 30 seconds max wait
+            for attempt in range(max_attempts):
+                time.sleep(1)
+                
+                message_status = self._make_request(
+                    "GET",
+                    f"/api/2.0/genie/spaces/{self.genie_space_id}/conversations/{conversation_id}/messages/{message_id}"
+                )
+                
+                status = message_status.get("status")
+                if status == "COMPLETED":
+                    # Get the answer
+                    attachments = message_status.get("attachments", [])
+                    answer_text = message_status.get("content", "No answer provided")
+                    
+                    # Extract SQL if available
+                    sql_query = None
+                    for attachment in attachments:
+                        if attachment.get("query"):
+                            sql_query = attachment["query"].get("query")
+                            break
+                    
+                    return {
+                        "question": question,
+                        "answer": answer_text,
+                        "sql": sql_query,
+                        "status": "success"
+                    }
+                elif status == "FAILED" or status == "ERROR":
+                    error_msg = message_status.get("error", "Query failed")
+                    return {
+                        "question": question,
+                        "answer": f"Unable to process question: {error_msg}",
+                        "status": "error"
+                    }
+            
+            # Timeout
             return {
                 "question": question,
-                "answer": response.content,
-                "sql": getattr(response, 'sql', None),
-                "status": "success"
+                "answer": "Query timed out. Please try a simpler question.",
+                "status": "timeout"
             }
             
         except Exception as e:
             print(f"Error querying Genie: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 "question": question,
                 "answer": f"Unable to get AI insights: {str(e)}",
