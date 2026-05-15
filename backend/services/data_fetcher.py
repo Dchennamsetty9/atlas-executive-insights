@@ -1,23 +1,22 @@
 """
 Data fetcher service - connects to database and retrieves raw data
 
-Version: 0.4.0 - Metis Federated Tables Mode
-Last Updated: 2026-05-12
+Version: 0.3.1 - Direct Databricks Mode
+Last Updated: 2026-05-15
 
 KPI Formulas: Based on Performance Hub semantic model (Atlas - Performance Hub.pbip)
-- Won_Pipeline: SUM(amount_towards_plan) FROM metis_won_opps_fact
-- Won_Volume: COUNT(DISTINCT salesforce_opportunity_id) FROM metis_won_opps_fact
+- Won_Pipeline: SUM(amount_towards_plan) WHERE is_won='True' AND xtxtype<>'Cancel'
+- Won_Volume: DISTINCTCOUNT(opportunities_created_ids) WHERE is_won='True'
 - ADS: Won_Pipeline / Won_Volume
-- x_OppsCreated_mdl: COUNT(DISTINCT salesforce_opportunity_id) FROM metis_opened_opps_fact
-- xCreated_Pipeline: SUM(amount_towards_plan) FROM metis_opened_opps_fact
-- Active_Pipeline: SUM(amount_towards_plan) FROM opened WHERE NOT IN won (LEFT JOIN)
+- x_OppsCreated_mdl: From gaim_snapshot_pipeline_created_cq_daily
+- xCreated_Pipeline: SUM(amount_towards_plan) from created table
+- Active_Pipeline: SUM WHERE stage NOT IN closed stages
 - close_rate_vol: Won_Volume / Created_Opps
 - xCvg_mdl: Active_Pipeline / Daily_Plan$ (capped at 10x)
 
-Tables (federated.sales):
-- metis_won_opps_fact: Won opportunities at daily granularity
-- metis_opened_opps_fact: Opened opportunities at daily granularity
-- metis_targets_summary: Quarterly targets with pacing calculations
+Tables:
+- gaim_pipeline_daily_snapshot: Won, Active, and pipeline metrics
+- gaim_snapshot_pipeline_created_cq_daily: Created opportunities and pipeline
 """
 
 from typing import Dict, Any, List, Optional
@@ -246,10 +245,6 @@ class DataFetcher:
         Fetch real KPI data from Databricks using exact Performance Hub formulas
         Based on: Atlas - Performance Hub.SemanticModel DAX measures
         
-        **UPDATED to use Metis Federated Tables:**
-        - federated.sales.metis_won_opps_fact (won opportunities)
-        - federated.sales.metis_opened_opps_fact (opened/created opportunities)
-        
         Args:
             start_date: Start date
             end_date: End date
@@ -262,53 +257,54 @@ class DataFetcher:
         # Build filter WHERE clauses for different table aliases
         filter_clause = self._build_filter_where_clause(filters, "")
         
-        # Query all 8 KPIs using Metis federated tables
+        # Query all 8 KPIs using exact Performance Hub logic WITH FILTERS
         query = f"""
         WITH max_data_day AS (
-            -- Get latest data snapshot date
-            SELECT MAX(data_date) as latest_day
-            FROM {catalog}.{schema}.metis_opened_opps_fact
+            SELECT MAX(data_day) as latest_day
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
         ),
         won_metrics AS (
-            -- Won Pipeline $ and Won Volume #
-            -- Uses metis_won_opps_fact (all rows are won opportunities)
+            -- Performance Hub: Won_Pipeline and Won_Volume measures
             SELECT 
                 COALESCE(SUM(amount_towards_plan), 0) as won_pipeline,
-                COUNT(DISTINCT salesforce_opportunity_id) as won_volume
-            FROM {catalog}.{schema}.metis_won_opps_fact
-            WHERE data_date = (SELECT latest_day FROM max_data_day)
-              {filter_clause}  -- Dynamic filters (geo, channel, product)
+                COUNT(DISTINCT opportunities_created_ids) as won_volume
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+            WHERE is_won = 'True'
+              AND xtxtype <> 'Cancel'  -- Critical filter from Performance Hub
+              AND data_day = (SELECT latest_day FROM max_data_day)
+              {filter_clause}  -- ADDED: Dynamic filters
         ),
         created_metrics AS (
-            -- Created Pipeline $ and Opps Created #
-            -- Uses metis_opened_opps_fact for opportunities entering pipeline
+            -- Performance Hub: xCreated_Pipeline and x_OppsCreated_mdl measures
+            -- Uses gaim_snapshot_pipeline_created_cq_daily table
             SELECT 
-                COUNT(DISTINCT salesforce_opportunity_id) as opps_created,
+                COUNT(DISTINCT opportunities_created_ids) as opps_created,
                 COALESCE(SUM(amount_towards_plan), 0) as created_pipeline
-            FROM {catalog}.{schema}.metis_opened_opps_fact
-            WHERE pipeline_entered_date BETWEEN '{start_date}' AND '{end_date}'
-              {filter_clause}  -- Dynamic filters
+            FROM {catalog}.{schema}.gaim_snapshot_pipeline_created_cq_daily
+            WHERE xtxtype <> 'Cancel'  -- ADDED: Critical cancellation filter
+              AND pipeline_entered_date BETWEEN '{start_date}' AND '{end_date}'
+              {filter_clause}  -- ADDED: Dynamic filters
         ),
         active_metrics AS (
-            -- Active Pipeline $ = Opened opportunities - Won opportunities
-            -- Uses LEFT JOIN to find opps that entered pipeline but haven't won yet
+            -- Performance Hub: Active_Pipeline measure
+            -- Filters for Opp Stage = "1.Open"
             SELECT 
-                COALESCE(SUM(o.amount_towards_plan), 0) as active_pipeline
-            FROM {catalog}.{schema}.metis_opened_opps_fact o
-            LEFT JOIN {catalog}.{schema}.metis_won_opps_fact w
-                ON o.salesforce_opportunity_id = w.salesforce_opportunity_id
-            WHERE o.data_date = (SELECT latest_day FROM max_data_day)
-              AND w.salesforce_opportunity_id IS NULL  -- Not in won table = still active
-              {filter_clause}  -- Dynamic filters on opened table
+                COALESCE(SUM(amount_towards_plan), 0) as active_pipeline
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+            WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
+              AND data_day = (SELECT latest_day FROM max_data_day)
+              {filter_clause}  -- ADDED: Dynamic filters
         ),
         previous_period AS (
-            -- Previous period metrics for trend calculation (90 days ago)
+            -- Previous period metrics for trend calculation
             SELECT 
                 COALESCE(SUM(amount_towards_plan), 0) as prev_won_pipeline,
-                COUNT(DISTINCT salesforce_opportunity_id) as prev_won_volume
-            FROM {catalog}.{schema}.metis_won_opps_fact
-            WHERE data_date = DATE_ADD((SELECT latest_day FROM max_data_day), -90)
-              {filter_clause}  -- Dynamic filters
+                COUNT(DISTINCT opportunities_created_ids) as prev_won_volume
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+            WHERE is_won = 'True'
+              AND xtxtype <> 'Cancel'
+              AND data_day = DATE_ADD((SELECT latest_day FROM max_data_day), -90)
+              {filter_clause}  -- ADDED: Dynamic filters
         )
         SELECT 
             -- Row 1: Won Pipeline $ (Performance Hub: Won_Pipeline)
@@ -484,39 +480,39 @@ class DataFetcher:
             """
         
         elif metric == 'won_pipeline':
-            # Won pipeline by close date (using metis_won_opps_fact)
+            # Won pipeline by close date
             query = f"""
             SELECT 
                 close_date as ds,
                 SUM(amount_towards_plan) as y
-            FROM {catalog}.{schema}.metis_won_opps_fact
-            WHERE close_date >= DATE_SUB(CURRENT_DATE(), 365)
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+            WHERE is_won = 'True'
+              AND xtxtype <> 'Cancel'
+              AND close_date >= DATE_SUB(CURRENT_DATE(), 365)
             GROUP BY close_date
             ORDER BY close_date
             """
         
         elif metric == 'active_pipeline':
-            # Active pipeline over time (opened but not won)
+            # Active pipeline over time
             query = f"""
             SELECT 
-                o.data_date as ds,
-                SUM(o.amount_towards_plan) as y
-            FROM {catalog}.{schema}.metis_opened_opps_fact o
-            LEFT JOIN {catalog}.{schema}.metis_won_opps_fact w
-                ON o.salesforce_opportunity_id = w.salesforce_opportunity_id
-            WHERE o.data_date >= DATE_SUB(CURRENT_DATE(), 365)
-              AND w.salesforce_opportunity_id IS NULL  -- Not yet won
-            GROUP BY o.data_date
-            ORDER BY o.data_date
+                data_day as ds,
+                SUM(amount_towards_plan) as y
+            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+            WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
+              AND data_day >= DATE_SUB(CURRENT_DATE(), 365)
+            GROUP BY data_day
+            ORDER BY data_day
             """
         
         elif metric == 'created_pipeline':
-            # Pipeline creation over time (using metis_opened_opps_fact)
+            # Pipeline creation over time
             query = f"""
             SELECT 
                 pipeline_entered_date as ds,
                 SUM(amount_towards_plan) as y
-            FROM {catalog}.{schema}.metis_opened_opps_fact
+            FROM {catalog}.{schema}.gaim_snapshot_pipeline_created_cq_daily
             WHERE pipeline_entered_date >= DATE_SUB(CURRENT_DATE(), 365)
             GROUP BY pipeline_entered_date
             ORDER BY pipeline_entered_date

@@ -12,6 +12,7 @@ import EnhancedKPICard from './components/EnhancedKPICard'
 import ARRTrendChart from './components/ARRTrendChart';
 import PipelineChart from './components/PipelineChart';
 import ForecastChart from './components/ForecastChart';
+import GenieAssistant from './components/GenieAssistant';
 import { apiService } from './services/api';
 import './App.css'
 
@@ -286,6 +287,9 @@ function App() {
           </div>
         </div>
       </footer>
+
+      {/* Genie AI Assistant - Floating button */}
+      <GenieAssistant />
     </div>
   );
 }

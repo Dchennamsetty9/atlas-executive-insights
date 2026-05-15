@@ -30,12 +30,12 @@ env:
   # Note: DATABRICKS_HOST and DATABRICKS_TOKEN are automatically provided by Databricks Apps
   # Do NOT set them here - they are injected at runtime
   
-  # Data source configuration - using federated tables to avoid permissions issues
+  # Data source configuration
   - name: DATABRICKS_CATALOG
-    value: "federated"
+    value: "datagroup_mdl"
   
   - name: DATABRICKS_SCHEMA
-    value: "sales"
+    value: "mdl_sales_analytics"
   
   - name: DATABRICKS_HTTP_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"

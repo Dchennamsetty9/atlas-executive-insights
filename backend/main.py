@@ -18,6 +18,7 @@ from services.data_fetcher import DataFetcher  # Direct Databricks connection (l
 from services.forecasting import ForecastingService
 from services.insights_engine import InsightsEngine
 from services.metrics import MetricsCalculator
+from services.genie_service import GenieService  # AI-powered insights from Genie
 from models.kpi import KPICard, ChartData, Insight, Forecast
 
 app = FastAPI(
@@ -40,6 +41,7 @@ data_fetcher = DataFetcher()
 forecasting_service = ForecastingService()
 insights_engine = InsightsEngine()
 metrics_calculator = MetricsCalculator()
+genie_service = GenieService()  # AI-powered insights
 
 
 @app.get("/api/health")
@@ -836,6 +838,100 @@ def _analyze_forecast_insights(forecast, metric: str, model: str) -> Dict[str, A
         "metric": metric
     }
 
+
+# ============================================================================
+# GENIE AI INSIGHTS ENDPOINTS
+# ============================================================================
+
+@app.post("/api/genie/ask")
+async def ask_genie(question: Dict[str, str]):
+    """
+    Ask a natural language question to Genie AI
+    
+    Example request:
+    {"question": "Why has pipeline increased this quarter?"}
+    
+    Returns AI-generated answer with optional SQL and data
+    """
+    try:
+        question_text = question.get("question", "")
+        if not question_text:
+            raise HTTPException(status_code=400, detail="Question is required")
+        
+        result = await genie_service.ask_question(question_text)
+        return result
+    except Exception as e:
+        print(f"Error in Genie ask endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/genie/suggestions")
+async def get_genie_suggestions():
+    """
+    Get suggested questions for the AI assistant
+    
+    Returns list of pre-defined questions users can ask
+    """
+    try:
+        suggestions = await genie_service.get_suggested_questions()
+        return {"suggestions": suggestions}
+    except Exception as e:
+        print(f"Error getting Genie suggestions: {e}")
+        return {"suggestions": [
+            "What is the monthly sum of won amount?",
+            "Which sales market has the highest pipeline?",
+            "Show me opportunities by channel"
+        ]}
+
+
+@app.get("/api/genie/anomalies/{metric}")
+async def get_metric_anomalies(metric: str):
+    """
+    Get AI-detected anomalies for a specific metric
+    
+    Path parameters:
+    - metric: KPI name (e.g., "won_pipeline", "close_rate")
+    
+    Returns anomalies with AI explanations
+    """
+    try:
+        result = await genie_service.get_anomalies(metric)
+        return result
+    except Exception as e:
+        print(f"Error detecting anomalies: {e}")
+        return {
+            "question": f"Anomalies in {metric}",
+            "answer": "Unable to detect anomalies at this time",
+            "status": "error"
+        }
+
+
+@app.get("/api/genie/explain/{metric}/{change}")
+async def explain_metric_change(metric: str, change: float):
+    """
+    Get AI explanation for why a metric changed
+    
+    Path parameters:
+    - metric: KPI name
+    - change: Percentage change (e.g., 15.5 for +15.5%)
+    
+    Returns AI-generated explanation
+    """
+    try:
+        result = await genie_service.explain_change(metric, change)
+        return result
+    except Exception as e:
+        print(f"Error explaining change: {e}")
+        return {
+            "question": f"Why {metric} changed",
+            "answer": f"Unable to explain the {change}% change at this time",
+            "status": "error"
+        }
+
+
+# ============================================================================
+# STATIC FILE SERVING (must be last - catch-all route)
+# ============================================================================
 
 # Serve static frontend files in production (must be last - catch-all route)
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

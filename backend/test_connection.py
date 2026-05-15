@@ -44,16 +44,16 @@ try:
     
     cursor = connection.cursor()
     
-    # Test 1: Count rows in won opps table
-    print("\n📊 Test 1: Querying metis_won_opps_fact...")
-    query1 = f"SELECT COUNT(*) as row_count FROM {settings.databricks_catalog}.{settings.databricks_schema}.metis_won_opps_fact"
+    # Test 1: Count rows in main table
+    print("\n📊 Test 1: Querying gaim_pipeline_daily_snapshot...")
+    query1 = f"SELECT COUNT(*) as row_count FROM {settings.databricks_catalog}.{settings.databricks_schema}.gaim_pipeline_daily_snapshot"
     cursor.execute(query1)
     result = cursor.fetchone()
-    print(f"   ✅ Found {result[0]:,} rows in metis_won_opps_fact")
+    print(f"   ✅ Found {result[0]:,} rows in gaim_pipeline_daily_snapshot")
     
     # Test 2: Get latest data date
     print("\n📅 Test 2: Checking latest data date...")
-    query2 = f"SELECT MAX(data_date) as latest_date FROM {settings.databricks_catalog}.{settings.databricks_schema}.metis_won_opps_fact"
+    query2 = f"SELECT MAX(data_day) as latest_date FROM {settings.databricks_catalog}.{settings.databricks_schema}.gaim_pipeline_daily_snapshot"
     cursor.execute(query2)
     result = cursor.fetchone()
     print(f"   ✅ Latest data: {result[0]}")
@@ -63,9 +63,10 @@ try:
     query3 = f"""
     SELECT 
         SUM(amount_towards_plan) as won_pipeline,
-        COUNT(DISTINCT salesforce_opportunity_id) as won_deals
-    FROM {settings.databricks_catalog}.{settings.databricks_schema}.metis_won_opps_fact
-    WHERE YEAR(close_date) = YEAR(CURRENT_DATE())
+        COUNT(DISTINCT opportunities_created_ids) as won_deals
+    FROM {settings.databricks_catalog}.{settings.databricks_schema}.gaim_pipeline_daily_snapshot
+    WHERE is_won = 'True'
+      AND YEAR(close_date) = YEAR(CURRENT_DATE())
       AND QUARTER(close_date) = QUARTER(CURRENT_DATE())
     """
     cursor.execute(query3)

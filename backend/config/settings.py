@@ -15,9 +15,8 @@ class Settings(BaseSettings):
     databricks_server_hostname: str = os.getenv("DATABRICKS_HOST", "")
     databricks_http_path: str = "/sql/1.0/warehouses/c24ee33594e13e93"
     databricks_access_token: str = os.getenv("DATABRICKS_TOKEN", "")
-    # Using federated sales tables to avoid catalog permissions issues
-    databricks_catalog: str = "federated"
-    databricks_schema: str = "sales"
+    databricks_catalog: str = "datagroup_mdl"
+    databricks_schema: str = "mdl_sales_analytics"
     
     # SQL Server (alternative)
     db_server: str = ""
