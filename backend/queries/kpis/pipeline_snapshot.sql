@@ -18,7 +18,7 @@ snap AS (
 ),
 won AS (
     SELECT
-        SUM(amount_towards_plan)                      AS won_pipeline,
+        SUM(amount)                                   AS won_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS won_volume
     FROM snap
     WHERE is_won = 'True'
@@ -32,14 +32,14 @@ lost AS (
 ),
 active AS (
     SELECT
-        SUM(amount_towards_plan)                      AS active_pipeline,
+        SUM(amount)                                   AS active_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS open_volume
     FROM snap
     WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
 ),
 prev AS (
     SELECT
-        SUM(amount_towards_plan)                      AS prev_won_pipeline,
+        SUM(amount)                                   AS prev_won_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS prev_won_volume
     FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
     WHERE data_day = DATE_ADD((SELECT d FROM latest), -90)

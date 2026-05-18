@@ -191,8 +191,8 @@ async def get_kpis(
             "product": product
         }
 
-        # Build a stable cache key from filter combo
-        cache_key = f"kpis:{geo}:{channel}:{product}"
+        # Build a stable cache key from filter combo (include dates so period changes re-fetch)
+        cache_key = f"kpis:{start_date}:{end_date}:{geo}:{channel}:{product}"
         cached = data_cache.get(cache_key)
         if cached is not None:
             print(f"Cache hit: {cache_key} (age {data_cache.cache_age_seconds(cache_key):.0f}s)")
