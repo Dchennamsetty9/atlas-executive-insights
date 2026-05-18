@@ -52,8 +52,8 @@ const PipelineChart = () => {
         const kpi = response.find(k => k.id === metric);
         return {
           name: formatName(metric),
-          value: kpi ? (kpi.value * (kpi.unit === '$' ? 1000000 : 1)) : 0,
-          target: kpi ? (kpi.target * (kpi.unit === '$' ? 1000000 : 1)) : 0,
+          value: kpi ? (kpi.value * (kpi.unit === 'M' ? 1000000 : 1)) : 0,
+          target: kpi ? (kpi.target * (kpi.unit === 'M' ? 1000000 : 1)) : 0,
           metTarget: kpi ? kpi.value >= kpi.target : false,
           pct: kpi ? Math.round((kpi.value / kpi.target) * 100) : 0,
         };
