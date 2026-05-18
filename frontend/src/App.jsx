@@ -1,70 +1,88 @@
-import { useState, useEffect } from 'react';
-import { Activity } from 'lucide-react';
-import ExecutiveSummary from './components/ExecutiveSummary'
-import TimePeriodFilter from './components/TimePeriodFilter'
-import FilterPanel from './components/FilterPanel'
-import DailyInsights from './components/DailyInsights'
-import GraphOfTheDay from './components/GraphOfTheDay'
-import KPIGrid from './components/KPIGrid'
-import InsightsPanel from './components/InsightsPanel'
-import ActionableInsights from './components/ActionableInsights'
-import EnhancedKPICard from './components/EnhancedKPICard'
+﻿import { useState, useEffect, useCallback } from 'react';
+import { RefreshCw, Volume2, VolumeX, Sun, Moon } from 'lucide-react';
+import FilterPanel from './components/FilterPanel';
+import EnhancedKPICard from './components/EnhancedKPICard';
 import ARRTrendChart from './components/ARRTrendChart';
 import PipelineChart from './components/PipelineChart';
-import ForecastChart from './components/ForecastChart';
-import GenieAssistant from './components/GenieAssistant';
+import ForecastChart from './components/charts/ForecastChart';
+import ForecastIntelligence from './components/charts/ForecastIntelligence';
+import AIOrb from './components/ai/AIOrb';
+import AIChatPanel from './components/ai/AIChatPanel';
+import InsightPanel from './components/dashboard/InsightPanel';
+import ImpactWaterfall from './components/dashboard/ImpactWaterfall';
+import KPIDetailModal from './components/dashboard/KPIDetailModal';
+import BusinessPerformancePanel from './components/dashboard/BusinessPerformancePanel';
+import AnalyticsTabs from './components/dashboard/AnalyticsTabs';
+import InsightBanner from './components/ai/InsightBanner';
+import { useUISound } from './hooks/useUISound';
 import { apiService } from './services/api';
+import { FilterProvider, useFilters } from './contexts/FilterContext';
+import './styles/futuristic-theme.css';
 import './App.css'
 
-function App() {
-  const [backendStatus, setBackendStatus] = useState('checking');
-  const [lastUpdated, setLastUpdated] = useState(new Date());  
-  const [kpis, setKpis] = useState([])
-  const [alerts, setAlerts] = useState([])
-  const [kpiInsights, setKpiInsights] = useState({})
-  const [selectedPeriod, setSelectedPeriod] = useState('qtd')
-  const [filters, setFilters] = useState({ geo: 'All', channel: 'All', product: 'All' })
-  const [isLoadingKpis, setIsLoadingKpis] = useState(false)
+function AppInner() {
+  const { filters, setFilters } = useFilters();
+  const [backendStatus, setBackendStatus]   = useState('checking');
+  const [lastRefreshed, setLastRefreshed]   = useState(null);
+  const [kpis,          setKpis]            = useState([]);
+  const [kpiInsights,   setKpiInsights]     = useState({});
+  const [isLoadingKpis, setIsLoadingKpis]   = useState(false);
+  const [kpiError,      setKpiError]        = useState(null);
+  const [isAnalyzing,   setIsAnalyzing]     = useState(false);
+  const [selectedKpi,   setSelectedKpi]     = useState(null);
+  const [activeInsightId, setActiveInsightId] = useState(null);
+  const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
+  const { enabled: soundEnabled, toggle: toggleSound, play } = useUISound();
+
+  useEffect(() => { localStorage.setItem('atlas-theme', theme); }, [theme]);
   
   useEffect(() => {
     checkBackendHealth();
-    loadAlerts();
     loadKpis();
-    const interval = setInterval(() => {
-      setLastUpdated(new Date());
-    }, 60000); // Update timestamp every minute
+
+    const interval = setInterval(async () => {
+      try { await apiService.post('/api/cache/refresh', {}); } catch (_) {}
+      loadKpis();
+    }, 15 * 60 * 1000);
 
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    // Load insights for each KPI when KPIs are updated
-    if (kpis.length > 0) {
-      loadKpiInsights();
-    }
+    if (kpis.length > 0) loadKpiInsights();
   }, [kpis]);
 
   const checkBackendHealth = async () => {
     try {
       await apiService.healthCheck();
       setBackendStatus('connected');
-    } catch (error) {
-      console.error('Backend health check failed:', error);
+    } catch {
       setBackendStatus('disconnected');
     }
   };
 
-  const loadKpis = async (customFilters = null) => {
+  const loadKpis = useCallback(async (customFilters = null) => {
     const appliedFilters = customFilters || filters;
     try {
       setIsLoadingKpis(true);
+      setKpiError(null);
       const kpiData = await apiService.getKPIs(null, null, appliedFilters);
-      handleKpisLoaded(kpiData);
+      setKpis(kpiData);
+      setLastRefreshed(new Date());
+      play('load');
     } catch (error) {
       console.error('Failed to load KPIs:', error);
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.message?.includes('timeout');
+      setKpiError(isTimeout ? 'timeout' : 'error');
     } finally {
       setIsLoadingKpis(false);
     }
+  }, [filters, play]);
+
+  const handleRefreshNow = async () => {
+    play('click');
+    try { await apiService.post('/api/cache/refresh', {}); } catch (_) {}
+    loadKpis();
   };
 
   const handleFilterChange = async (newFilters) => {
@@ -72,14 +90,10 @@ function App() {
     await loadKpis(newFilters);
   };
 
-  const loadAlerts = async () => {
-    try {
-      const alertsData = await apiService.get('/api/insights/alerts');
-      setAlerts(alertsData);
-    } catch (error) {
-      console.error('Failed to load alerts:', error);
-    }
-  };
+  // Accordion: close current card if same id clicked, otherwise open new one
+  const handleInsightToggle = useCallback((kpiId) => {
+    setActiveInsightId(prev => prev === kpiId ? null : kpiId);
+  }, []);
 
   const loadKpiInsights = async () => {
     const insightsMap = {};
@@ -87,210 +101,288 @@ function App() {
       try {
         const insights = await apiService.get(`/api/insights/kpi/${kpi.id}`);
         insightsMap[kpi.id] = insights;
-      } catch (error) {
-        console.error(`Failed to load insights for ${kpi.id}:`, error);
-      }
+      } catch { /* non-critical */ }
     }
     setKpiInsights(insightsMap);
   };
 
-  const handlePeriodChange = (period) => {
-    setSelectedPeriod(period)
-    console.log('Period changed to:', period)
-    // In a real app, this would trigger data refetch with new date range
-  }
-
-  const handleKpisLoaded = (loadedKpis) => {
-    setKpis(loadedKpis)
-  }
+  const handleKpiCardClick = (kpi) => {
+    play('open');
+    setSelectedKpi(kpi);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              <div className="bg-blue-600 p-2 rounded-lg">
-                <Activity className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Atlas Executive Insights</h1>
-                <p className="text-sm text-gray-600">AI-Powered Analytics Dashboard</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-right">
-                <p className="text-xs text-gray-500">Last updated</p>
-                <p className="text-sm font-medium text-gray-700">
-                  {lastUpdated.toLocaleTimeString()}
-                </p>
-              </div>
-              <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${
-                backendStatus === 'connected' 
-                  ? 'bg-green-50 text-green-700' 
-                  : backendStatus === 'disconnected'
-                  ? 'bg-red-50 text-red-700'
-                  : 'bg-yellow-50 text-yellow-700'
-              }`}>
-                <div className={`w-2 h-2 rounded-full ${
-                  backendStatus === 'connected' 
-                    ? 'bg-green-500' 
-                    : backendStatus === 'disconnected'
-                    ? 'bg-red-500'
-                    : 'bg-yellow-500 animate-pulse'
-                }`}></div>
-                <span className="text-sm font-medium">
-                  {backendStatus === 'connected' ? 'Connected' : 
-                   backendStatus === 'disconnected' ? 'Disconnected' : 'Checking...'}
-                </span>
-              </div>
-            </div>
+    <div data-theme={theme} style={{ minHeight: '100vh', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+
+      {/* ── Header ───────────────────────────────────────────────────── */}
+      <header style={{
+        background: 'var(--bg-surface)',
+        backdropFilter: 'blur(12px)',
+        borderBottom: '1px solid var(--border-glass)',
+        padding: '0 20px',
+        height: 44,
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        display: 'flex',
+        alignItems: 'center',
+        boxShadow: '0 2px 16px rgba(0,0,0,0.12)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, maxWidth: 1600, margin: '0 auto', width: '100%' }}>
+
+          {/* Logo + Title */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <div style={{
+              width: 24, height: 24, borderRadius: 6,
+              background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 12, boxShadow: '0 0 10px rgba(59,130,246,0.35)',
+            }}>⬡</div>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.2px' }}>
+              Atlas Executive Insights
+            </span>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 }}>GAIM</span>
+          </div>
+
+          {/* Spacer */}
+          <div style={{ flex: 1 }} />
+
+          {/* Right controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+
+            {/* Last refreshed */}
+            {lastRefreshed && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                {lastRefreshed.toLocaleTimeString()}
+              </span>
+            )}
+
+            {/* Refresh button */}
+            <button
+              onClick={handleRefreshNow}
+              disabled={isLoadingKpis}
+              title="Refresh data"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '4px 10px',
+                background: 'rgba(59,130,246,0.08)',
+                border: '1px solid rgba(59,130,246,0.2)',
+                borderRadius: 6, color: '#3b82f6',
+                fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                opacity: isLoadingKpis ? 0.5 : 1,
+              }}
+            >
+              <RefreshCw size={11} style={{ animation: isLoadingKpis ? 'spin 1s linear infinite' : 'none' }} />
+              Refresh
+            </button>
+
+            {/* Sound toggle */}
+            <button
+              onClick={toggleSound}
+              title={soundEnabled ? 'Mute UI sounds' : 'Enable UI sounds'}
+              style={{
+                background: 'transparent', border: 'none',
+                color: soundEnabled ? '#3b82f6' : '#334155',
+                width: 28, height: 28, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 6,
+              }}
+            >
+              {soundEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
+            </button>
+
+            {/* Theme toggle */}
+            <button
+              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              style={{
+                background: 'transparent', border: 'none',
+                color: theme === 'dark' ? '#f59e0b' : '#334155',
+                width: 28, height: 28, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 6, transition: 'color 0.15s',
+              }}
+            >
+              {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+            </button>
+
+            {/* Status dot */}
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
+              background: backendStatus === 'connected' ? '#10b981'
+                        : backendStatus === 'disconnected' ? '#ef4444' : '#f59e0b',
+              boxShadow: backendStatus === 'connected' ? '0 0 5px #10b981' : 'none',
+              animation: backendStatus === 'checking' ? 'pulse 1.5s ease-in-out infinite' : 'none',
+            }} />
+
+            {/* AIOrb */}
+            <AIOrb kpis={kpis} backendStatus={backendStatus} isAnalyzing={isAnalyzing} />
           </div>
         </div>
       </header>
 
-      {/* Main Content with Sidebar */}
-      <div className="flex">
-        {/* Sidebar - Filters */}
-        <aside className="w-56 flex-shrink-0 px-4 py-8">
+      {/* ── Body ─────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', maxWidth: 1600, margin: '0 auto', padding: '0 16px' }}>
+
+        {/* Sidebar */}
+        <aside style={{ width: 210, flexShrink: 0, paddingTop: 24 }}>
           <FilterPanel onFilterChange={handleFilterChange} appliedFilters={filters} />
         </aside>
 
-        {/* Main Content Area */}
-        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-8 max-w-7xl">
-          <div className="space-y-6">
-            {/* Executive Summary - TOP */}
-            <section>
-              <ExecutiveSummary kpis={kpis} filters={filters} />
-            </section>
+        {/* Main */}
+        <main style={{ flex: 1, padding: '24px 0 24px 20px', minWidth: 0 }}>
 
-            {/* Daily Insights - NEW */}
-            <section>
-              <DailyInsights kpis={kpis} />
-            </section>
+          {/* Business Performance summary — status, counts, alert bar */}
+          <BusinessPerformancePanel kpis={kpis} filters={filters} />
 
-            {/* Graph of the Day - NEW */}
-            <section>
-              <GraphOfTheDay kpis={kpis} />
-            </section>
+          {/* AI narrative summary */}
+          <InsightBanner filters={filters} />
 
-            {/* Enhanced KPI Cards - SMALLER (6 columns) */}
-            <section>
-              <div className="mb-3 flex items-center justify-between">
+          {/* AI Hidden Insights cards */}
+          <InsightPanel kpis={kpis} filters={filters} />
+
+          {/* KPI Section header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                Key Performance Indicators
+              </h2>
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-secondary)' }}>
+                Click{' '}
+                <span style={{ fontSize: 12 }}>📊</span>
+                {' '}on any card for detailed charts
+                {(filters.geo !== 'All' || filters.channel !== 'All' || filters.product !== 'All') && (
+                  <span style={{ marginLeft: 8, color: '#3b82f6', fontWeight: 600 }}>• Filtered</span>
+                )}
+              </p>
+            </div>
+            {isLoadingKpis && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#3b82f6' }}>
+                <div style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  border: '2px solid #3b82f6', borderTopColor: 'transparent',
+                  animation: 'spin 0.7s linear infinite',
+                }} />
+                Updating…
+              </div>
+            )}
+          </div>
+
+          {/* KPI Grid */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+            gap: 12, marginBottom: 28,
+          }}>
+            {kpiError && kpis.length === 0 ? (
+              <div style={{
+                gridColumn: '1 / -1',
+                padding: '28px 24px',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-glass)',
+                borderRadius: 12,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+              }}>
                 <div>
-                  <h2 className="text-base font-semibold text-gray-900">Key Performance Indicators</h2>
-                  <p className="text-xs text-gray-600">
-                    AI-powered insights for each metric
-                    {(filters.geo !== 'All' || filters.channel !== 'All' || filters.product !== 'All') && (
-                      <span className="ml-2 text-blue-600 font-medium">• Filtered view</span>
-                    )}
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {kpiError === 'timeout'
+                      ? '⏳ Databricks warehouse is warming up…'
+                      : '⚠️ Could not load KPI data'}
+                  </p>
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
+                    {kpiError === 'timeout'
+                      ? 'Cold starts can take 60–90 s. Data will appear once the warehouse is ready.'
+                      : 'Check that the backend is running and DATABRICKS_TOKEN is set.'}
                   </p>
                 </div>
-                {isLoadingKpis && (
-                  <div className="text-xs text-blue-600 font-medium flex items-center gap-2">
-                    <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                    Updating...
-                  </div>
+                <button onClick={() => loadKpis()} style={{
+                  padding: '7px 16px', fontSize: 12, fontWeight: 600,
+                  background: 'rgba(59,130,246,0.12)', color: '#3b82f6',
+                  border: '1px solid rgba(59,130,246,0.35)', borderRadius: 8, cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}>
+                  Retry
+                </button>
+              </div>
+            ) : (kpis.length > 0 ? kpis : Array.from({ length: 8 })).map((kpi, idx) => (
+              <div key={kpi?.id ?? idx} style={{ position: 'relative' }}>
+                <EnhancedKPICard
+                  kpi={kpi}
+                  insights={kpiInsights[kpi?.id]}
+                  loading={!kpi}
+                  compact
+                  activeInsightId={activeInsightId}
+                  onInsightToggle={handleInsightToggle}
+                />
+                {/* Detail modal trigger */}
+                {kpi && (
+                  <button
+                    onClick={() => handleKpiCardClick(kpi)}
+                    title="View detailed chart"
+                    style={{
+                      position: 'absolute', top: 8, right: 8,
+                      background: 'rgba(59,130,246,0.15)',
+                      border: '1px solid rgba(59,130,246,0.2)',
+                      borderRadius: 6, padding: '2px 5px',
+                      fontSize: 12, cursor: 'pointer', lineHeight: 1,
+                      color: '#3b82f6',
+                    }}
+                  >📊</button>
                 )}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {kpis.length > 0 ? (
-                  kpis.map((kpi) => (
-                    <EnhancedKPICard 
-                      key={kpi.id} 
-                      kpi={kpi} 
-                      insights={kpiInsights[kpi.id]}
-                      loading={false}
-                      compact={true}
-                    />
-                  ))
-                ) : (
-                  // Loading placeholders
-                  Array.from({ length: 8 }).map((_, idx) => (
-                    <EnhancedKPICard key={idx} loading={true} compact={true} />
-                  ))
-                )}
-              </div>
-            </section>
+            ))}
           </div>
 
-          {/* Charts and Other Content Below */}
-          <div className="space-y-6 mt-8">
+          {/* Revenue gap decomposition waterfall — only renders when gap exists */}
+          <ImpactWaterfall filters={filters} />
 
-          {/* Performance Trends & Analytics */}
-          <section>
-            <InsightsPanel kpis={kpis} />
-          </section>
+          {/* Charts section */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <div className="glass-card" style={{ padding: 16 }}>
+              <ARRTrendChart kpis={kpis} />
+            </div>
+            <div className="glass-card" style={{ padding: 16 }}>
+              <PipelineChart kpis={kpis} />
+            </div>
+          </div>
+          {/* Forecast + Forecast Intelligence (embedded within ForecastChart) */}
+          <ForecastChart />
 
-          {/* Charts Section */}
-          <section>
-            <div className="mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Performance Analytics</h2>
-              <p className="text-sm text-gray-600">Historical trends and pipeline breakdown</p>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ARRTrendChart />
-              <PipelineChart />
-            </div>
-          </section>
+          {/* ── Extended Analytics — 5 tabs ──────────────────────── */}
+          <AnalyticsTabs />
 
-          {/* Forecast Section */}
-          <section>
-            <div className="mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">AI-Powered Forecast</h2>
-              <p className="text-sm text-gray-600">Prophet ML model predictions with confidence intervals</p>
-            </div>
-            <ForecastChart />
-          </section>
-
-          {/* Footer Info */}
-          <section className="bg-white rounded-lg shadow p-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Data Source</p>
-                <p className="text-lg font-semibold text-gray-900">Databricks</p>
-                <p className="text-xs text-gray-500 mt-1">goto-eureka-mdl-1</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Forecast Model</p>
-                <p className="text-lg font-semibold text-gray-900">Prophet AI</p>
-                <p className="text-xs text-gray-500 mt-1">Facebook's time series forecasting</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Refresh Frequency</p>
-                <p className="text-lg font-semibold text-gray-900">Real-time</p>
-                <p className="text-xs text-gray-500 mt-1">Auto-refresh every 5 minutes</p>
-              </div>
-            </div>
-          </section>
-        </div>
-      </main>
+          {/* Footer */}
+          <div style={{
+            borderTop: '1px solid var(--border-glass)',
+            paddingTop: 16, marginTop: 8,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            fontSize: 11, color: 'var(--text-muted)',
+          }}>
+            <span>© 2026 Atlas Executive Insights · GAIM · Databricks</span>
+            <a href="http://localhost:8000/docs" target="_blank" rel="noopener noreferrer"
+               style={{ color: '#3b82f6', textDecoration: 'none' }}>
+              API Docs
+            </a>
+          </div>
+        </main>
       </div>
 
-      {/* Footer */}
-      <footer className="mt-12 bg-white border-t border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-gray-600">
-              © 2026 Atlas Executive Insights. Powered by Prophet AI & Databricks.
-            </p>
-            <div className="flex space-x-6">
-              <a href="http://localhost:8000/docs" target="_blank" rel="noopener noreferrer" 
-                 className="text-sm text-blue-600 hover:text-blue-700">
-                API Documentation
-              </a>
-              <a href="#" className="text-sm text-gray-600 hover:text-gray-700">
-                Help & Support
-              </a>
-            </div>
-          </div>
-        </div>
-      </footer>
+      {/* ── KPI Detail Modal ─────────────────────────────────────────── */}
+      {selectedKpi && (
+        <KPIDetailModal kpi={selectedKpi} onClose={() => setSelectedKpi(null)} />
+      )}
 
-      {/* Genie AI Assistant - Floating button */}
-      <GenieAssistant />
+      {/* ── Floating AI Chat Panel ───────────────────────────────────── */}
+      <AIChatPanel onAnalyzingChange={setIsAnalyzing} />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <FilterProvider>
+      <AppInner />
+    </FilterProvider>
   );
 }
 

@@ -1,168 +1,313 @@
-import { useState, useEffect } from 'react';
-import { Filter, X, ChevronDown } from 'lucide-react';
-import { apiService } from '../services/api';
+import { useState } from 'react';
+import { X, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { useFilters, DEFAULT_FILTERS } from '../contexts/FilterContext';
+import { useTheme } from '../hooks/useTheme';
 
-export default function FilterPanel({ onFilterChange, appliedFilters }) {
-  const [filterOptions, setFilterOptions] = useState(null);
-  const [filters, setFilters] = useState({
-    geo: 'All',
-    channel: 'All',
-    product: 'All'
-  });
+// ─── Static filter option lists ───────────────────────────────────────────────
+const FILTER_CONFIGS = [
+  {
+    key: 'geo', label: 'Geography',
+    options: [
+      { label: 'All', value: 'All' },
+      { label: 'NA', value: 'NA' },
+      { label: 'EMEA', value: 'EMEA' },
+      { label: 'LATAM', value: 'LATAM' },
+      { label: 'APAC', value: 'APAC' },
+      { label: 'AUS/ROW', value: 'AUS/ROW' },
+    ],
+  },
+  {
+    key: 'channel', label: 'Channel',
+    options: [
+      { label: 'All', value: 'All' },
+      { label: 'Enterprise', value: 'Enterprise' },
+      { label: 'Partner', value: 'Partner' },
+      { label: 'Mid-Market', value: 'Mid-Market' },
+      { label: 'MSP', value: 'MSP' },
+      { label: 'GSI', value: 'GSI' },
+      { label: 'Small Business', value: 'Small Business' },
+    ],
+  },
+  {
+    key: 'product', label: 'Product',
+    options: [
+      { label: 'All', value: 'All' },
+      { label: 'GoTo Connect', value: 'Connect' },
+      { label: 'GoTo Resolve', value: 'Resolve' },
+      { label: 'GoTo Engage', value: 'Engage' },
+      { label: 'GoTo Central', value: 'Central' },
+      { label: 'Contact Center', value: 'ContactCenter' },
+    ],
+  },
+  {
+    key: 'fuel', label: 'Fuel Source',
+    options: [
+      { label: 'All', value: 'All' },
+      { label: 'Marketing', value: 'Marketing' },
+      { label: 'BDR', value: 'BDR' },
+      { label: 'AE', value: 'AE' },
+      { label: 'Partner', value: 'Partner' },
+    ],
+  },
+  {
+    key: 'purchaseType', label: 'Purchase Type',
+    options: [
+      { label: 'All', value: 'All' },
+      { label: 'Expansion', value: 'Expansion' },
+      { label: 'New', value: 'New' },
+    ],
+  },
+  {
+    key: 'targetVersion', label: 'Target',
+    options: [
+      { label: 'Plan (Board)', value: 'Plan' },
+      { label: 'FY Forecast', value: 'FY' },
+    ],
+  },
+];
 
-  useEffect(() => {
-    loadFilterOptions();
-  }, []);
+const TIME_PERIODS = ['QTD', 'MTD', 'YTD', 'L30D', 'L90D', 'Custom'];
 
-  const loadFilterOptions = async () => {
-    try {
-      const options = await apiService.getFilters();
-      setFilterOptions(options);
-    } catch (error) {
-      console.error('Error loading filter options:', error);
-    }
+const CHIP_COLORS = {
+  geo: '#3b82f6', channel: '#10b981', product: '#8b5cf6',
+  fuel: '#f59e0b', purchaseType: '#06b6d4', targetVersion: '#ef4444',
+};
+
+const NON_DEFAULT_CHECK = {
+  geo: 'All', channel: 'All', product: 'All',
+  fuel: 'All', purchaseType: 'All', targetVersion: 'Plan',
+};
+
+export default function FilterPanel({ onFilterChange }) {
+  const isDark = useTheme();
+  const { filters, updateFilter, resetFilters } = useFilters();
+  const [collapsed, setCollapsed] = useState(false);
+
+  // ── Theme-aware color palette ───────────────────────────────────────────
+  const C = isDark ? {
+    panelBg:       'rgba(13,20,40,0.95)',
+    panelBorder:   'rgba(255,255,255,0.07)',
+    headerBorder:  'rgba(255,255,255,0.06)',
+    filtersLabel:  '#94a3b8',
+    labelText:     '#475569',
+    divider:       'rgba(255,255,255,0.06)',
+    activeLabel:   '#334155',
+    dropdownBg:    'rgba(15,23,42,0.85)',
+    dropdownBdr:   'rgba(255,255,255,0.1)',
+    dropdownColor: '#e2e8f0',
+    periodBg:      'rgba(255,255,255,0.03)',
+    periodBdr:     'rgba(255,255,255,0.07)',
+    periodColor:   '#475569',
+  } : {
+    panelBg:       '#ffffff',
+    panelBorder:   'rgba(0,0,0,0.09)',
+    headerBorder:  'rgba(0,0,0,0.07)',
+    filtersLabel:  '#334155',
+    labelText:     '#64748b',
+    divider:       'rgba(0,0,0,0.07)',
+    activeLabel:   '#475569',
+    dropdownBg:    '#f8fafc',
+    dropdownBdr:   'rgba(0,0,0,0.12)',
+    dropdownColor: '#0f172a',
+    periodBg:      '#f1f5f9',
+    periodBdr:     'rgba(0,0,0,0.09)',
+    periodColor:   '#475569',
   };
 
   const handleChange = (key, value) => {
-    const newFilters = { ...filters, [key]: value };
-    setFilters(newFilters);
-    onFilterChange(newFilters);
+    updateFilter(key, value);
+    if (onFilterChange) {
+      const newFilters = { ...filters, [key]: value };
+      onFilterChange(newFilters);
+    }
   };
 
-  const clearFilters = () => {
-    const defaultFilters = { geo: 'All', channel: 'All', product: 'All' };
-    setFilters(defaultFilters);
-    onFilterChange(defaultFilters);
+  const handleReset = () => {
+    resetFilters();
+    if (onFilterChange) onFilterChange({ ...DEFAULT_FILTERS });
   };
 
-  const hasFiltersApplied = filters.geo !== 'All' || filters.channel !== 'All' || filters.product !== 'All';
-
-  if (!filterOptions) {
-    return null;
+  // Build active chips for any non-default selection
+  const activeChips = FILTER_CONFIGS
+    .filter(fc => filters[fc.key] !== NON_DEFAULT_CHECK[fc.key])
+    .map(fc => ({
+      key: fc.key,
+      label: fc.options.find(o => o.value === filters[fc.key])?.label ?? filters[fc.key],
+      color: CHIP_COLORS[fc.key],
+    }));
+  if (filters.period !== 'QTD') {
+    activeChips.push({ key: 'period', label: filters.period, color: '#64748b' });
   }
+  const hasActive = activeChips.length > 0;
+
+  // ── Styles ─────────────────────────────────────────────────────────────────
+  const dropdownStyle = {
+    width: '100%',
+    appearance: 'none',
+    background: C.dropdownBg,
+    border: `1px solid ${C.dropdownBdr}`,
+    borderRadius: 5,
+    color: C.dropdownColor,
+    fontSize: 11,
+    padding: '4px 22px 4px 7px',
+    cursor: 'pointer',
+    outline: 'none',
+    fontFamily: 'inherit',
+  };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-3 sticky top-4">
-      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-200">
-        <Filter className="w-4 h-4 text-blue-600" />
-        <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Filters</h3>
-        {hasFiltersApplied && (
-          <span className="bg-blue-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">●</span>
-        )}
-      </div>
+    <div style={{
+      background: C.panelBg,
+      border: `1px solid ${C.panelBorder}`,
+      borderRadius: 10,
+      backdropFilter: 'blur(12px)',
+      overflow: 'hidden',
+      position: 'sticky',
+      top: 60,
+      boxShadow: isDark ? 'none' : '0 2px 12px rgba(0,0,0,0.06)',
+    }}>
 
-      <div className="space-y-3">
-        {/* Geography Filter */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">
-            Geography
-          </label>
-          <div className="relative">
-            <select 
-              value={filters.geo}
-              onChange={(e) => handleChange('geo', e.target.value)}
-              className="w-full appearance-none border border-slate-300 rounded-md px-2 py-1.5 pr-7 text-xs font-medium text-slate-900 bg-white hover:border-blue-400 focus:border-blue-500 focus:outline-none transition-colors cursor-pointer"
-            >
-              {filterOptions.geo.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
+      {/* ── Header (collapsible toggle) ─────────────────────────────── */}
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        style={{
+          width: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '9px 12px',
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          borderBottom: collapsed ? 'none' : `1px solid ${C.headerBorder}`,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <SlidersHorizontal size={12} color="#3b82f6" />
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.filtersLabel, textTransform: 'uppercase', letterSpacing: 1.1 }}>
+            Filters
+          </span>
+          {hasActive && (
+            <span style={{
+              width: 5, height: 5, borderRadius: '50%',
+              background: '#3b82f6', boxShadow: '0 0 6px #3b82f6',
+              display: 'inline-block',
+            }} />
+          )}
+        </div>
+        <ChevronDown
+          size={12}
+          color="#475569"
+          style={{ transform: collapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.2s' }}
+        />
+      </button>
+
+      {/* ── Body ───────────────────────────────────────────────────────── */}
+      {!collapsed && (
+        <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 9 }}>
+
+          {/* Filter dropdowns */}
+          {FILTER_CONFIGS.map(fc => (
+            <div key={fc.key}>
+              <div style={{
+                fontSize: 9, fontWeight: 700, color: C.labelText,
+                textTransform: 'uppercase', letterSpacing: 0.9, marginBottom: 3,
+                borderLeft: filters[fc.key] !== NON_DEFAULT_CHECK[fc.key]
+                  ? `2px solid ${CHIP_COLORS[fc.key]}` : '2px solid transparent',
+                paddingLeft: 4,
+              }}>
+                {fc.label}
+              </div>
+              <div style={{ position: 'relative' }}>
+                <select
+                  value={filters[fc.key]}
+                  onChange={e => handleChange(fc.key, e.target.value)}
+                  style={dropdownStyle}
+                >
+                  {fc.options.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={9}
+                  style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', color: '#475569', pointerEvents: 'none' }}
+                />
+              </div>
+            </div>
+          ))}
+
+          {/* ── Divider ──────────────────────────────────────────────── */}
+          <div style={{ borderTop: `1px solid ${C.divider}`, paddingTop: 8 }}>
+
+            {/* Active filter chips */}
+            {hasActive && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 8, fontWeight: 700, color: C.activeLabel, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
+                  Active
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {activeChips.map(chip => (
+                    <div key={chip.key} style={{
+                      display: 'flex', alignItems: 'center', gap: 4,
+                      padding: '2px 6px', borderRadius: 4,
+                      background: `${chip.color}15`,
+                      border: `1px solid ${chip.color}40`,
+                      fontSize: 10, fontWeight: 600, color: chip.color,
+                    }}>
+                      <span style={{ fontSize: 8 }}>●</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chip.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Time Period */}
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 8, fontWeight: 700, color: C.activeLabel, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
+                Time Period
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
+                {TIME_PERIODS.map(p => {
+                  const active = filters.period === p;
+                  return (
+                    <button
+                      key={p}
+                      onClick={() => handleChange('period', p)}
+                      style={{
+                        padding: '4px 0', borderRadius: 4,
+                        fontSize: 10, fontWeight: active ? 700 : 500,
+                        cursor: 'pointer',
+                        background: active ? 'rgba(59,130,246,0.15)' : C.periodBg,
+                        border: `1px solid ${active ? 'rgba(59,130,246,0.5)' : C.periodBdr}`,
+                        color: active ? '#3b82f6' : C.periodColor,
+                        transition: 'all 0.12s', fontFamily: 'inherit',
+                      }}
+                    >
+                      {p}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Clear All */}
+            {hasActive && (
+              <button
+                onClick={handleReset}
+                style={{
+                  width: '100%', marginTop: 4,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                  padding: '5px 0', borderRadius: 5,
+                  background: 'rgba(239,68,68,0.06)',
+                  border: '1px solid rgba(239,68,68,0.2)',
+                  color: '#ef4444',
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                <X size={10} />
+                Clear All
+              </button>
+            )}
           </div>
         </div>
-
-        {/* Channel Filter */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">
-            Channel
-          </label>
-          <div className="relative">
-            <select 
-              value={filters.channel}
-              onChange={(e) => handleChange('channel', e.target.value)}
-              className="w-full appearance-none border border-slate-300 rounded-md px-2 py-1.5 pr-7 text-xs font-medium text-slate-900 bg-white hover:border-blue-400 focus:border-blue-500 focus:outline-none transition-colors cursor-pointer"
-            >
-              {filterOptions.channel.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
-          </div>
-        </div>
-
-        {/* Product Filter */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">
-            Product
-          </label>
-          <div className="relative">
-            <select 
-              value={filters.product}
-              onChange={(e) => handleChange('product', e.target.value)}
-              className="w-full appearance-none border border-slate-300 rounded-md px-2 py-1.5 pr-7 text-xs font-medium text-slate-900 bg-white hover:border-blue-400 focus:border-blue-500 focus:outline-none transition-colors cursor-pointer"
-            >
-              {filterOptions.product.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
-          </div>
-        </div>
-      </div>
-
-      {/* Clear Button */}
-      {hasFiltersApplied && (
-        <button 
-          onClick={clearFilters}
-          className="w-full mt-3 pt-3 border-t border-slate-200 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-semibold text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-        >
-          <X className="w-3 h-3" />
-          <span>Clear All</span>
-        </button>
       )}
-
-      {/* Applied Filters Display */}
-      {hasFiltersApplied && (
-        <div className="mt-3 pt-3 border-t border-slate-200 space-y-1">
-          <span className="text-xs font-bold text-slate-500 uppercase block">Active:</span>
-          {filters.geo !== 'All' && (
-            <div className="bg-blue-50 text-blue-800 text-xs font-semibold px-2 py-1 rounded border border-blue-200">
-              📍 {filterOptions.geo.find(o => o.value === filters.geo)?.label.split('(')[0].trim()}
-            </div>
-          )}
-          {filters.channel !== 'All' && (
-            <div className="bg-green-50 text-green-800 text-xs font-semibold px-2 py-1 rounded border border-green-200">
-              🔗 {filters.channel}
-            </div>
-          )}
-          {filters.product !== 'All' && (
-            <div className="bg-purple-50 text-purple-800 text-xs font-semibold px-2 py-1 rounded border border-purple-200">
-              📦 {filters.product}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Time Period Filter in Sidebar */}
-      <div className="mt-4 pt-4 border-t border-slate-200">
-        <label className="block text-xs font-semibold text-slate-600 mb-2">
-          Time Period
-        </label>
-        <div className="grid grid-cols-2 gap-1">
-          <button className="px-2 py-1 text-xs font-medium text-white bg-blue-600 border border-blue-600 rounded hover:bg-blue-700">QTD</button>
-          <button className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded hover:bg-slate-100">MTD</button>
-          <button className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded hover:bg-slate-100">YTD</button>
-          <button className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded hover:bg-slate-100">L30D</button>
-          <button className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded hover:bg-slate-100">L90D</button>
-          <button className="px-2 py-1 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded hover:bg-slate-100">Custom</button>
-        </div>
-      </div>
     </div>
   );
 }

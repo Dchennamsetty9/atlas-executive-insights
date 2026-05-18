@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     
     # Databricks (recommended - same source as Performance Hub)
     # When deployed to Databricks Apps, these are auto-provided
-    databricks_server_hostname: str = os.getenv("DATABRICKS_HOST", "")
+    databricks_server_hostname: str = os.getenv("DATABRICKS_SERVER_HOSTNAME", os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com"))
     databricks_http_path: str = "/sql/1.0/warehouses/c24ee33594e13e93"
     databricks_access_token: str = os.getenv("DATABRICKS_TOKEN", "")
     databricks_catalog: str = "datagroup_mdl"
@@ -36,13 +36,25 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("DEBUG", "True").lower() == "true"
     api_port: int = int(os.getenv("PORT", "8000"))
     
-    # CORS origins - allow Databricks workspace domains
-    cors_origins: List[str] = [
-        "http://localhost:3000", 
-        "http://localhost:5173",
-        "https://*.cloud.databricks.com",  # Databricks Apps domain
-        os.getenv("DATABRICKS_HOST", "")
-    ]
+    # CORS origins — FastAPI CORSMiddleware does NOT support wildcard subdomains,
+    # so the workspace hostname must be listed explicitly.
+    @property
+    def cors_origins(self) -> List[str]:
+        origins = [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "https://goto-data-dock.cloud.databricks.com",
+        ]
+        # Add DATABRICKS_HOST if injected by Databricks Apps runtime
+        host = os.getenv("DATABRICKS_HOST", "")
+        if host:
+            # Ensure it is a proper https:// origin (strip trailing slashes)
+            if not host.startswith("http"):
+                host = f"https://{host}"
+            host = host.rstrip("/")
+            if host not in origins:
+                origins.append(host)
+        return origins
     
     # Forecasting
     forecast_default_periods: int = 90
@@ -51,6 +63,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"   # silently ignore env vars that don't match declared fields
 
 
 # Singleton instance

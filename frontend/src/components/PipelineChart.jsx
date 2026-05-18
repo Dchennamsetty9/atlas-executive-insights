@@ -1,8 +1,40 @@
 import { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { apiService } from '../services/api';
+import { useTheme } from '../hooks/useTheme';
 
 const PipelineChart = () => {
+  const isDark = useTheme();
+  const C = isDark ? {
+    title:      '#f1f5f9',
+    subtitle:   '#64748b',
+    label:      '#475569',
+    value:      '#f1f5f9',
+    grid:       'rgba(255,255,255,0.05)',
+    tick:       '#475569',
+    border:     'rgba(255,255,255,0.06)',
+    targetBar:  'rgba(255,255,255,0.08)',
+    tooltipBg:  'rgba(15,23,42,0.95)',
+    tooltipBdr: 'rgba(255,255,255,0.1)',
+    tooltipTtl: '#f1f5f9',
+    tooltipSub: '#64748b',
+    legend:     '#64748b',
+  } : {
+    title:      '#0f172a',
+    subtitle:   '#475569',
+    label:      '#64748b',
+    value:      '#0f172a',
+    grid:       'rgba(0,0,0,0.06)',
+    tick:       '#64748b',
+    border:     'rgba(0,0,0,0.08)',
+    targetBar:  'rgba(0,0,0,0.08)',
+    tooltipBg:  'rgba(255,255,255,0.98)',
+    tooltipBdr: 'rgba(0,0,0,0.1)',
+    tooltipTtl: '#0f172a',
+    tooltipSub: '#475569',
+    legend:     '#334155',
+  };
+
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -16,8 +48,6 @@ const PipelineChart = () => {
       setLoading(true);
       setError(null);
       const response = await apiService.getKPIs();
-      
-      // Extract pipeline metrics from backend API (uses 'id' field)
       const pipelineMetrics = ['won_pipeline', 'created_pipeline', 'active_pipeline'].map(metric => {
         const kpi = response.find(k => k.id === metric);
         return {
@@ -25,58 +55,44 @@ const PipelineChart = () => {
           value: kpi ? (kpi.value * (kpi.unit === '$' ? 1000000 : 1)) : 0,
           target: kpi ? (kpi.target * (kpi.unit === '$' ? 1000000 : 1)) : 0,
           metTarget: kpi ? kpi.value >= kpi.target : false,
+          pct: kpi ? Math.round((kpi.value / kpi.target) * 100) : 0,
         };
       });
-
       setData(pipelineMetrics);
     } catch (err) {
       console.error('Error fetching pipeline data:', err);
-      setError('Failed to load pipeline data. Showing demo data.');
+      setError('demo');
       setData(getDemoData());
     } finally {
       setLoading(false);
     }
   };
 
-  const formatName = (name) => {
-    const nameMap = {
-      'won_pipeline': 'Won',
-      'created_pipeline': 'Created',
-      'active_pipeline': 'Active',
-    };
-    return nameMap[name] || name;
-  };
+  const formatName = (n) => ({ won_pipeline: 'Won', created_pipeline: 'Created', active_pipeline: 'Active' }[n] || n);
 
   const getDemoData = () => [
-    { name: 'Won', value: 2450000, target: 2000000, metTarget: true },
-    { name: 'Created', value: 8500000, target: 7500000, metTarget: true },
-    { name: 'Active', value: 12000000, target: 10000000, metTarget: true },
+    { name: 'Won',     value: 2450000, target: 2000000, metTarget: true,  pct: 123 },
+    { name: 'Created', value: 8500000, target: 7500000, metTarget: true,  pct: 113 },
+    { name: 'Active',  value: 12000000,target: 10000000,metTarget: true,  pct: 120 },
   ];
 
-  const formatCurrency = (value) => {
-    return `$${(value / 1000000).toFixed(1)}M`;
-  };
-
-  const COLORS = {
-    Won: '#10b981',
-    Created: '#3b82f6',
-    Active: '#8b5cf6',
-  };
+  const formatCurrency = (value) => `$${(value / 1000000).toFixed(1)}M`;
+  const COLORS = { Won: '#10b981', Created: '#3b82f6', Active: '#8b5cf6' };
 
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
-      const data = payload[0].payload;
+      const d = payload[0].payload;
       return (
-        <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200">
-          <p className="font-semibold text-gray-800 mb-2">{data.name} Pipeline</p>
-          <p className="text-blue-600 font-medium">
-            Value: {formatCurrency(data.value)}
-          </p>
-          <p className="text-gray-600">
-            Target: {formatCurrency(data.target)}
-          </p>
-          <p className={`text-sm mt-1 ${data.metTarget ? 'text-green-600' : 'text-orange-600'}`}>
-            {data.metTarget ? '✓ Target Met' : '⚠ Below Target'}
+        <div style={{
+          background: C.tooltipBg, border: `1px solid ${C.tooltipBdr}`,
+          borderRadius: 8, padding: '10px 14px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+        }}>
+          <p style={{ fontSize: 12, fontWeight: 700, color: C.tooltipTtl, marginBottom: 6 }}>{d.name} Pipeline</p>
+          <p style={{ fontSize: 11, color: COLORS[d.name] || '#3b82f6', margin: '2px 0' }}>Actual: {formatCurrency(d.value)}</p>
+          <p style={{ fontSize: 11, color: C.tooltipSub, margin: '2px 0' }}>Target: {formatCurrency(d.target)}</p>
+          <p style={{ fontSize: 10, color: d.metTarget ? '#10b981' : '#f59e0b', marginTop: 4 }}>
+            {d.metTarget ? '✓ Target Met' : '⚠ Below Target'}
           </p>
         </div>
       );
@@ -86,68 +102,52 @@ const PipelineChart = () => {
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="animate-pulse">
-          <div className="h-6 bg-gray-200 rounded w-48 mb-4"></div>
-          <div className="h-64 bg-gray-100 rounded"></div>
-        </div>
+      <div style={{ height: 380, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #8b5cf6', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }} />
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <div className="flex justify-between items-center mb-6">
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
         <div>
-          <h2 className="text-xl font-bold text-gray-900">Pipeline Overview</h2>
-          <p className="text-sm text-gray-600 mt-1">Performance Hub Metrics: Won, Created, and Active Pipeline</p>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.title }}>Pipeline Overview</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 11, color: C.subtitle }}>Performance Hub Metrics: Won, Created, and Active Pipeline</p>
         </div>
-        {error && (
-          <span className="text-sm text-yellow-600 bg-yellow-50 px-3 py-1 rounded">
+        {error === 'demo' && (
+          <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', padding: '2px 8px', borderRadius: 6 }}>
             Demo Mode
           </span>
         )}
       </div>
 
-      <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-          <XAxis 
-            dataKey="name" 
-            tick={{ fill: '#6b7280', fontSize: 14, fontWeight: 500 }}
-            tickLine={{ stroke: '#e5e7eb' }}
-          />
-          <YAxis 
-            tickFormatter={formatCurrency}
-            tick={{ fill: '#6b7280', fontSize: 12 }}
-            tickLine={{ stroke: '#e5e7eb' }}
-          />
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={C.grid} />
+          <XAxis dataKey="name" tick={{ fill: C.tick, fontSize: 12, fontWeight: 500 }} tickLine={false} axisLine={false} />
+          <YAxis tickFormatter={formatCurrency} tick={{ fill: C.tick, fontSize: 11 }} tickLine={false} axisLine={false} width={52} />
           <Tooltip content={<CustomTooltip />} />
-          <Legend wrapperStyle={{ paddingTop: '20px' }} />
-          <Bar dataKey="value" name="Actual" radius={[8, 8, 0, 0]}>
-            {data.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={COLORS[entry.name]} />
+          <Legend wrapperStyle={{ paddingTop: 12, fontSize: 11, color: C.legend }} />
+          <Bar dataKey="value" name="Actual" radius={[6, 6, 0, 0]} maxBarSize={60}>
+            {data.map((entry, i) => (
+              <Cell key={`c-${i}`} fill={COLORS[entry.name] || '#3b82f6'} />
             ))}
           </Bar>
-          <Bar dataKey="target" name="Target" fill="#e5e7eb" radius={[8, 8, 0, 0]} opacity={0.4} />
+          <Bar dataKey="target" name="Target" fill={C.targetBar} radius={[6, 6, 0, 0]} maxBarSize={60} />
         </BarChart>
       </ResponsiveContainer>
 
-      <div className="mt-4 grid grid-cols-3 gap-4 border-t pt-4">
-        {data.map((item, index) => (
-          <div key={index} className="text-center">
-            <div className="flex items-center justify-center mb-1">
-              <div 
-                className="w-3 h-3 rounded-full mr-2" 
-                style={{ backgroundColor: COLORS[item.name] }}
-              ></div>
-              <p className="text-sm text-gray-600">{item.name}</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+        {data.map((item, i) => (
+          <div key={i} style={{ textAlign: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, marginBottom: 4 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[item.name] || '#3b82f6' }} />
+              <span style={{ fontSize: 11, color: C.label }}>{item.name}</span>
             </div>
-            <p className="text-lg font-bold text-gray-900">
-              {formatCurrency(item.value)}
-            </p>
-            <p className={`text-xs ${item.metTarget ? 'text-green-600' : 'text-orange-600'}`}>
-              {((item.value / item.target) * 100).toFixed(0)}% of target
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.value }}>{formatCurrency(item.value)}</p>
+            <p style={{ margin: '2px 0 0', fontSize: 10, color: item.metTarget ? '#10b981' : '#f59e0b' }}>
+              {item.pct}% of target
             </p>
           </div>
         ))}
@@ -157,3 +157,4 @@ const PipelineChart = () => {
 };
 
 export default PipelineChart;
+

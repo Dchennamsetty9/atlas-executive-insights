@@ -1,15 +1,17 @@
-import { useState } from 'react';
-import { TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, AlertTriangle, CheckCircle, Info, Lightbulb, Users, MapPin, Package, Brain } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 
-const EnhancedKPICard = ({ kpi, insights, loading, compact = false }) => {
-  const [expanded, setExpanded] = useState(false);
+const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsightId, onInsightToggle }) => {
 
   if (loading) {
+    const p = compact ? 12 : 24;
     return (
-      <div className={`bg-white rounded-lg shadow p-${compact ? '3' : '6'} animate-pulse`}>
-        <div className={`h-${compact ? '3' : '4'} bg-gray-200 rounded w-${compact ? '16' : '24'} mb-${compact ? '2' : '4'}`}></div>
-        <div className={`h-${compact ? '6' : '8'} bg-gray-200 rounded w-${compact ? '20' : '32'} mb-2`}></div>
-        <div className={`h-${compact ? '3' : '4'} bg-gray-200 rounded w-${compact ? '12' : '20'}`}></div>
+      <div style={{
+        background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(255,255,255,0.07)',
+        borderRadius: 10, padding: p, animation: 'pulse 1.5s ease-in-out infinite',
+      }}>
+        <div style={{ height: compact ? 11 : 13, background: 'rgba(255,255,255,0.07)', borderRadius: 4, width: compact ? 64 : 96, marginBottom: compact ? 8 : 16 }} />
+        <div style={{ height: compact ? 22 : 30, background: 'rgba(255,255,255,0.07)', borderRadius: 4, width: compact ? 80 : 128, marginBottom: 8 }} />
+        <div style={{ height: compact ? 11 : 13, background: 'rgba(255,255,255,0.05)', borderRadius: 4, width: compact ? 48 : 80 }} />
       </div>
     );
   }
@@ -114,43 +116,76 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false }) => {
     return isPositive ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />;
   };
 
+  const glowColor = atRisk ? 'rgba(239,68,68,0.18)' : exceeding ? 'rgba(16,185,129,0.12)' : 'transparent';
+
+  const DARK_STATUS = {
+    exceeding: { border: '#10b981', bg: 'rgba(16,185,129,0.12)', text: '#10b981' },
+    onTarget:  { border: '#3b82f6', bg: 'rgba(59,130,246,0.1)',  text: '#3b82f6' },
+    atRisk:    { border: '#ef4444', bg: 'rgba(239,68,68,0.12)',  text: '#ef4444' },
+    watch:     { border: '#f59e0b', bg: 'rgba(245,158,11,0.12)', text: '#f59e0b' },
+  };
+  const ds = exceeding ? DARK_STATUS.exceeding : metTarget ? DARK_STATUS.onTarget : atRisk ? DARK_STATUS.atRisk : DARK_STATUS.watch;
+  const trendColorDark = isNeutral ? '#64748b' : isPositive ? '#10b981' : '#ef4444';
+
   return (
-    <div className={`bg-white rounded-lg shadow hover:shadow-lg transition-all ${expanded ? (compact ? 'col-span-2' : 'col-span-2') : ''}`}>
+    <div style={{
+      background: 'rgba(15,23,42,0.6)',
+      border: `1px solid ${atRisk ? 'rgba(239,68,68,0.25)' : exceeding ? 'rgba(16,185,129,0.2)' : 'rgba(255,255,255,0.08)'}`,
+      borderRadius: 10,
+      backdropFilter: 'blur(8px)',
+      boxShadow: atRisk ? '0 0 14px rgba(239,68,68,0.15)' : exceeding ? '0 0 14px rgba(16,185,129,0.1)' : '0 2px 8px rgba(0,0,0,0.3)',
+      animation: atRisk ? 'kpiPulse 3s ease-in-out infinite' : 'none',
+      transition: 'box-shadow 0.2s',
+    }}>
+
       {/* Main KPI Display */}
-      <div className={compact ? 'p-3' : 'p-6'}>
-        <div className={`flex justify-between items-start ${compact ? 'mb-2' : 'mb-4'}`}>
-          <div className="flex-1">
-            <h3 className={`${compact ? 'text-sm' : 'text-base'} font-bold text-gray-900 mb-2`}>{title}</h3>
-            <div className={`inline-flex items-center gap-1 ${compact ? 'px-2 py-0.5' : 'px-3 py-1'} rounded-full border ${compact ? 'text-xs' : 'text-xs'} font-medium ${statusInfo.color}`}>
+      <div style={{ padding: compact ? 12 : 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: compact ? 8 : 14 }}>
+          <div style={{ flex: 1 }}>
+            <h3 style={{ fontSize: compact ? 11 : 13, fontWeight: 700, color: '#94a3b8', margin: '0 0 6px', textTransform: 'uppercase', letterSpacing: 0.5 }}>{title}</h3>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              padding: compact ? '2px 7px' : '3px 9px',
+              borderRadius: 20, border: `1px solid ${ds.border}44`,
+              background: ds.bg, fontSize: 10, fontWeight: 700, color: ds.text,
+            }}>
               {!compact && statusInfo.icon}
               {statusInfo.message}
             </div>
           </div>
-          <div className={`flex items-center ${trendColor}`}>
+          <div style={{ color: trendColorDark, display: 'flex', alignItems: 'center' }}>
             {getTrendIcon()}
           </div>
         </div>
 
-        <div className={compact ? 'space-y-2' : 'space-y-3'}>
-          <div className={`${compact ? 'text-xl' : 'text-3xl'} font-bold text-gray-900`}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 8 : 10 }}>
+          <div style={{ fontSize: compact ? 22 : 32, fontWeight: 800, color: '#f1f5f9', lineHeight: 1 }}>
             {formatValue(value)}
-            {unit && <span className={`${compact ? 'text-xs' : 'text-lg'} font-normal text-gray-500 ml-1`}>{unit}</span>}
+            {unit && <span style={{ fontSize: compact ? 11 : 16, fontWeight: 400, color: '#475569', marginLeft: 4 }}>{unit}</span>}
           </div>
 
           {target && (
             <>
-              <div className={`flex items-center justify-between ${compact ? 'text-xs' : 'text-sm'}`}>
-                <span className="text-gray-600">Target: {formatValue(target)}</span>
-                <span className={`font-medium ${metTarget ? 'text-green-600' : 'text-orange-600'}`}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: compact ? 11 : 12 }}>
+                <span style={{ color: '#475569' }}>Target: {formatValue(target)}</span>
+                <span style={{ fontWeight: 700, color: metTarget ? '#10b981' : '#f59e0b' }}>
                   {targetAchievement.toFixed(0)}%
                 </span>
               </div>
-              
-              {/* Dollar Impact for currency KPIs - Hide in compact mode if < 1M */}
+
+              {/* Dollarized impact row */}
               {dollarImpact !== null && Math.abs(dollarImpact) > (compact ? 0.5 : 0) && (
-                <div className={`flex items-center justify-between text-sm font-bold px-3 py-2 rounded-md border-2 ${dollarImpact > 0 ? 'bg-green-50 border-green-300 text-green-700' : 'bg-red-50 border-red-300 text-red-700'}`}>
-                  <span className="uppercase text-xs tracking-wide font-extrabold">{impactLabel}</span>
-                  <span className="text-lg font-bold">
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: compact ? '5px 8px' : '7px 10px',
+                  borderRadius: 6,
+                  border: `1px solid ${dollarImpact > 0 ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                  background: dollarImpact > 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+                }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', color: dollarImpact > 0 ? '#10b981' : '#ef4444' }}>
+                    {impactLabel}
+                  </span>
+                  <span style={{ fontSize: compact ? 13 : 16, fontWeight: 800, color: dollarImpact > 0 ? '#10b981' : '#ef4444' }}>
                     {dollarImpact > 0 ? '+' : ''}{formatDollarImpact(dollarImpact)}
                   </span>
                 </div>
@@ -159,177 +194,111 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false }) => {
           )}
 
           {previous_value && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">vs Previous</span>
-              <span className={`font-medium ${trendColor}`}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+              <span style={{ color: '#475569' }}>vs Previous</span>
+              <span style={{ fontWeight: 600, color: trendColorDark }}>
                 {isPositive && '+'}{changeValue.toFixed(1)}%
               </span>
             </div>
           )}
 
+          {/* Progress bar */}
           {targetAchievement && (
-            <div className="mt-3">
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className={`h-2 rounded-full transition-all ${
-                    exceeding ? 'bg-green-500' : metTarget ? 'bg-blue-500' : atRisk ? 'bg-red-500' : 'bg-orange-500'
-                  }`}
-                  style={{ width: `${Math.min(targetAchievement, 100)}%` }}
-                ></div>
-              </div>
+            <div style={{ height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 2,
+                width: `${Math.min(targetAchievement, 100)}%`,
+                background: exceeding ? 'linear-gradient(90deg,#10b981,#34d399)'
+                           : metTarget ? 'linear-gradient(90deg,#3b82f6,#60a5fa)'
+                           : atRisk    ? 'linear-gradient(90deg,#ef4444,#f87171)'
+                           : 'linear-gradient(90deg,#f59e0b,#fbbf24)',
+                transition: 'width 0.4s ease',
+              }} />
             </div>
           )}
 
-          {/* Quick Insights Preview */}
+          {/* Insights preview (non-compact) */}
           {insights && !compact && (
-            <div className="mt-4 pt-4 border-t border-gray-100">
-              <div className="flex items-start gap-2 text-sm">
-                <Lightbulb className="w-4 h-4 text-yellow-500 mt-0.5 flex-shrink-0" />
-                <p className="text-gray-700 line-clamp-2">{insights.summary}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Expand/Collapse Button - Show in compact mode too */}
-          {insights && (
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className={`w-full ${compact ? 'mt-2' : 'mt-4'} flex items-center justify-center gap-1 ${compact ? 'px-2 py-1' : 'px-4 py-2'} ${compact ? 'text-xs' : 'text-sm'} font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors`}
-            >
-              {expanded ? (
-                <>
-                  <ChevronUp className={`${compact ? 'w-3 h-3' : 'w-4 h-4'}`} />
-                  {compact ? 'Hide' : 'Hide Details'}
-                </>
-            ) : (
-              <>
-                <ChevronDown className={`${compact ? 'w-3 h-3' : 'w-4 h-4'}`} />
-                {compact ? 'Insights' : 'Show AI Insights'}
-              </>
-            )}
-          </button>
-          )}
-        </div>
-      </div>
-
-      {/* Expanded Insights Section - Always show when expanded */}
-      {expanded && insights && (
-        <div className="border-t border-gray-200 bg-gray-50 p-6 space-y-6">
-          {/* KPI Description Banner */}
-          {insights.kpiDescription && (
-            <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <Info className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-blue-900 leading-relaxed font-medium">
-                  {insights.kpiDescription}
+            <div style={{ paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ display: 'flex', gap: 6, fontSize: 11 }}>
+                <span style={{ fontSize: 12 }}>💡</span>
+                <p style={{ margin: 0, color: '#64748b', lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                  {insights.summary}
                 </p>
               </div>
             </div>
           )}
 
-          {/* Executive Summary */}
+          {/* ↓ Compact Insight Toggle */}
+          {insights && (
+            <button
+              onClick={() => onInsightToggle ? onInsightToggle(kpi?.id) : null}
+              style={{
+                width: '100%', marginTop: compact ? 4 : 8,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                padding: '4px 8px',
+                fontSize: 10, fontWeight: 600,
+                color: activeInsightId === kpi?.id ? '#60a5fa' : '#3b82f6',
+                cursor: 'pointer',
+                background: activeInsightId === kpi?.id ? 'rgba(59,130,246,0.1)' : 'rgba(59,130,246,0.04)',
+                border: `1px solid ${activeInsightId === kpi?.id ? 'rgba(59,130,246,0.3)' : 'rgba(59,130,246,0.12)'}`,
+                borderRadius: 6, transition: 'all 0.15s', fontFamily: 'inherit',
+              }}
+            >
+              <span>📊</span>
+              <span>{activeInsightId === kpi?.id ? '↑ Hide' : '↓ Insights'}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Compact Insight Panel (accordion, max 150px) ──────────────────── */}
+      {insights && activeInsightId === kpi?.id && (
+        <div style={{
+          borderTop: '1px solid rgba(255,255,255,0.07)',
+          background: 'rgba(0,0,0,0.25)',
+          padding: '8px 12px',
+          maxHeight: 150,
+          overflowY: 'auto',
+          display: 'flex', flexDirection: 'column', gap: 5,
+          animation: 'slideDown 0.15s ease-out',
+        }}>
+          {/* Line 1: Status sentence */}
           {insights.summary && (
-            <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <Brain className="w-5 h-5 text-slate-600 mt-0.5 flex-shrink-0" />
-                <div>
-                  <h4 className="font-semibold text-gray-900 mb-2">Executive Summary</h4>
-                  <p className="text-sm text-gray-700 leading-relaxed">{insights.summary}</p>
-                </div>
-              </div>
+            <div style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 10, flexShrink: 0 }}>💡</span>
+              <span style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.4 }}>
+                {insights.summary}
+              </span>
             </div>
           )}
 
-          {/* Critical Actions - Executive Focus */}
-          <div className="bg-gradient-to-r from-red-50 to-orange-50 border-2 border-red-200 rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <AlertTriangle className="w-5 h-5 text-red-600" />
-              <h4 className="font-bold text-red-900 uppercase text-sm tracking-wide">Critical Actions Required</h4>
-            </div>
-            <ul className="space-y-2">
-              {insights.needsAttention.map((item, idx) => (
-                <li key={idx} className="text-sm text-red-900 flex items-start gap-2 font-medium">
-                  <span className="text-red-600 mt-1 font-bold">►</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Demographic Breakdown - Only show if data exists */}
-          {insights.demographics && insights.demographics.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-4">
-                <Users className="w-5 h-5 text-blue-600" />
-                <h4 className="font-semibold text-gray-900">Performance by Segment</h4>
-              </div>
-              <div className="space-y-3">
-                {insights.demographics.map((demo, idx) => (
-                  <div key={idx} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 flex-1">
-                      {demo.type === 'geo' && <MapPin className="w-4 h-4 text-gray-400" />}
-                      {demo.type === 'product' && <Package className="w-4 h-4 text-gray-400" />}
-                      <span className="text-sm font-medium text-gray-700">{demo.segment}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="w-32 bg-gray-200 rounded-full h-2">
-                        <div
-                          className={`h-2 rounded-full ${demo.performance >= 100 ? 'bg-green-500' : demo.performance >= 90 ? 'bg-blue-500' : 'bg-red-500'}`}
-                          style={{ width: `${Math.min(demo.performance, 100)}%` }}
-                        ></div>
-                      </div>
-                      <span className={`text-sm font-semibold w-12 text-right ${demo.performance >= 100 ? 'text-green-600' : demo.performance >= 90 ? 'text-blue-600' : 'text-red-600'}`}>
-                        {demo.performance}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {/* Line 2: Action recommendation */}
+          {(insights.needsAttention?.[0] || insights.actions?.[0]) && (
+            <div style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 10, flexShrink: 0 }}>⚠️</span>
+              <span style={{ fontSize: 10, color: '#fca5a5', lineHeight: 1.4 }}>
+                {insights.needsAttention?.[0] || insights.actions?.[0]?.description}
+              </span>
             </div>
           )}
 
-          {/* Recommended Actions */}
-          {insights.actions && insights.actions.length > 0 && (
-            <div className="bg-gradient-to-r from-blue-50 to-slate-50 border-2 border-blue-200 rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-4">
-                <Lightbulb className="w-5 h-5 text-blue-600" />
-                <h4 className="font-bold text-blue-900 uppercase text-sm tracking-wide">Executive Actions</h4>
+          {/* Line 3: Best / Worst segment */}
+          {insights.demographics?.length > 0 && (() => {
+            const sorted = [...insights.demographics].sort((a, b) => a.performance - b.performance);
+            const worst = sorted[0];
+            const best  = sorted[sorted.length - 1];
+            return (
+              <div style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: 10, flexShrink: 0 }}>📍</span>
+                <span style={{ fontSize: 10, color: '#64748b', lineHeight: 1.4 }}>
+                  {worst && <span style={{ color: '#fca5a5' }}>Worst: {worst.segment} ({worst.performance}%)</span>}
+                  {worst && best && worst !== best && <span style={{ color: '#475569' }}> · </span>}
+                  {best && best !== worst && <span style={{ color: '#6ee7b7' }}>Best: {best.segment} ({best.performance}%)</span>}
+                </span>
               </div>
-              <div className="space-y-3">
-                {insights.actions.map((action, idx) => (
-                  <div key={idx} className="bg-white rounded-lg p-3 border border-blue-200">
-                    <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-600 text-white text-sm font-bold flex items-center justify-center">
-                        {idx + 1}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <p className="text-sm font-bold text-blue-900">{action.title}</p>
-                          {action.urgency === 'high' && (
-                            <span className="px-2 py-0.5 bg-red-600 text-white text-xs font-bold rounded uppercase">
-                              Urgent
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-sm text-gray-700">{action.description}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Root Cause Analysis */}
-          {insights.rootCause && (
-            <div className="bg-slate-100 border border-slate-300 rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <Info className="w-5 h-5 text-slate-700" />
-                <h4 className="font-bold text-slate-900 uppercase text-sm tracking-wide">Context & Analysis</h4>
-              </div>
-              <p className="text-sm text-slate-800 leading-relaxed">{insights.rootCause}</p>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
     </div>

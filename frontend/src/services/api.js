@@ -6,13 +6,12 @@ import axios from 'axios'
 
 // Auto-detect API URL:
 // - Production (Databricks Apps): Use relative path (same origin)
-// - Development: Use localhost:8000
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
-  (import.meta.env.PROD ? '' : 'http://localhost:8000')
+// - Development: Use relative path (Vite proxy routes /api -> backend)
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 120000,  // 120 s — allows Databricks warehouse cold-start (~60-90 s)
   headers: {
     'Content-Type': 'application/json',
   }
@@ -59,6 +58,11 @@ export const apiService = {
     if (endDate) params.end_date = endDate
     if (filters.geo && filters.geo !== 'All') params.geo = filters.geo
     if (filters.channel && filters.channel !== 'All') params.channel = filters.channel
+    if (filters.product && filters.product !== 'All') params.product = filters.product
+    if (filters.fuel && filters.fuel !== 'All') params.fuel = filters.fuel
+    if (filters.purchaseType && filters.purchaseType !== 'All') params.purchase_type = filters.purchaseType
+    if (filters.targetVersion && filters.targetVersion !== 'Plan') params.target_version = filters.targetVersion
+    if (filters.period && filters.period !== 'QTD') params.period = filters.period
     if (filters.product && filters.product !== 'All') params.product = filters.product
     return api.get('/api/kpis', { params })
   },

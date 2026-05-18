@@ -213,13 +213,7 @@
   transform: translateX(4px);
 }
 
-/* Input Form */
-.genie-form {
-  display: flex;
-  gap: 10px;
-  margin-top: 15px;
-}
-
+/* Input Form — styled at bottom of file in multi-turn section */
 .genie-input {
   flex: 1;
   padding: 12px;
@@ -276,3 +270,87 @@
     font-size: 14px;
   }
 }
+
+/* ── Multi-turn conversation additions ───────────────────────────── */
+
+/* Header subtitle + action row */
+.genie-subtitle {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.genie-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.genie-new-btn {
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.5);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.genie-new-btn:hover {
+  background: rgba(255,255,255,0.35);
+}
+
+/* Individual conversation turn */
+.genie-turn {
+  background: #f8f9fa;
+  border-left: 4px solid #667eea;
+  border-radius: 0 8px 8px 0;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.genie-turn.is-error {
+  background: #fff5f5;
+  border-left-color: #e53e3e;
+}
+
+/* Inline loading inside a turn */
+.genie-loading.inline {
+  text-align: left;
+  padding: 6px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #718096;
+  font-size: 13px;
+}
+
+.spinner-small {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #cbd5e0;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Conversation context note */
+.genie-context-note {
+  font-size: 12px;
+  color: #718096;
+  text-align: center;
+  margin: 4px 0 8px;
+}
+
+/* Form lives outside body now — attach to container bottom */
+.genie-form {
+  padding: 12px 16px;
+  border-top: 1px solid #e2e8f0;
+  background: white;
+  border-radius: 0 0 12px 12px;
+}
+

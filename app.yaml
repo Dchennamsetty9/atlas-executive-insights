@@ -5,18 +5,10 @@ name: atlas-executive-insights
 version: 1.0.0
 description: AI-Powered Executive Analytics Dashboard
 
-# Application entry point - starts the FastAPI backend
+# Application entry point — reads DATABRICKS_APP_PORT at runtime (Databricks Apps requirement)
 command:
   - python
-  - -m
-  - uvicorn
-  - main:app
-  - --host
-  - "0.0.0.0"
-  - --port
-  - "8000"
-  - --app-dir
-  - backend
+  - backend/start.py
 
 # Python dependencies
 requirements: requirements.txt
@@ -54,14 +46,9 @@ resources:
 
 # Health check
 health_check:
-  path: /
+  path: /api/health
   port: 8000
   interval_seconds: 30
-
-# Serve static frontend files
-static_files:
-  - source: frontend/dist
-    destination: /
 
 # Port mapping
 port: 8000

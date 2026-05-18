@@ -54,7 +54,8 @@ class DataFetcher:
         )
         self.connection_string = self._build_connection_string() if not self.use_databricks else None
         self.engine = None
-        self.databricks_connection = None
+        # NOTE: Databricks SQL connector is not thread-safe for shared connections.
+        # A fresh connection is created for every query (see get_connection).
         
     def _build_connection_string(self) -> str:
         """Build database connection string"""
@@ -69,59 +70,29 @@ class DataFetcher:
         )
     
     def get_connection(self):
-        """Get database connection - supports both local and Databricks Apps deployment"""
+        """Create and return a fresh Databricks SQL connection.
+
+        A new connection is created on every call rather than reusing a shared
+        instance because the databricks-sql-connector is NOT thread-safe for
+        concurrent access.  Callers are responsible for closing the connection
+        (or using it as a context manager: `with self.get_connection() as c`).
+
+        For the legacy SQL Server path the SQLAlchemy engine is cached because
+        it manages its own thread-safe connection pool internally.
+        """
         if self.use_databricks:
-            if not self.databricks_connection:
-                print(f"Connecting to Databricks: {settings.databricks_server_hostname[:50]}...")
-                
-                # Debug: Check what's in the environment
-                client_id = os.getenv("DATABRICKS_CLIENT_ID")
-                client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
-                token = os.getenv("DATABRICKS_TOKEN")
-                
-                print(f"DATABRICKS_CLIENT_ID present: {client_id is not None}")
-                print(f"DATABRICKS_CLIENT_SECRET present: {client_secret is not None}")
-                print(f"DATABRICKS_TOKEN present: {token is not None}")
-                print(f"In Databricks Apps: {self.in_databricks}")
-                
-                try:
-                    if self.in_databricks and (client_id and client_secret):
-                        # Databricks Apps with OAuth (recommended)
-                        print("Using Databricks Apps OAuth authentication")
-                        cfg = Config()
-                        
-                        self.databricks_connection = databricks_sql.connect(
-                            server_hostname=cfg.host,
-                            http_path=settings.databricks_http_path,
-                            credentials_provider=lambda: cfg.authenticate(),
-                            _socket_timeout=10
-                        )
-                    elif token:
-                        # Fallback: Direct token authentication
-                        print("Using direct access token authentication")
-                        self.databricks_connection = databricks_sql.connect(
-                            server_hostname=settings.databricks_server_hostname,
-                            http_path=settings.databricks_http_path,
-                            access_token=token,
-                            _socket_timeout=10
-                        )
-                    elif settings.databricks_access_token:
-                        # Local development with provided token
-                        print("Using provided access token (local development)")
-                        self.databricks_connection = databricks_sql.connect(
-                            server_hostname=settings.databricks_server_hostname,
-                            http_path=settings.databricks_http_path,
-                            access_token=settings.databricks_access_token,
-                            _socket_timeout=10
-                        )
-                    else:
-                        raise Exception("No valid authentication credentials found! Databricks Apps should provide DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET.")
-                    
-                    print("✅ Connected to Databricks successfully")
-                except Exception as e:
-                    print(f"❌ Failed to connect to Databricks: {str(e)}")
-                    raise
-            return self.databricks_connection
+            token = os.getenv("DATABRICKS_TOKEN") or settings.databricks_access_token
+            if not token:
+                raise RuntimeError(
+                    "DATABRICKS_TOKEN is not set. "
+                    "Export your Personal Access Token before starting the backend."
+                )
+            return databricks_sql.connect(
+                server_hostname=settings.databricks_server_hostname,
+                http_path=settings.databricks_http_path,
+                access_token=token,
+                _socket_timeout=10,
+            )
         else:
             if not self.engine:
                 conn_url = f"mssql+pyodbc:///?odbc_connect={self.connection_string}"
@@ -132,12 +103,13 @@ class DataFetcher:
         """Execute SQL query and return DataFrame - SYNCHRONOUS (use in thread pool)"""
         try:
             if self.use_databricks:
-                connection = self.get_connection()
-                cursor = connection.cursor()
-                cursor.execute(query)
-                columns = [desc[0] for desc in cursor.description]
-                data = cursor.fetchall()
-                cursor.close()
+                # Use the connection as a context manager so it is always closed,
+                # even if an exception is raised during query execution.
+                with self.get_connection() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(query)
+                        columns = [desc[0] for desc in cursor.description]
+                        data = cursor.fetchall()
                 df = pd.DataFrame(data, columns=columns)
             else:
                 engine = self.get_connection()
@@ -152,8 +124,8 @@ class DataFetcher:
             print(f"ERROR in execute_query: {str(e)}")
             raise
     
-    async def execute_query_async(self, query: str, params: List = None, timeout: int = 30) -> pd.DataFrame:
-        """Execute SQL query asynchronously with timeout"""
+    async def execute_query_async(self, query: str, params: List = None, timeout: int = 8) -> pd.DataFrame:
+        """Execute SQL query asynchronously with timeout — defaults to 8s for cold-cluster safety."""
         try:
             # Run blocking query in thread pool with timeout
             return await asyncio.wait_for(
@@ -161,10 +133,10 @@ class DataFetcher:
                 timeout=timeout
             )
         except asyncio.TimeoutError:
-            print(f"Query timeout after {timeout}s")
-            raise Exception(f"Database query timed out after {timeout} seconds")
+            print(f"[DataFetcher] Query timed out after {timeout}s — returning empty DataFrame")
+            return pd.DataFrame()
         except Exception as e:
-            print(f"Query error: {str(e)}")
+            print(f"[DataFetcher] Query error: {str(e)}")
             raise
     
     async def fetch_kpi_data(
@@ -454,17 +426,48 @@ class DataFetcher:
         
         # Map metric names to queries
         if metric == 'arr' or metric == 'ending_arr':
-            # ARR from partner_ending_arr table
-            query = f"""
-            SELECT 
-                data_month as ds,
-                SUM(MOM_ARR) as y
+            # --- Primary: partner_ending_arr ---
+            primary_query = f"""
+            SELECT
+                data_month AS ds,
+                SUM(MOM_ARR) AS y
             FROM {catalog}.{schema}.partner_ending_arr
-            WHERE data_month >= DATE_SUB(CURRENT_DATE(), 365)
+            WHERE data_month >= ADD_MONTHS(CURRENT_DATE(), -14)
             GROUP BY data_month
             ORDER BY data_month
             """
-        
+            try:
+                df_primary = self.execute_query(primary_query)
+                if not df_primary.empty:
+                    df_primary['ds'] = pd.to_datetime(df_primary['ds'])
+                    df_primary.attrs['arr_source'] = 'partner_ending_arr'
+                    return df_primary
+            except Exception as e:
+                print(f"partner_ending_arr unavailable ({e}), trying kpi_active_mrr_arr")
+
+            # --- Fallback: kpi_active_mrr_arr (more current) ---
+            fallback_query = """
+            SELECT
+                reporting_month AS ds,
+                SUM(arr_in_usd) AS y
+            FROM datagroup.datawarehouse.kpi_active_mrr_arr
+            GROUP BY reporting_month
+            ORDER BY reporting_month
+            """
+            try:
+                df_fallback = self.execute_query(fallback_query)
+                if not df_fallback.empty:
+                    df_fallback['ds'] = pd.to_datetime(df_fallback['ds'])
+                    df_fallback.attrs['arr_source'] = 'kpi_active_mrr_arr'
+                    return df_fallback
+            except Exception as e:
+                print(f"kpi_active_mrr_arr also unavailable ({e})")
+
+            # Both tables returned nothing — caller will use mock data
+            empty = pd.DataFrame(columns=['ds', 'y'])
+            empty.attrs['arr_source'] = None
+            return empty
+
         elif metric == 'arr_forecast' or metric == 'arr_actuals':
             # ARR from forecast_prophet table (actuals from hive_metastore)
             query = f"""
