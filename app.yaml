@@ -39,11 +39,6 @@ env:
   - name: DEBUG
     value: "False"
 
-# Resource requirements
-resources:
-  cpu: 2
-  memory: 4Gi
-
 # Health check
 health_check:
   path: /api/health
