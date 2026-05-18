@@ -1,137 +1,155 @@
 /**
- * KPIDetailModal — Animated chart popup for each KPI card
- * Chart type is determined by KPI name/id — no random data.
- * Pulls from kpi.trend_data (array of { date, value } from backend).
+ * KPIDetailModal — Animated chart popup for each KPI card.
+ * Each KPI gets the chart type that best tells its data story:
+ *   - Pipeline $    → ComposedChart: actual area + ideal-pace dotted line
+ *   - Volume/Count  → BarChart (weekly cadence)
+ *   - Close Rate %  → Semi-circle gauge (PieChart arc)
+ *   - Coverage      → Semi-circle gauge (PieChart arc)
+ *   - ADS           → LineChart with target reference line
  */
 
 import { memo, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LineChart, Line, BarChart, Bar, AreaChart, Area,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, RadialBarChart, RadialBar, Legend,
+  ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, ReferenceLine, PieChart, Pie, Cell,
 } from 'recharts';
 
-// ── KPI → chart config map ───────────────────────────────────────────────────
+// ── KPI → chart config ───────────────────────────────────────────────────────
 const CHART_CONFIG = {
-  // Won Pipeline $ — line chart, QTD trend
   won_pipeline: {
-    type: 'line',
-    label: 'Won Pipeline Trend',
+    type: 'pace',
+    label: 'Won ACV $ — QTD Pacing',
     color: '#10b981',
     format: 'currency',
-    description: 'Quarter-to-date won pipeline value over time',
+    description: 'Actual won pipeline vs ideal quarterly pace toward target',
   },
-  // Won Deals / Volume — bar chart (weekly counts)
   won_volume: {
     type: 'bar',
-    label: 'Won Deals (Weekly)',
+    label: 'Deals Won (Weekly)',
     color: '#3b82f6',
     format: 'number',
-    description: 'Deals won per week this quarter',
+    description: 'Number of deals closed-won per week this quarter',
   },
-  // Avg Deal Size — line + target benchmark
   ads: {
-    type: 'line_benchmark',
+    type: 'line',
     label: 'Avg Deal Size Trend',
     color: '#a78bfa',
     format: 'currency',
-    description: 'Average deal size vs. $28K target benchmark',
+    description: 'Average deal size over the quarter vs target benchmark',
   },
-  // Opps Created — area chart (pipeline generation velocity)
   opps_created: {
-    type: 'area',
-    label: 'Opportunities Created',
+    type: 'bar',
+    label: 'Opportunities Created (Weekly)',
     color: '#f59e0b',
     format: 'number',
-    description: 'Pipeline generation velocity — opportunities opened over time',
+    description: 'New pipeline-generating opportunities opened each week',
   },
-  // Created Pipeline $ — line chart
   created_pipeline: {
-    type: 'line',
-    label: 'Created Pipeline Trend',
+    type: 'area',
+    label: 'Created Pipeline $',
     color: '#06b6d4',
     format: 'currency',
-    description: 'New pipeline created over the quarter',
+    description: 'Cumulative new pipeline created this quarter',
   },
-  // Active Pipeline $ — area chart (stock metric)
   active_pipeline: {
-    type: 'area',
-    label: 'Active Pipeline Over Time',
+    type: 'pace',
+    label: 'Active Pipeline Balance',
     color: '#8b5cf6',
     format: 'currency',
-    description: 'Open pipeline balance — a stock metric showing pipeline health',
+    description: 'Open pipeline balance — a stock metric reflecting pipeline health',
   },
-  // Close Rate % — line + target band
   close_rate: {
-    type: 'line_benchmark',
-    label: 'Close Rate % Trend',
+    type: 'gauge',
+    label: 'Close Rate %',
     color: '#10b981',
     format: 'percent',
-    description: 'Win rate trend vs. 30% target',
+    description: 'Win rate of resolved deals (won ÷ won + lost)',
+    gaugeMax: 60, // 0–60% scale
   },
-  // Coverage % — area + target line (3.0x)
   coverage: {
-    type: 'area_benchmark',
-    label: 'Pipeline Coverage Ratio',
+    type: 'gauge',
+    label: 'Pipeline Coverage',
     color: '#f97316',
     format: 'ratio',
-    description: 'Pipeline coverage ratio vs. 3.0x target',
+    description: 'Active pipeline ÷ remaining won-pipeline target',
+    gaugeMax: 5,  // 0–5x scale
+  },
+  mql_count: {
+    type: 'bar',
+    label: 'MQLs (Weekly)',
+    color: '#ec4899',
+    format: 'number',
+    description: 'Marketing-qualified leads delivered per week',
   },
 };
 
-// Fallback: match by title substring
 function inferChartConfig(kpi) {
-  const id = (kpi.id || kpi.name || kpi.title || '').toLowerCase().replace(/\s+/g, '_');
-
-  // Direct match
+  const id = (kpi.id || '').toLowerCase();
   if (CHART_CONFIG[id]) return CHART_CONFIG[id];
-
-  // Partial match
   const key = Object.keys(CHART_CONFIG).find(k => id.includes(k));
   if (key) return CHART_CONFIG[key];
-
-  // Fallback
-  return {
-    type: 'line',
-    label: kpi.title || 'Trend',
-    color: '#3b82f6',
-    format: 'number',
-    description: 'Historical trend',
-  };
+  return { type: 'area', label: kpi.title || 'Trend', color: '#3b82f6', format: 'number', description: '' };
 }
 
-// ── Formatters ───────────────────────────────────────────────────────────────
+// ── Value formatter ──────────────────────────────────────────────────────────
 function fmtValue(v, format) {
   if (v == null || isNaN(v)) return '—';
   switch (format) {
     case 'currency': {
-      const abs = Math.abs(v);
-      if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
-      if (abs >= 1_000)     return `$${(v / 1_000).toFixed(0)}K`;
+      const a = Math.abs(v);
+      if (a >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+      if (a >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
       return `$${v.toFixed(0)}`;
     }
     case 'percent': return `${v.toFixed(1)}%`;
     case 'ratio':   return `${v.toFixed(2)}x`;
-    default:        return v >= 1000 ? v.toLocaleString() : v.toString();
+    default:        return v >= 1000 ? v.toLocaleString() : String(Math.round(v));
   }
 }
 
-// ── Tooltip ──────────────────────────────────────────────────────────────────
+// ── Synthetic trend data (realistic ramp from prior period → current) ────────
+function syntheticTrend(kpi, points = 12) {
+  const current = Number(kpi.value) || 10;
+  const prior   = Number(kpi.previous_value) || current * 0.85;
+  const noise   = current * 0.04;
+
+  return Array.from({ length: points }, (_, i) => {
+    const t = i / (points - 1);
+    // Ease-in ramp to simulate gradual quarter buildup
+    const eased = t * t * (3 - 2 * t);
+    const raw = prior + (current - prior) * eased + (Math.random() - 0.5) * noise;
+    return { date: `W${i + 1}`, value: Math.round(raw * 100) / 100 };
+  });
+}
+
+// Weekly count distribution (used for bar-type KPIs)
+function syntheticWeekly(kpi, weeks = 12) {
+  const total = Number(kpi.value) || 50;
+  const perWeek = total / weeks;
+  return Array.from({ length: weeks }, (_, i) => ({
+    date: `W${i + 1}`,
+    value: Math.max(0, Math.round(perWeek * (0.7 + Math.random() * 0.6))),
+  }));
+}
+
+// ── Dark tooltip ─────────────────────────────────────────────────────────────
 const DarkTooltip = ({ active, payload, label, format }) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{
-      background: 'rgba(13,20,40,0.95)',
-      border: '1px solid rgba(255,255,255,0.1)',
+      background: 'rgba(10,17,35,0.97)',
+      border: '1px solid rgba(255,255,255,0.12)',
       borderRadius: 8,
       padding: '8px 12px',
       fontSize: 12,
       color: '#f1f5f9',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
     }}>
-      <p style={{ color: '#94a3b8', marginBottom: 4 }}>{label}</p>
+      <p style={{ color: '#94a3b8', marginBottom: 4, margin: '0 0 4px' }}>{label}</p>
       {payload.map((p, i) => (
-        <p key={i} style={{ color: p.color }}>
+        <p key={i} style={{ color: p.color || p.stroke || '#f1f5f9', margin: 0 }}>
           {p.name}: <strong>{fmtValue(p.value, format)}</strong>
         </p>
       ))}
@@ -139,103 +157,275 @@ const DarkTooltip = ({ active, payload, label, format }) => {
   );
 };
 
-// ── Synthetic trend data generator (used only when no trend_data provided) ───
-function syntheticTrend(kpi, points = 12) {
-  const base = Number(kpi.value) || 100;
-  const prev = Number(kpi.previous_value) || base * 0.9;
-  return Array.from({ length: points }, (_, i) => ({
-    date: `W${i + 1}`,
-    value: Math.round(prev + (base - prev) * (i / (points - 1)) + (Math.random() - 0.5) * base * 0.06),
-  }));
-}
+// ── Semi-circle Gauge (PieChart arc) ─────────────────────────────────────────
+const GaugeChart = ({ value, target, color, format, gaugeMax }) => {
+  const max   = gaugeMax || (target * 1.5) || 100;
+  const pct   = Math.min(Math.max(value / max, 0), 1);
+  const tPct  = Math.min(Math.max(target / max, 0), 1);
+  const status = value >= target ? '#10b981' : value >= target * 0.85 ? '#f59e0b' : '#ef4444';
+
+  // 220-degree arc gauge (startAngle=200 endAngle=-20 in Recharts convention)
+  const gaugeData = [
+    { name: 'filled', value: pct },
+    { name: 'empty',  value: Math.max(1 - pct, 0) },
+  ];
+  // Target tick line (SVG overlay calculated from angle)
+  const targetAngle = 200 - tPct * 220; // degrees in display space
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: 220 }}>
+      <ResponsiveContainer width="100%" height={220} debounce={0}>
+        <PieChart margin={{ top: 8, right: 0, bottom: 0, left: 0 }}>
+          {/* Background track */}
+          <Pie
+            data={[{ value: 1 }]}
+            cx="50%" cy="80%"
+            startAngle={200} endAngle={-20}
+            innerRadius="52%" outerRadius="68%"
+            dataKey="value" stroke="none"
+          >
+            <Cell fill="rgba(255,255,255,0.06)" />
+          </Pie>
+          {/* Value arc */}
+          <Pie
+            data={gaugeData}
+            cx="50%" cy="80%"
+            startAngle={200} endAngle={-20}
+            innerRadius="52%" outerRadius="68%"
+            dataKey="value" stroke="none"
+          >
+            <Cell fill={status} />
+            <Cell fill="transparent" />
+          </Pie>
+        </PieChart>
+      </ResponsiveContainer>
+
+      {/* Center overlay */}
+      <div style={{
+        position: 'absolute',
+        bottom: '14%',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        textAlign: 'center',
+        pointerEvents: 'none',
+      }}>
+        <div style={{ fontSize: 34, fontWeight: 800, color: status, lineHeight: 1 }}>
+          {fmtValue(value, format)}
+        </div>
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+          Target: <span style={{ color: '#f59e0b' }}>{fmtValue(target, format)}</span>
+        </div>
+        <div style={{
+          marginTop: 6,
+          display: 'inline-block',
+          padding: '2px 8px',
+          borderRadius: 20,
+          background: `${status}22`,
+          border: `1px solid ${status}44`,
+          fontSize: 10,
+          color: status,
+          fontWeight: 700,
+        }}>
+          {target > 0 ? `${((value / target) * 100).toFixed(0)}% of target` : '—'}
+        </div>
+      </div>
+
+      {/* Scale labels */}
+      <div style={{
+        position: 'absolute', bottom: '6%', left: '16%',
+        fontSize: 10, color: '#475569',
+      }}>0</div>
+      <div style={{
+        position: 'absolute', bottom: '6%', right: '16%',
+        fontSize: 10, color: '#475569',
+      }}>{fmtValue(max, format)}</div>
+    </div>
+  );
+};
 
 // ── Chart renderer ───────────────────────────────────────────────────────────
 const ChartRenderer = memo(({ cfg, data, kpi }) => {
   const fmt  = cfg.format;
   const clr  = cfg.color;
-  const tick = { fill: '#64748b', fontSize: 11 };
-  const grid = <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />;
-  const xax  = <XAxis dataKey="date" tick={tick} axisLine={false} tickLine={false} />;
+  const tick = { fill: '#475569', fontSize: 11 };
+  const grid = <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />;
+  const xax  = <XAxis dataKey="date" tick={tick} axisLine={false} tickLine={false} interval={1} />;
   const yax  = (
     <YAxis
       tick={tick}
       axisLine={false}
       tickLine={false}
       tickFormatter={v => fmtValue(v, fmt)}
-      width={60}
+      width={62}
     />
   );
-  const tooltip = <Tooltip content={<DarkTooltip format={fmt} />} />;
+  const tooltip = <Tooltip content={<DarkTooltip format={fmt} />} cursor={{ stroke: 'rgba(255,255,255,0.08)', strokeWidth: 1 }} />;
 
-  const common = { data, margin: { top: 8, right: 8, left: 0, bottom: 0 } };
-
-  if (cfg.type === 'bar') {
-    return (
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart {...common}>
-          {grid}{xax}{yax}{tooltip}
-          <Bar dataKey="value" name={cfg.label} fill={clr} radius={[4,4,0,0]} maxBarSize={32} />
-        </BarChart>
+  // Wrapper ensures ResponsiveContainer always gets a non-zero measured width
+  const wrap = (chart) => (
+    <div style={{ width: '100%', height: 240, minWidth: 1 }}>
+      <ResponsiveContainer width="100%" height="100%" debounce={0}>
+        {chart}
       </ResponsiveContainer>
+    </div>
+  );
+
+  const common = { data, margin: { top: 10, right: 12, left: 0, bottom: 4 } };
+
+  // ── Gauge ─────────────────────────────────────────────────────────────────
+  if (cfg.type === 'gauge') {
+    return (
+      <GaugeChart
+        value={kpi.value}
+        target={kpi.target}
+        color={clr}
+        format={fmt}
+        gaugeMax={cfg.gaugeMax}
+      />
     );
   }
 
-  if (cfg.type === 'area' || cfg.type === 'area_benchmark') {
-    return (
-      <ResponsiveContainer width="100%" height={220}>
-        <AreaChart {...common}>
-          {grid}{xax}{yax}{tooltip}
-          <defs>
-            <linearGradient id={`grad-${clr.replace('#','')}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor={clr} stopOpacity={0.3} />
-              <stop offset="95%" stopColor={clr} stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
-          <Area
-            type="monotone"
-            dataKey="value"
-            name={cfg.label}
-            stroke={clr}
-            strokeWidth={2}
-            fill={`url(#grad-${clr.replace('#','')})`}
-          />
-          {cfg.type === 'area_benchmark' && kpi.target && (
-            <ReferenceLine
-              y={kpi.target}
-              stroke="#f59e0b"
-              strokeDasharray="5 3"
-              label={{ value: 'Target', fill: '#f59e0b', fontSize: 11 }}
-            />
-          )}
-        </AreaChart>
-      </ResponsiveContainer>
-    );
-  }
-
-  // line / line_benchmark
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <LineChart {...common}>
+  // ── Pacing: area (actual) + dotted line (ideal pace) ─────────────────────
+  if (cfg.type === 'pace') {
+    const target = kpi.target || 0;
+    const paceData = data.map((d, i) => ({
+      ...d,
+      pace: target > 0 ? Math.round((target * (i + 1) / data.length) * 100) / 100 : undefined,
+    }));
+    const gradId = `pace-grad-${clr.replace('#', '')}`;
+    return wrap(
+      <ComposedChart {...common} data={paceData}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%"  stopColor={clr} stopOpacity={0.35} />
+            <stop offset="95%" stopColor={clr} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
         {grid}{xax}{yax}{tooltip}
-        <Line
+        <Area
+          type="monotone"
+          dataKey="value"
+          name="Actual"
+          stroke={clr}
+          strokeWidth={2.5}
+          fill={`url(#${gradId})`}
+          dot={false}
+          activeDot={{ r: 5, fill: clr, stroke: '#0d1428', strokeWidth: 2 }}
+        />
+        {target > 0 && (
+          <Line
+            type="monotone"
+            dataKey="pace"
+            name="Ideal Pace"
+            stroke="#f59e0b"
+            strokeWidth={1.5}
+            strokeDasharray="5 4"
+            dot={false}
+            activeDot={false}
+          />
+        )}
+        {target > 0 && (
+          <ReferenceLine
+            y={target}
+            stroke="#f59e0b"
+            strokeOpacity={0.5}
+            strokeDasharray="3 3"
+            label={{ value: 'Target', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10 }}
+          />
+        )}
+      </ComposedChart>
+    );
+  }
+
+  // ── Bar chart ─────────────────────────────────────────────────────────────
+  if (cfg.type === 'bar') {
+    const gradId = `bar-grad-${clr.replace('#', '')}`;
+    return wrap(
+      <BarChart {...common}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stopColor={clr} stopOpacity={0.9} />
+            <stop offset="100%" stopColor={clr} stopOpacity={0.4} />
+          </linearGradient>
+        </defs>
+        {grid}{xax}{yax}{tooltip}
+        <Bar
+          dataKey="value"
+          name={cfg.label}
+          fill={`url(#${gradId})`}
+          radius={[4, 4, 0, 0]}
+          maxBarSize={28}
+        />
+      </BarChart>
+    );
+  }
+
+  // ── Area chart ────────────────────────────────────────────────────────────
+  if (cfg.type === 'area') {
+    const gradId = `area-grad-${clr.replace('#', '')}`;
+    return wrap(
+      <AreaChart {...common}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%"  stopColor={clr} stopOpacity={0.3} />
+            <stop offset="95%" stopColor={clr} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        {grid}{xax}{yax}{tooltip}
+        <Area
           type="monotone"
           dataKey="value"
           name={cfg.label}
           stroke={clr}
-          strokeWidth={2}
+          strokeWidth={2.5}
+          fill={`url(#${gradId})`}
           dot={false}
-          activeDot={{ r: 4, fill: clr }}
+          activeDot={{ r: 5, fill: clr, stroke: '#0d1428', strokeWidth: 2 }}
         />
-        {cfg.type === 'line_benchmark' && kpi.target && (
+        {kpi.target > 0 && (
           <ReferenceLine
             y={kpi.target}
             stroke="#f59e0b"
-            strokeDasharray="5 3"
-            label={{ value: 'Target', fill: '#f59e0b', fontSize: 11 }}
+            strokeOpacity={0.5}
+            strokeDasharray="4 3"
+            label={{ value: 'Target', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10 }}
           />
         )}
-      </LineChart>
-    </ResponsiveContainer>
+      </AreaChart>
+    );
+  }
+
+  // ── Line chart (default, used for ADS etc.) ───────────────────────────────
+  const gradId = `line-grad-${clr.replace('#', '')}`;
+  return wrap(
+    <ComposedChart {...common}>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="5%"  stopColor={clr} stopOpacity={0.15} />
+          <stop offset="95%" stopColor={clr} stopOpacity={0.0} />
+        </linearGradient>
+      </defs>
+      {grid}{xax}{yax}{tooltip}
+      <Area
+        type="monotone"
+        dataKey="value"
+        name={cfg.label}
+        stroke={clr}
+        strokeWidth={2.5}
+        fill={`url(#${gradId})`}
+        dot={false}
+        activeDot={{ r: 5, fill: clr, stroke: '#0d1428', strokeWidth: 2 }}
+      />
+      {kpi.target > 0 && (
+        <ReferenceLine
+          y={kpi.target}
+          stroke="#f59e0b"
+          strokeOpacity={0.6}
+          strokeDasharray="5 3"
+          label={{ value: 'Target', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10 }}
+        />
+      )}
+    </ComposedChart>
   );
 });
 ChartRenderer.displayName = 'ChartRenderer';
@@ -243,12 +433,25 @@ ChartRenderer.displayName = 'ChartRenderer';
 // ── Main modal ───────────────────────────────────────────────────────────────
 const KPIDetailModal = ({ kpi, onClose }) => {
   const cfg  = useMemo(() => kpi ? inferChartConfig(kpi) : null, [kpi]);
+
   const data = useMemo(() => {
-    if (!kpi) return [];
+    if (!kpi || cfg?.type === 'gauge') return [];
+
     const raw = kpi.trend_data || kpi.trendData || [];
-    if (raw.length > 1) return raw;
-    return syntheticTrend(kpi); // fallback when backend has no trend points yet
-  }, [kpi]);
+
+    // Backend returns List[float] — convert to {date, value} objects
+    if (raw.length > 1 && typeof raw[0] === 'number') {
+      return raw.map((v, i) => ({ date: `W${i + 1}`, value: v }));
+    }
+    // Backend may return {date, value} objects already
+    if (raw.length > 1 && typeof raw[0] === 'object') {
+      return raw;
+    }
+
+    // Fallback: generate realistic synthetic data
+    const isBar = cfg?.type === 'bar';
+    return isBar ? syntheticWeekly(kpi) : syntheticTrend(kpi);
+  }, [kpi, cfg]);
 
   // ESC key closes modal
   useEffect(() => {
@@ -261,10 +464,10 @@ const KPIDetailModal = ({ kpi, onClose }) => {
     if (e.target === e.currentTarget) onClose();
   }, [onClose]);
 
-  // One-sentence AI explanation based on trend vs target
+  // One-sentence AI explanation
   const aiExplanation = useMemo(() => {
     if (!kpi || !cfg) return null;
-    const pct = kpi.targetAchievement;
+    const pct = kpi.targetAchievement ?? (kpi.target > 0 ? (kpi.value / kpi.target) * 100 : null);
     const name = kpi.title || kpi.name || 'This metric';
     if (pct == null) return null;
     if (pct >= 110) return `${name} is exceeding target — maintain current momentum heading into quarter-end.`;
@@ -301,7 +504,7 @@ const KPIDetailModal = ({ kpi, onClose }) => {
               padding: 24,
               width: '100%',
               maxWidth: 700,
-              maxHeight: 500,
+              maxHeight: '90vh',
               overflowY: 'auto',
               boxShadow: `0 0 40px ${cfg.color}22, 0 24px 64px rgba(0,0,0,0.6)`,
               color: '#f1f5f9',
@@ -346,9 +549,12 @@ const KPIDetailModal = ({ kpi, onClose }) => {
             {/* Stats row */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
               {[
-                { label: 'Current',  value: fmtValue(kpi.value,          cfg.format) },
-                { label: 'Target',   value: kpi.target ? fmtValue(kpi.target, cfg.format) : '—' },
-                { label: '% of Target', value: kpi.targetAchievement != null ? `${kpi.targetAchievement.toFixed(0)}%` : '—' },
+                { label: 'Current',     value: fmtValue(kpi.value,  cfg.format) },
+                { label: 'Target',      value: kpi.target ? fmtValue(kpi.target, cfg.format) : '—' },
+                { label: '% of Target', value: (() => {
+                  const pct = kpi.targetAchievement ?? (kpi.target > 0 ? (kpi.value / kpi.target) * 100 : null);
+                  return pct != null ? `${pct.toFixed(0)}%` : '—';
+                })() },
               ].map(({ label, value }) => (
                 <div key={label} style={{
                   background: 'rgba(255,255,255,0.04)',
@@ -363,13 +569,7 @@ const KPIDetailModal = ({ kpi, onClose }) => {
             </div>
 
             {/* Chart */}
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.12 }}
-            >
-              <ChartRenderer cfg={cfg} data={data} kpi={kpi} />
-            </motion.div>
+            <ChartRenderer cfg={cfg} data={data} kpi={kpi} />
 
             {/* AI explanation sentence */}
             {aiExplanation && (
