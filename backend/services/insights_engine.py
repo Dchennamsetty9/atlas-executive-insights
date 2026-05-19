@@ -27,19 +27,8 @@ class InsightsEngine:
     
     def __init__(self):
         self.client = None
-        if OPENAI_AVAILABLE and settings.azure_openai_api_key:
-            try:
-                self.client = AzureOpenAI(
-                    api_key=settings.azure_openai_api_key,
-                    api_version=settings.azure_openai_api_version,
-                    azure_endpoint=settings.azure_openai_endpoint
-                )
-                print("✅ Azure OpenAI client initialized")
-            except Exception as e:
-                print(f"⚠️  Azure OpenAI initialization failed: {e}")
-                print("   Falling back to rule-based insights")
-        else:
-            print("✅ Using rule-based insights (OpenAI not configured)")
+        # Azure OpenAI fields have been removed from Settings; always use rule-based insights.
+        print("✅ Using rule-based insights (OpenAI not configured)")
         
     async def generate_insights(self, kpi_data: pd.DataFrame) -> List[Insight]:
         """
