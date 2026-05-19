@@ -176,59 +176,43 @@ const AIChatPanel = ({ onAnalyzingChange }) => {
     setLoading(true);
     onAnalyzingChange?.(true);
 
-    // Route: interpretation/insight questions → insights; data questions → Genie
-    const useInsightsEndpoint = isInsightQuestion(q);
-
     try {
-      let answer, source;
+      // Feature 7: /api/ai/ask — text-to-SQL → execute → interpret
+      setStatusMsg('Generating query…');
+      const t1 = setTimeout(() => setStatusMsg('Running query…'), 4000);
+      const t2 = setTimeout(() => setStatusMsg('Interpreting results…'), 10000);
 
-      if (useInsightsEndpoint) {
-        setStatusMsg('Analyzing your question…');
-        const res  = await fetch('/api/insights/ask', {
+      let answer = '';
+      let rows   = [];
+
+      try {
+        const res  = await fetch('/api/ai/ask', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ question: q }),
         });
-        const data = await res.json();
-        answer = data.answer || data.narrative || 'No response received.';
-        source = 'insight';
-      } else {
-        // ── Genie path ──────────────────────────────────────────────────────
-        setStatusMsg('Understanding your question…');
+        clearTimeout(t1);
+        clearTimeout(t2);
 
-        // Pass conversation_id to maintain context across follow-up questions.
-        // Genie will continue the same conversation thread so "break that down
-        // by geo" correctly refers to the previous answer.
-        const body = { question: q };
-        if (genieConvId) body.conversation_id = genieConvId;
-
-        // Escalate status messages while waiting for Genie to respond.
-        const t1 = setTimeout(() => setStatusMsg('Running query…'), 3000);
-        const t2 = setTimeout(() => setStatusMsg('Processing results…'), 8000);
-
-        try {
-          const res  = await fetch('/api/genie/ask', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify(body),
-          });
-          const data = await res.json();
-          clearTimeout(t1);
-          clearTimeout(t2);
-
-          // Store conversation_id for the next question.
-          if (data.conversation_id) setGenieConvId(data.conversation_id);
-
-          answer = data.answer || data.narrative || 'No response received.';
-          source = 'data';
-        } catch (err) {
-          clearTimeout(t1);
-          clearTimeout(t2);
-          throw err;
+        const body = await res.json();
+        if (body.success && body.data) {
+          answer = body.data.answer || 'No response received.';
+          rows   = body.data.data   || [];
+        } else {
+          answer = body.detail || 'No response received.';
         }
+      } catch (err) {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        throw err;
       }
 
-      setMessages(prev => [...prev, { role: 'ai', text: answer, source }]);
+      // Build display text — append a compact row count if data came back
+      const displayText = rows.length > 0
+        ? `${answer}\n\n_(${rows.length} row${rows.length !== 1 ? 's' : ''} returned)_`
+        : answer;
+
+      setMessages(prev => [...prev, { role: 'ai', text: displayText, source: 'data' }]);
     } catch {
       setMessages(prev => [...prev, {
         role: 'ai',

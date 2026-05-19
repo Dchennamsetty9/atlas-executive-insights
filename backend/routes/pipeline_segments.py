@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from query_loader import load_query
-from services.databricks_connection import execute_query, DATABRICKS_AVAILABLE
+from services.databricks_connection import execute_query, token_available
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -23,7 +23,9 @@ CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 SCHEMA  = os.getenv("DATABRICKS_SCHEMA",  "mdl_sales_analytics")
 TABLE   = f"`{CATALOG}`.`{SCHEMA}`.`gaim_pipeline_daily_snapshot`"
 
-_AVAILABLE = DATABRICKS_AVAILABLE and bool(os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN"))
+_on_databricks = bool(os.getenv("DATABRICKS_HOST"))
+_force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
+_AVAILABLE     = token_available() and (_on_databricks or _force_live)
 
 DIMENSION_COLUMNS = {
     "channel":  "smoothed_channel",

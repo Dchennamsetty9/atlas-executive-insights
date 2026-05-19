@@ -1,23 +1,22 @@
 /**
- * InsightBanner — Auto-generated 2-3 sentence executive narrative summary.
- * Fetches /api/insights/hidden-patterns?include_narrative=true and displays
- * the OpenAI (or rule-based fallback) narrative with a severity-colored border.
- *
- * Shown at the very top of the dashboard main column.
+ * InsightBanner — AI-generated executive summary banner (Feature 1).
+ * Calls GET /api/ai/executive-summary and displays status + headline + action.
+ * Falls back to the hidden-patterns narrative if the new endpoint is unavailable.
  */
 
 import { useState, useEffect } from 'react';
 
-const SEV = {
-  high:   { border: '#ef4444', bg: 'rgba(239,68,68,0.07)',    label: 'ACTION REQUIRED', icon: '⚠️' },
-  medium: { border: '#f59e0b', bg: 'rgba(245,158,11,0.07)',   label: 'INSIGHT',         icon: '💡' },
-  low:    { border: '#10b981', bg: 'rgba(16,185,129,0.07)',   label: 'ON TRACK',        icon: '✅' },
+const STATUS_STYLE = {
+  green:  { border: '#10b981', bg: 'rgba(16,185,129,0.07)',   label: 'ON TRACK',        icon: '✅' },
+  yellow: { border: '#f59e0b', bg: 'rgba(245,158,11,0.07)',   label: 'WATCH CLOSELY',   icon: '💡' },
+  red:    { border: '#ef4444', bg: 'rgba(239,68,68,0.07)',    label: 'ACTION REQUIRED', icon: '⚠️' },
 };
 
 const InsightBanner = ({ filters }) => {
-  const [narrative, setNarrative] = useState('');
-  const [severity,  setSeverity]  = useState('medium');
-  const [loading,   setLoading]   = useState(true);
+  const [headline, setHeadline] = useState('');
+  const [action,   setAction]   = useState('');
+  const [status,   setStatus]   = useState('yellow');
+  const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,23 +24,39 @@ const InsightBanner = ({ filters }) => {
     const load = async () => {
       setLoading(true);
       try {
-        const params = new URLSearchParams({ include_narrative: 'true' });
+        // Build query params from filters
+        const params = new URLSearchParams();
         if (filters?.product && filters.product !== 'All') params.set('product', filters.product);
         if (filters?.geo     && filters.geo     !== 'All') params.set('geo',     filters.geo);
         if (filters?.channel && filters.channel !== 'All') params.set('channel', filters.channel);
 
-        const res  = await fetch(`/api/insights/hidden-patterns?${params}`);
-        const data = await res.json();
+        // Feature 1: /api/ai/executive-summary
+        const res  = await fetch(`/api/ai/executive-summary?${params}`);
+        const body = await res.json();
         if (cancelled) return;
 
-        if (data.narrative) setNarrative(data.narrative);
-
-        const insights = data.insights ?? [];
-        if      (insights.some(i => i.severity === 'high'))   setSeverity('high');
-        else if (insights.some(i => i.severity === 'medium')) setSeverity('medium');
-        else                                                   setSeverity('low');
+        if (body.success && body.data) {
+          const { status: s, headline: h, action: a } = body.data;
+          setStatus(s   || 'yellow');
+          setHeadline(h || '');
+          setAction(a   || '');
+        } else {
+          // Fallback: hidden-patterns narrative
+          const fp = new URLSearchParams({ include_narrative: 'true' });
+          if (filters?.product && filters.product !== 'All') fp.set('product', filters.product);
+          if (filters?.geo     && filters.geo     !== 'All') fp.set('geo',     filters.geo);
+          if (filters?.channel && filters.channel !== 'All') fp.set('channel', filters.channel);
+          const fr   = await fetch(`/api/insights/hidden-patterns?${fp}`);
+          const fd   = await fr.json();
+          if (cancelled) return;
+          setHeadline(fd.narrative || '');
+          const sev = (fd.insights ?? []).some(i => i.severity === 'high') ? 'red'
+                    : (fd.insights ?? []).some(i => i.severity === 'medium') ? 'yellow'
+                    : 'green';
+          setStatus(sev);
+        }
       } catch {
-        if (!cancelled) setNarrative('');
+        if (!cancelled) { setHeadline(''); setAction(''); }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -51,9 +66,9 @@ const InsightBanner = ({ filters }) => {
     return () => { cancelled = true; };
   }, [filters]);
 
-  if (!loading && !narrative) return null;
+  if (!loading && !headline) return null;
 
-  const s = SEV[severity] ?? SEV.medium;
+  const s = STATUS_STYLE[status] ?? STATUS_STYLE.yellow;
 
   return (
     <div style={{
@@ -81,8 +96,13 @@ const InsightBanner = ({ filters }) => {
               {s.label} ·{' '}
             </span>
             <span style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
-              {narrative}
+              {headline}
             </span>
+            {action && (
+              <span style={{ fontSize: 11, color: s.border, fontWeight: 600, marginLeft: 8 }}>
+                → {action}
+              </span>
+            )}
           </div>
         </>
       )}

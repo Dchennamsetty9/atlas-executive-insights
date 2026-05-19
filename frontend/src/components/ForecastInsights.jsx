@@ -1,6 +1,39 @@
+import { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Lightbulb, Target, Brain } from 'lucide-react';
 
 const ForecastInsights = ({ insights, loading }) => {
+  // Feature 5: AI 4-box intelligence panel
+  const [aiBox,      setAiBox]      = useState(null);
+  const [aiBoxLoading, setAiBoxLoading] = useState(false);
+
+  useEffect(() => {
+    if (!insights) return;
+    let cancelled = false;
+    setAiBoxLoading(true);
+
+    fetch('/api/ai/forecast-intelligence', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        forecast_data: {
+          trend:       insights.trend,
+          risk:        insights.risk,
+          confidence:  insights.confidence,
+          summary:     insights.summary,
+        },
+        actuals: {
+          drivers:         insights.drivers         || [],
+          recommendations: insights.recommendations || [],
+        },
+      }),
+    })
+      .then(r => r.json())
+      .then(body => { if (!cancelled && body.success) setAiBox(body.data); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setAiBoxLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [insights]);
   if (loading) {
     return (
       <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg border border-purple-200 p-6">
@@ -175,6 +208,41 @@ const ForecastInsights = ({ insights, loading }) => {
                   <li key={idx} className="text-xs text-green-800">• {opp}</li>
                 ))}
               </ul>
+            </div>
+          )}
+        </div>
+      )}
+      {/* ── Feature 5: AI Forecast Intelligence 4-box ──────────────────── */}
+      {(aiBoxLoading || aiBox) && (
+        <div className="mt-4 rounded-lg border border-purple-200 bg-purple-50 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Brain className="w-4 h-4 text-purple-600" />
+            <h4 className="font-bold text-purple-900 text-sm uppercase tracking-wide">AI Forecast Intelligence</h4>
+          </div>
+          {aiBoxLoading ? (
+            <div className="animate-pulse grid grid-cols-2 gap-3">
+              {[0,1,2,3].map(i => <div key={i} className="h-16 bg-purple-100 rounded" />)}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              {[
+                { key: 'key_drivers',   label: 'Key Drivers',   color: 'text-blue-800',  dot: '●' },
+                { key: 'actions',       label: 'Actions',       color: 'text-green-800', dot: '→' },
+                { key: 'risks',         label: 'Risks',         color: 'text-red-800',   dot: '▲' },
+                { key: 'opportunities', label: 'Opportunities', color: 'text-emerald-800', dot: '✦' },
+              ].map(({ key, label, color, dot }) => (
+                <div key={key} className="bg-white rounded p-3 border border-purple-100">
+                  <div className={`font-bold uppercase tracking-wide mb-2 ${color}`}>{label}</div>
+                  <ul className="space-y-1">
+                    {(aiBox[key] || []).map((item, i) => (
+                      <li key={i} className={`flex gap-1 ${color}`}>
+                        <span className="flex-shrink-0">{dot}</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </div>
           )}
         </div>

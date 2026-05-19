@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 
 from query_loader import load_query
-from services.databricks_connection import execute_query, DATABRICKS_AVAILABLE
+from services.databricks_connection import execute_query, DATABRICKS_AVAILABLE, token_available
 
 CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 SCHEMA  = os.getenv("DATABRICKS_SCHEMA",  "mdl_sales_analytics")
@@ -92,7 +92,14 @@ class GAIMDataService:
     """
 
     def __init__(self):
-        self.available = DATABRICKS_AVAILABLE and bool(os.environ.get("DATABRICKS_TOKEN"))
+        # Attempt live Databricks queries only when:
+        #   (a) running ON Databricks Apps — DATABRICKS_HOST is auto-injected, OR
+        #   (b) developer explicitly opts in via FORCE_LIVE_DATA=true in .env
+        # This prevents slow 10-15s timeout hangs when running locally with a
+        # token in .env but without being on the Databricks internal network.
+        _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
+        _force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
+        self.available = token_available() and (_on_databricks or _force_live)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -118,8 +125,7 @@ class GAIMDataService:
             try:
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._query_kpis, start_date, end_date, filters),
-                    timeout=20.0,  # 20 s: one query attempt (10 s socket × 4 queries needs ~40 s
-                                    # but asyncio.to_thread runs in a thread so the loop stays free)
+                    timeout=15.0,  # 15 s: covers 4 queries × 5 s socket timeout + overhead
                 )
             except asyncio.TimeoutError:
                 print("[GAIMDataService] Databricks query timed out after 20s. Using demo data.")
@@ -221,23 +227,47 @@ class GAIMDataService:
         opps_created     = float(c_.get("opps_created", 0)   or 0)
         created_pipeline = float(c_.get("created_pipeline", 0) or 0)
 
-        target_won_pipe  = float(t.get("target_won_pipeline", 0) or 0)
-        target_won_vol   = float(t.get("target_won_volume", 0)   or 0)
-        target_ads       = (
-            float(t.get("target_ads_sum", 0) or 0) / max(float(t.get("target_days", 1) or 1), 1)
-        )  # Average daily ADS target
+        # Targets from cds_targets_monthly (full quarter totals)
+        target_won_pipe      = float(t.get("target_won_pipeline",   0) or 0)
+        target_won_vol       = float(t.get("target_won_volume",     0) or 0)
+        target_pipeline      = float(t.get("target_pipeline",       0) or 0)
+        target_mql           = float(t.get("target_mql",            0) or 0)
+
+        # Pro-rate full-quarter targets to QTD elapsed days
+        from datetime import datetime as _dt
+        q_start_dt  = _dt.strptime(start_date, "%Y-%m-%d")
+        today_dt    = _dt.strptime(end_date,   "%Y-%m-%d")
+        q_month     = q_start_dt.month
+        q_end_month = q_month + 2
+        q_end_year  = q_start_dt.year if q_end_month <= 12 else q_start_dt.year + 1
+        q_end_month = q_end_month if q_end_month <= 12 else q_end_month - 12
+        import calendar as _cal
+        last_day    = _cal.monthrange(q_end_year, q_end_month)[1]
+        q_end_dt    = _dt(q_end_year, q_end_month, last_day)
+        days_in_q   = (q_end_dt - q_start_dt).days + 1
+        days_elapsed = max((today_dt - q_start_dt).days + 1, 1)
+        pace_factor  = days_elapsed / days_in_q
+
+        paced_won_target  = target_won_pipe * pace_factor
+        paced_pipe_target = target_pipeline * pace_factor
+        paced_mql_target  = target_mql      * pace_factor
 
         mql_count        = float(m.get("mql_reached", 0)    or 0)
         prev_mql         = mql_count * 0.9   # No prior-period MQL table; use 10% growth estimate
 
         # Derived KPIs
+        # AOS (Avg Opp Size) = Created Pipeline ÷ Opps Created
+        aos              = (created_pipeline / opps_created) if opps_created > 0 else 0
         # Close Rate (Vol) = Won ÷ ALL entered (includes open) — lower mid-quarter by design
         close_rate_vol   = (won_volume / opps_created * 100) if opps_created > 0 else 0
         # Close Rate ($)   = Won Pipeline ÷ Created Pipeline
         close_rate_dollar = (won_pipeline / created_pipeline * 100) if created_pipeline > 0 else 0
-        # Coverage         = Active Pipeline ÷ Remaining Won Pipeline Target
-        remaining_target = max(target_won_pipe - won_pipeline, 0)
+        # Coverage         = Active Pipeline ÷ Remaining Paced Won Target
+        remaining_target = max(paced_won_target - won_pipeline, 0)
         coverage         = min(active_pipeline / remaining_target, 10.0) if remaining_target > 0 else 0
+        # Attainment %
+        won_attainment_pct      = (won_pipeline / paced_won_target * 100)  if paced_won_target  > 0 else 0
+        pipeline_attainment_pct = (created_pipeline / paced_pipe_target * 100) if paced_pipe_target > 0 else 0
         # Prev period ADS
         prev_ads         = (prev_won_pipe / prev_won_vol) if prev_won_vol > 0 else ads * 0.95
 
@@ -257,20 +287,26 @@ class GAIMDataService:
             {
                 "metric_name":           "ads",
                 "metric_value":          ads,
-                "target_value":          target_ads       or ads * 1.05,
+                "target_value":          (target_won_pipe / target_won_vol) if target_won_vol > 0 else ads * 1.05,
                 "previous_period_value": prev_ads,
             },
             {
                 "metric_name":           "opps_created",
                 "metric_value":          opps_created,
-                "target_value":          opps_created * 1.1,
+                "target_value":          target_won_vol or opps_created * 1.1,
                 "previous_period_value": opps_created * 0.9,
             },
             {
                 "metric_name":           "created_pipeline",
                 "metric_value":          created_pipeline,
-                "target_value":          created_pipeline * 1.1,
+                "target_value":          paced_pipe_target or created_pipeline * 1.1,
                 "previous_period_value": created_pipeline * 0.85,
+            },
+            {
+                "metric_name":           "aos",
+                "metric_value":          round(aos, 0),
+                "target_value":          round(aos * 1.05, 0),
+                "previous_period_value": round(aos * 0.95, 0),
             },
             {
                 "metric_name":           "active_pipeline",
@@ -282,6 +318,12 @@ class GAIMDataService:
                 # Close Rate (Vol) — NOT Win Rate. See module docstring for distinction.
                 "metric_name":           "close_rate",
                 "metric_value":          round(close_rate_vol, 2),
+                "target_value":          30.0,
+                "previous_period_value": 28.0,
+            },
+            {
+                "metric_name":           "close_rate_dollar",
+                "metric_value":          round(close_rate_dollar, 2),
                 "target_value":          30.0,
                 "previous_period_value": 28.0,
             },
@@ -298,9 +340,21 @@ class GAIMDataService:
                 "previous_period_value": 2.8,
             },
             {
+                "metric_name":           "won_attainment_pct",
+                "metric_value":          round(won_attainment_pct, 1),
+                "target_value":          100.0,
+                "previous_period_value": round(won_attainment_pct * 0.95, 1),
+            },
+            {
+                "metric_name":           "pipeline_attainment_pct",
+                "metric_value":          round(pipeline_attainment_pct, 1),
+                "target_value":          100.0,
+                "previous_period_value": round(pipeline_attainment_pct * 0.95, 1),
+            },
+            {
                 "metric_name":           "mql_count",
                 "metric_value":          mql_count,
-                "target_value":          mql_count * 1.1,
+                "target_value":          paced_mql_target or mql_count * 1.1,
                 "previous_period_value": prev_mql,
             },
         ]
@@ -323,7 +377,7 @@ class GAIMDataService:
                 SELECT data_day AS date,
                        SUM(amount_towards_plan) AS value
                 FROM {c}.{s}.gaim_pipeline_daily_snapshot
-                WHERE is_won='True' AND xtxtype<>'Cancel'
+                WHERE is_won='true' AND xtxtype<>'Cancel'
                   AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
                 GROUP BY data_day ORDER BY data_day
             """,
@@ -332,6 +386,7 @@ class GAIMDataService:
                        SUM(amount_towards_plan) AS value
                 FROM {c}.{s}.gaim_pipeline_daily_snapshot
                 WHERE stage_name NOT IN ('Closed Won','Closed Lost','Closed-Cancelled')
+                  AND xtxtype<>'Cancel'
                   AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
                 GROUP BY data_day ORDER BY data_day
             """,
@@ -347,7 +402,7 @@ class GAIMDataService:
                 SELECT data_day AS date,
                        COUNT(DISTINCT opportunities_created_ids) AS value
                 FROM {c}.{s}.gaim_pipeline_daily_snapshot
-                WHERE is_won='True' AND xtxtype<>'Cancel'
+                WHERE is_won='true' AND xtxtype<>'Cancel'
                   AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
                 GROUP BY data_day ORDER BY data_day
             """,
@@ -370,18 +425,27 @@ class GAIMDataService:
 # ── Demo data fallback ────────────────────────────────────────────────────────
 
 def _demo_kpis() -> List[Dict[str, Any]]:
-    """Realistic demo data used when Databricks is unavailable."""
+    """Realistic demo data used when Databricks is unavailable (all 12 schema KPIs)."""
     return [
-        {"metric_name": "won_pipeline",    "metric_value": 12_450_000, "target_value": 15_000_000, "previous_period_value": 11_200_000},
-        {"metric_name": "won_volume",      "metric_value": 78,         "target_value": 90,         "previous_period_value": 72},
-        {"metric_name": "ads",             "metric_value": 159_615,    "target_value": 166_667,    "previous_period_value": 155_556},
-        {"metric_name": "opps_created",    "metric_value": 312,        "target_value": 350,        "previous_period_value": 285},
-        {"metric_name": "created_pipeline","metric_value": 52_000_000, "target_value": 58_000_000, "previous_period_value": 48_000_000},
-        {"metric_name": "active_pipeline", "metric_value": 38_500_000, "target_value": 45_000_000, "previous_period_value": 36_800_000},
-        {"metric_name": "close_rate",      "metric_value": 25.0,       "target_value": 30.0,       "previous_period_value": 28.0},
-        {"metric_name": "win_rate",        "metric_value": 38.5,       "target_value": 35.0,       "previous_period_value": 36.2},
-        {"metric_name": "coverage",        "metric_value": 2.57,       "target_value": 3.0,        "previous_period_value": 2.8},
-        {"metric_name": "mql_count",       "metric_value": 1_240,      "target_value": 1_400,      "previous_period_value": 1_100},
+        # -- Dollar funnel --
+        {"metric_name": "won_pipeline",          "metric_value": 12_450_000, "target_value": 15_000_000, "previous_period_value": 11_200_000},
+        {"metric_name": "created_pipeline",      "metric_value": 52_000_000, "target_value": 58_000_000, "previous_period_value": 48_000_000},
+        {"metric_name": "close_rate_dollar",     "metric_value": 23.9,       "target_value": 30.0,       "previous_period_value": 25.1},
+        # -- Volume funnel --
+        {"metric_name": "won_volume",            "metric_value": 78,         "target_value": 90,         "previous_period_value": 72},
+        {"metric_name": "opps_created",          "metric_value": 312,        "target_value": 350,        "previous_period_value": 285},
+        {"metric_name": "close_rate",            "metric_value": 25.0,       "target_value": 30.0,       "previous_period_value": 28.0},
+        # -- Size KPIs --
+        {"metric_name": "ads",                   "metric_value": 159_615,    "target_value": 166_667,    "previous_period_value": 155_556},
+        {"metric_name": "aos",                   "metric_value": 166_667,    "target_value": 175_000,    "previous_period_value": 160_000},
+        # -- Health KPIs --
+        {"metric_name": "active_pipeline",       "metric_value": 38_500_000, "target_value": 45_000_000, "previous_period_value": 36_800_000},
+        {"metric_name": "coverage",              "metric_value": 2.57,       "target_value": 3.0,        "previous_period_value": 2.8},
+        {"metric_name": "won_attainment_pct",    "metric_value": 83.0,       "target_value": 100.0,      "previous_period_value": 79.0},
+        {"metric_name": "pipeline_attainment_pct","metric_value": 89.7,      "target_value": 100.0,      "previous_period_value": 85.0},
+        # -- Demand gen --
+        {"metric_name": "win_rate",              "metric_value": 38.5,       "target_value": 35.0,       "previous_period_value": 36.2},
+        {"metric_name": "mql_count",             "metric_value": 1_240,      "target_value": 1_400,      "previous_period_value": 1_100},
     ]
 
 

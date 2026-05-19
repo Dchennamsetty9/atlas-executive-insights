@@ -56,23 +56,29 @@ const KPIGrid = ({ onKpisLoaded }) => {
 
   const formatKPIName = (name) => {
     const nameMap = {
-      'won_pipeline': 'Won Pipeline',
-      'won_volume': 'Won Deals',
-      'ads': 'Avg Deal Size',
-      'opps_created': 'Opportunities Created',
-      'created_pipeline': 'Created Pipeline',
-      'active_pipeline': 'Active Pipeline',
-      'close_rate': 'Close Rate',
-      'coverage': 'Pipeline Coverage',
+      'won_pipeline':           'Won Pipeline',
+      'won_volume':             'Won Deals',
+      'ads':                    'Avg Deal Size',
+      'aos':                    'Avg Opp Size',
+      'opps_created':           'Opportunities Created',
+      'created_pipeline':       'Created Pipeline',
+      'active_pipeline':        'Active Pipeline',
+      'close_rate':             'Close Rate (Vol)',
+      'close_rate_dollar':      'Close Rate ($)',
+      'win_rate':               'Win Rate',
+      'coverage':               'Pipeline Coverage',
+      'won_attainment_pct':     'Won Attainment',
+      'pipeline_attainment_pct':'Pipeline Attainment',
+      'mql_count':              'MQL Count',
     };
     return nameMap[name] || name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
 
   const getKPIFormat = (name) => {
-    if (['won_pipeline', 'created_pipeline', 'active_pipeline', 'ads'].includes(name)) {
+    if (['won_pipeline', 'created_pipeline', 'active_pipeline', 'ads', 'aos'].includes(name)) {
       return 'currency';
     }
-    if (['close_rate', 'coverage'].includes(name)) {
+    if (['close_rate', 'close_rate_dollar', 'win_rate', 'won_attainment_pct', 'pipeline_attainment_pct'].includes(name)) {
       return 'percentage';
     }
     return 'number';
@@ -85,17 +91,27 @@ const KPIGrid = ({ onKpisLoaded }) => {
 
   const getDemoKPIs = () => {
     const rawKpis = [
-      { name: 'Won Pipeline', value: 2450000, target: 2000000, previous_value: 2145000, format: 'currency' },
-      { name: 'Won Deals', value: 78, target: 70, previous_value: 72, format: 'number' },
-      { name: 'Avg Deal Size', value: 24500, target: 28000, previous_value: 29790, format: 'currency' }, // Below target
-      { name: 'Opportunities Created', value: 195, target: 220, previous_value: 230, format: 'number' }, // Below target, declining
-      { name: 'Created Pipeline', value: 9200000, target: 7500000, previous_value: 7800000, format: 'currency' }, // Exceeding
-      { name: 'Active Pipeline', value: 12000000, target: 10000000, previous_value: 11400000, format: 'currency' },
-      { name: 'Close Rate', value: 31.8, target: 30.0, previous_value: 31.3, format: 'percentage' },
-      { name: 'Pipeline Coverage', value: 2.7, target: 3.0, previous_value: 3.1, format: 'number', unit: 'x' }, // Below target, declining
+      // Dollar funnel
+      { name: 'Won Pipeline',          metric_name: 'won_pipeline',           value: 12_450_000, target: 15_000_000, previous_value: 11_200_000, format: 'currency' },
+      { name: 'Created Pipeline',      metric_name: 'created_pipeline',       value: 52_000_000, target: 58_000_000, previous_value: 48_000_000, format: 'currency' },
+      { name: 'Close Rate ($)',         metric_name: 'close_rate_dollar',      value: 23.9,       target: 30.0,       previous_value: 25.1,       format: 'percentage' },
+      // Volume funnel
+      { name: 'Won Deals',             metric_name: 'won_volume',             value: 78,         target: 90,         previous_value: 72,         format: 'number' },
+      { name: 'Opportunities Created', metric_name: 'opps_created',           value: 312,        target: 350,        previous_value: 285,        format: 'number' },
+      { name: 'Close Rate (Vol)',       metric_name: 'close_rate',             value: 25.0,       target: 30.0,       previous_value: 28.0,       format: 'percentage' },
+      // Size KPIs
+      { name: 'Avg Deal Size',         metric_name: 'ads',                    value: 159_615,    target: 166_667,    previous_value: 155_556,    format: 'currency' },
+      { name: 'Avg Opp Size',          metric_name: 'aos',                    value: 166_667,    target: 175_000,    previous_value: 160_000,    format: 'currency' },
+      // Health KPIs
+      { name: 'Active Pipeline',       metric_name: 'active_pipeline',        value: 38_500_000, target: 45_000_000, previous_value: 36_800_000, format: 'currency' },
+      { name: 'Pipeline Coverage',     metric_name: 'coverage',               value: 2.57,       target: 3.0,        previous_value: 3.1,        format: 'number',  unit: 'x' },
+      { name: 'Won Attainment',        metric_name: 'won_attainment_pct',     value: 83.0,       target: 100.0,      previous_value: 79.0,       format: 'percentage' },
+      { name: 'Pipeline Attainment',   metric_name: 'pipeline_attainment_pct',value: 89.7,       target: 100.0,      previous_value: 85.0,       format: 'percentage' },
+      // Demand gen
+      { name: 'Win Rate',              metric_name: 'win_rate',               value: 38.5,       target: 35.0,       previous_value: 36.2,       format: 'percentage' },
+      { name: 'MQL Count',             metric_name: 'mql_count',              value: 1_240,      target: 1_400,      previous_value: 1_100,      format: 'number' },
     ];
 
-    // Enrich with calculated fields
     return rawKpis.map(kpi => ({
       ...kpi,
       title: kpi.name,
@@ -126,9 +142,9 @@ const KPIGrid = ({ onKpisLoaded }) => {
         </div>
       )}
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 gap-6">
         {loading
-          ? Array(8).fill(0).map((_, i) => <KPICard key={i} loading={true} />)
+          ? Array(14).fill(0).map((_, i) => <KPICard key={i} loading={true} />)
           : kpis.map((kpi, index) => <KPICard key={index} kpi={kpi} loading={false} />)
         }
       </div>

@@ -128,19 +128,24 @@ class MetricsCalculator:
     def _format_metric_name(self, metric_name: str) -> str:
         """Convert metric_name to human-readable title"""
         name_map = {
-            'won_pipeline': 'Won ACV $',
-            'won_volume': '# of Deals Won',
-            'ads': 'Average Deal Size',
-            'opps_created': '# of Opps Created',
-            'created_pipeline': 'Created Pipeline $',
-            'active_pipeline': 'Active Pipeline $',
-            'close_rate': 'Close Rate',
-            'coverage': 'Coverage',
-            # Legacy names for backwards compatibility
+            'won_pipeline':           'Won ACV $',
+            'won_volume':             '# of Deals Won',
+            'ads':                    'Avg Deal Size',
+            'aos':                    'Avg Opp Size',
+            'opps_created':           '# of Opps Created',
+            'created_pipeline':       'Created Pipeline $',
+            'active_pipeline':        'Active Pipeline $',
+            'close_rate':             'Close Rate (Vol)',
+            'close_rate_dollar':      'Close Rate ($)',
+            'win_rate':               'Win Rate',
+            'coverage':               'Coverage',
+            'won_attainment_pct':     'Won Attainment %',
+            'pipeline_attainment_pct':'Pipeline Attainment %',
+            'mql_count':              'MQL Count',
+            # Legacy
             'revenue': 'Total Revenue',
             'sales_growth': 'Sales Growth',
             'gross_margin': 'Gross Margin',
-            'win_rate': 'Deal Win Rate',
             'customer_acquisition_cost': 'Customer Acquisition Cost'
         }
         return name_map.get(metric_name, metric_name.replace('_', ' ').title())
@@ -150,37 +155,45 @@ class MetricsCalculator:
         Format value with appropriate unit
         Returns: (unit, formatted_value)
         """
-        if metric_name in ['won_pipeline', 'created_pipeline', 'active_pipeline', 'revenue', 'customer_acquisition_cost']:
-            # Currency - convert to millions
+        if metric_name in ['won_pipeline', 'created_pipeline', 'active_pipeline', 'revenue',
+                            'customer_acquisition_cost', 'ads', 'aos']:
+            # Currency
             if value >= 1_000_000:
                 return "M", round(value / 1_000_000, 1)
             elif value >= 1_000:
                 return "K", round(value / 1_000, 1)
             else:
                 return "$", round(value, 2)
-        elif metric_name in ['close_rate', 'coverage', 'sales_growth', 'gross_margin', 'win_rate']:
-            # Percentage
+        elif metric_name in ['close_rate', 'close_rate_dollar', 'win_rate',
+                             'won_attainment_pct', 'pipeline_attainment_pct',
+                             'sales_growth', 'gross_margin']:
             return "%", round(value, 1)
+        elif metric_name == 'coverage':
+            return "x", round(value, 2)
         else:
-            # Plain number (counts)
             return "", int(value)
     
     def _get_icon(self, metric_name: str) -> str:
         """Get icon identifier for metric"""
         icon_map = {
-            'won_pipeline': 'dollar',
-            'won_volume': 'trending-up',
-            'ads': 'dollar',
-            'opps_created': 'activity',
-            'created_pipeline': 'dollar',
-            'active_pipeline': 'dollar',
-            'close_rate': 'percent',
-            'coverage': 'target',
+            'won_pipeline':           'dollar',
+            'won_volume':             'trending-up',
+            'ads':                    'dollar',
+            'aos':                    'dollar',
+            'opps_created':           'activity',
+            'created_pipeline':       'dollar',
+            'active_pipeline':        'dollar',
+            'close_rate':             'percent',
+            'close_rate_dollar':      'percent',
+            'win_rate':               'percent',
+            'coverage':               'target',
+            'won_attainment_pct':     'target',
+            'pipeline_attainment_pct':'target',
+            'mql_count':              'activity',
             # Legacy
             'revenue': 'dollar',
             'sales_growth': 'trending-up',
             'gross_margin': 'percent',
-            'win_rate': 'target',
             'customer_acquisition_cost': 'user-plus'
         }
         return icon_map.get(metric_name, 'bar-chart')

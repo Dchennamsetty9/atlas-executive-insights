@@ -5,20 +5,13 @@ python-multipart==0.0.6
 
 # Database drivers
 databricks-sql-connector==3.0.0
-databricks-sdk==0.20.0
-pyodbc==5.0.1
+databricks-sdk>=0.20.0
 sqlalchemy==2.0.25
-pymssql==2.2.11
 
-# ML and Forecasting
-prophet==1.1.5
+# ML and Data
 scikit-learn==1.4.0
 pandas==2.2.0
 numpy==1.26.3
-
-# Azure OpenAI
-openai==1.10.0
-azure-identity==1.15.0
 
 apscheduler>=3.10.0
 

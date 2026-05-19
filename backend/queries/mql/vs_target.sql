@@ -1,12 +1,15 @@
 -- queries/mql/vs_target.sql
 -- Daily MQL actuals vs the daily target for the current quarter.
 -- Placeholders: {table}, {quarter_start}
+--
+-- Column notes (gaim_mql_daily_snapshot):
+--   date column = report_date  (not snapshot_date)
+--   mql flag    = mqls = 1     (integer, not 'True')
 SELECT
-    snapshot_date              AS date,
-    COUNT(DISTINCT interest_name) AS actual,
-    MAX(daily_mql_target)         AS target
+    report_date                                       AS date,
+    SUM(CASE WHEN mqls = 1 THEN 1 ELSE 0 END)        AS actual,
+    MAX(COALESCE(daily_mql_target, 0))                AS target
 FROM {table}
-WHERE mqls = 'True'
-  AND snapshot_date >= '{quarter_start}'
-GROUP BY snapshot_date
-ORDER BY snapshot_date
+WHERE report_date >= '{quarter_start}'
+GROUP BY report_date
+ORDER BY report_date

@@ -34,6 +34,8 @@ from routes.deal_bands import router as deal_bands_router
 from routes.coverage import router as coverage_router
 from routes.deals import router as deals_router
 from routes.forecast import router as forecast_router
+from routes.performance_hub import router as performance_hub_router
+from routes.ai import router as ai_router
 from models.kpi import KPICard, ChartData, Insight, Forecast
 
 logging.basicConfig(
@@ -81,6 +83,8 @@ app.include_router(deal_bands_router)
 app.include_router(coverage_router)
 app.include_router(deals_router)
 app.include_router(forecast_router)
+app.include_router(performance_hub_router)
+app.include_router(ai_router)
 
 
 @app.get("/api/health")
@@ -121,10 +125,111 @@ async def health_check():
         "databricks_connection": connection_status,
         "connection_error": connection_error,
         "databricks_host": settings.databricks_server_hostname[:50] if settings.databricks_server_hostname else "not set",
-        "has_token": bool(os.getenv("DATABRICKS_TOKEN")),
+        "has_token": bool(os.getenv("DATABRICKS_TOKEN") or os.getenv("DATABRICKS_ACCESS_TOKEN")),
         "catalog": settings.databricks_catalog,
         "schema": settings.databricks_schema
     }
+
+
+@app.get("/api/debug/identity")
+async def debug_identity():
+    """
+    Returns the identity the app is running as on Databricks.
+    Use this to verify the service principal has UC access to GAIM tables.
+    Safe to call locally (will just show has_token=false if no token set).
+    """
+    import httpx
+
+    token = os.getenv("DATABRICKS_TOKEN") or os.getenv("DATABRICKS_ACCESS_TOKEN")
+    host  = os.getenv("DATABRICKS_HOST") or os.getenv("DATABRICKS_SERVER_HOSTNAME", "")
+
+    if not token:
+        return {
+            "error": "No DATABRICKS_TOKEN or DATABRICKS_ACCESS_TOKEN set — running locally without a token",
+            "has_token": False,
+            "host": host or "not set",
+        }
+
+    # Normalise host to a bare hostname (no https://, no trailing slash)
+    bare_host = host.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            me_resp = await client.get(
+                f"https://{bare_host}/api/2.0/current-user/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            me = me_resp.json()
+
+            # Also check UC permissions on one known GAIM table
+            uc_resp = await client.get(
+                f"https://{bare_host}/api/2.1/unity-catalog/tables/datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            uc_status = uc_resp.status_code
+            uc_body   = uc_resp.json() if uc_status in (200, 403, 404) else {"raw": uc_resp.text[:300]}
+
+        return {
+            "identity": {
+                "displayName": me.get("displayName"),
+                "userName":    me.get("userName"),
+                "emails":      me.get("emails"),
+                "id":          me.get("id"),
+            },
+            "uc_table_check": {
+                "table": "datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot",
+                "http_status": uc_status,
+                "accessible": uc_status == 200,
+                "detail": uc_body if uc_status != 200 else "OK",
+            },
+            "host": bare_host,
+            "has_token": True,
+        }
+    except Exception as exc:
+        return {"error": str(exc), "host": bare_host, "has_token": True}
+
+
+@app.get("/api/debug/schema")
+async def debug_schema(
+    table: str = "gaim_pipeline_daily_snapshot",
+    catalog: str = "datagroup_mdl",
+    schema: str = "mdl_sales_analytics",
+):
+    """
+    Return column names and types for any GAIM table.
+    Use this to verify the actual schema before writing SQL.
+    Only available when DATABRICKS_TOKEN / DATABRICKS_HOST are set.
+
+    Examples:
+      /api/debug/schema?table=gaim_pipeline_daily_snapshot
+      /api/debug/schema?table=gaim_mql_daily_snapshot
+      /api/debug/schema?table=gaim_partner_sales_targets_cy_daily
+    """
+    from services.databricks_connection import token_available, execute_query
+    if not token_available():
+        return {"error": "No Databricks token — running locally without a token", "columns": []}
+
+    # Validate table name against known GAIM tables to prevent injection
+    _ALLOWED = {
+        "gaim_pipeline_daily_snapshot",
+        "gaim_snapshot_pipeline_created_cq_daily",
+        "gaim_partner_sales_targets_cy_daily",
+        "gaim_mql_daily_snapshot",
+    }
+    if table not in _ALLOWED:
+        return {"error": f"Table '{table}' is not in the allowed list", "allowed": sorted(_ALLOWED)}
+
+    try:
+        rows = await asyncio.to_thread(
+            execute_query,
+            f"DESCRIBE TABLE `{catalog}`.`{schema}`.`{table}`",
+        )
+        return {
+            "table": f"{catalog}.{schema}.{table}",
+            "columns": [{"name": r.get("col_name"), "type": r.get("data_type")} for r in rows],
+        }
+    except Exception as exc:
+        return {"error": str(exc), "table": f"{catalog}.{schema}.{table}"}
 
 
 @app.get("/api/filters")

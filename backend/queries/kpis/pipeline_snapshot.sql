@@ -5,8 +5,19 @@
 -- Placeholders: {catalog}, {schema}, {filter_clause}
 -- Note: {filter_clause} is constructed from VALIDATED whitelist values only —
 --       never from raw user input.
+--
+-- Column notes (gaim_pipeline_daily_snapshot):
+--   data_day            = STRING in 'yyyyMMdd' format → cast with TO_DATE(data_day,'yyyyMMdd')
+--   amount_towards_plan = pipeline dollar amount (NOT 'amount')
+--   is_won              = 'true'/'false' (lowercase string)
+--   market              = sales market filter column (NOT 'sales_market')
 WITH latest AS (
-    SELECT MAX(data_day) AS d
+    SELECT
+        MAX(data_day)                                                        AS d,
+        DATE_FORMAT(
+            DATE_ADD(TO_DATE(MAX(data_day), 'yyyyMMdd'), -90),
+            'yyyyMMdd'
+        )                                                                    AS d_prev
     FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
 ),
 snap AS (
@@ -18,32 +29,32 @@ snap AS (
 ),
 won AS (
     SELECT
-        SUM(amount)                                   AS won_pipeline,
+        SUM(amount_towards_plan)                      AS won_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS won_volume
     FROM snap
-    WHERE is_won = 'True'
+    WHERE is_won = 'true'
 ),
 lost AS (
     SELECT
         COUNT(DISTINCT opportunities_created_ids)     AS lost_volume
     FROM snap
-    WHERE is_won = 'False'
+    WHERE is_won = 'false'
       AND stage_name IN ('Closed Lost', 'Closed-Cancelled')
 ),
 active AS (
     SELECT
-        SUM(amount)                                   AS active_pipeline,
+        SUM(amount_towards_plan)                      AS active_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS open_volume
     FROM snap
     WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
 ),
 prev AS (
     SELECT
-        SUM(amount)                                   AS prev_won_pipeline,
+        SUM(amount_towards_plan)                      AS prev_won_pipeline,
         COUNT(DISTINCT opportunities_created_ids)     AS prev_won_volume
     FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-    WHERE data_day = DATE_ADD((SELECT d FROM latest), -90)
-      AND is_won = 'True'
+    WHERE data_day = (SELECT d_prev FROM latest)
+      AND is_won = 'true'
       AND xtxtype <> 'Cancel'
       {filter_clause}
 )

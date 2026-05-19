@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import asyncio
+from services.databricks_connection import token_available
 
 try:
     from databricks import sql as databricks_sql
@@ -47,11 +48,12 @@ class DataFetcher:
     """Fetch data from the database (same source as Power BI)"""
     
     def __init__(self):
-        # Check if running in Databricks Apps (DATABRICKS_HOST is auto-provided)
+        # Require both the SDK and a valid token before attempting live Databricks queries.
+        # Without this check, DataFetcher tries to connect using only DATABRICKS_HOST
+        # (auto-set on all Databricks Apps nodes), which causes the connector to retry
+        # for 900 s and exhaust the thread pool even when no PAT is available.
         self.in_databricks = os.getenv("DATABRICKS_HOST") is not None
-        self.use_databricks = DATABRICKS_AVAILABLE and (
-            settings.databricks_access_token or self.in_databricks
-        )
+        self.use_databricks = DATABRICKS_AVAILABLE and token_available()
         self.connection_string = self._build_connection_string() if not self.use_databricks else None
         self.engine = None
         # NOTE: Databricks SQL connector is not thread-safe for shared connections.
@@ -176,189 +178,149 @@ class DataFetcher:
             print(f"Error fetching KPI data: {e}")
             return self._get_mock_kpi_data()
     
-    def _build_filter_where_clause(self, filters: Dict[str, str], table_alias: str = "") -> str:
+    # ── Filter helpers ────────────────────────────────────────────────────────
+
+    _PRODUCT_MAP: Dict[str, str] = {
+        "Connect": "GoToConnect", "Engage": "GoToWebinar",
+        "Rescue": "Rescue", "Central": "Central", "Resolve": "Resolve",
+        "GoToConnect": "GoToConnect", "GoToWebinar": "GoToWebinar",
+    }
+    _VALID_GEO     = {"NA", "EMEA", "LATAM", "APAC", "AUS/ROW"}
+    _VALID_CHANNEL = {"Enterprise", "Partner", "Mid-Market", "MSP", "GSI", "Small Business"}
+
+    def _build_filter_federated(self, filters: Dict[str, str]) -> str:
+        """AND-prefixed WHERE fragment for federated.sales.* tables.
+        Columns: sales_market, sales_channel, product_genus, fuel_source.
+        All values validated against whitelists; unknown values silently ignored.
         """
-        Build WHERE clause SQL from filters
-        
-        Args:
-            filters: Dict with geo, channel, product
-            table_alias: Table alias prefix (e.g., "g." for gaim_pipeline_daily_snapshot)
-        
-        Returns:
-            SQL WHERE clause string (e.g., "AND sales_market = 'AMER' AND sales_channel = 'Enterprise'")
+        parts: list = []
+        geo = filters.get("geo", "")
+        if geo and geo != "All" and geo in self._VALID_GEO:
+            parts.append(f"AND sales_market = '{geo}'")
+        channel = filters.get("channel", "")
+        if channel and channel != "All" and channel in self._VALID_CHANNEL:
+            parts.append(f"AND sales_channel = '{channel}'")
+        product = filters.get("product", "")
+        if product and product != "All":
+            mapped = self._PRODUCT_MAP.get(product)
+            if mapped:
+                parts.append(f"AND product_genus = '{mapped}'")
+        fuel = filters.get("fuel_source", "")
+        if fuel and fuel != "All" and fuel in {"Marketing", "Sales", "Partner", "Unknown"}:
+            parts.append(f"AND fuel_source = '{fuel}'")
+        return " ".join(parts)
+
+    def _build_filter_mdl(self, filters: Dict[str, str]) -> str:
+        """AND-prefixed WHERE fragment for datagroup_mdl MDL snapshot tables.
+        Columns: market, smoothed_channel, product_genus.
         """
-        where_clauses = []
-        prefix = f"{table_alias}." if table_alias else ""
-        
-        if filters.get("geo") and filters["geo"] != "All":
-            where_clauses.append(f"{prefix}sales_market = '{filters['geo']}'")
-        
-        if filters.get("channel") and filters["channel"] != "All":
-            where_clauses.append(f"{prefix}sales_channel = '{filters['channel']}'")
-        
-        if filters.get("product") and filters["product"] != "All":
-            # Map product names to product_group column values
-            product_map = {
-                "Connect": "GoToConnect",
-                "Engage": "GoToWebinar", 
-                "Rescue": "Rescue",
-                "Central": "Central",
-                "Resolve": "Resolve"
-            }
-            product_value = product_map.get(filters["product"], filters["product"])
-            where_clauses.append(f"{prefix}product_group = '{product_value}'")
-        
-        if where_clauses:
-            return "AND " + " AND ".join(where_clauses)
-        return ""
+        parts: list = []
+        geo = filters.get("geo", "")
+        if geo and geo != "All":
+            parts.append(f"AND market = '{geo}'")
+        channel = filters.get("channel", "")
+        if channel and channel != "All":
+            parts.append(f"AND smoothed_channel = '{channel}'")
+        product = filters.get("product", "")
+        if product and product != "All":
+            mapped = self._PRODUCT_MAP.get(product)
+            if mapped:
+                parts.append(f"AND product_genus = '{mapped}'")
+        return " ".join(parts)
     
     async def _fetch_kpis_databricks(self, start_date: str, end_date: str, filters: Dict[str, str]) -> pd.DataFrame:
         """
-        Fetch real KPI data from Databricks using exact Performance Hub formulas
-        Based on: Atlas - Performance Hub.SemanticModel DAX measures
-        
-        Args:
-            start_date: Start date
-            end_date: End date
-            filters: Geography, Channel, Product filters
+        Fetch KPI data from Databricks.
+        Won / opened metrics query federated.sales.* (clean grain, no snapshot logic).
+        Active pipeline still queries the MDL snapshot (no federated equivalent yet).
+        Targets come from metis_targets_summary with real paced values.
         """
+        fed = self._build_filter_federated(filters)
+        mdl = self._build_filter_mdl(filters)
         
-        catalog = settings.databricks_catalog
-        schema = settings.databricks_schema
-        
-        # Build filter WHERE clauses for different table aliases
-        filter_clause = self._build_filter_where_clause(filters, "")
-        
-        # Query all 8 KPIs using exact Performance Hub logic WITH FILTERS
+        # Query 8 KPIs: federated tables for won/created/targets; MDL snapshot for active pipeline
         query = f"""
-        WITH max_data_day AS (
-            SELECT MAX(data_day) as latest_day
-            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
+        WITH won AS (
+            SELECT
+                COUNT(DISTINCT salesforce_opportunity_id) AS won_volume,
+                COALESCE(SUM(amount_towards_plan), 0)     AS won_pipeline
+            FROM federated.sales.metis_won_opps_fact
+            WHERE DATE_TRUNC('quarter', close_date) = DATE_TRUNC('quarter', CURRENT_DATE())
+              {fed}
         ),
-        won_metrics AS (
-            -- Performance Hub: Won_Pipeline and Won_Volume measures
-            SELECT 
-                COALESCE(SUM(amount_towards_plan), 0) as won_pipeline,
-                COUNT(DISTINCT opportunities_created_ids) as won_volume
-            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-            WHERE is_won = 'True'
-              AND xtxtype <> 'Cancel'  -- Critical filter from Performance Hub
-              AND data_day = (SELECT latest_day FROM max_data_day)
-              {filter_clause}  -- ADDED: Dynamic filters
+        prev_won AS (
+            -- Same point last quarter using the QoQ flag
+            SELECT
+                COUNT(DISTINCT salesforce_opportunity_id) AS prev_won_volume,
+                COALESCE(SUM(amount_towards_plan), 0)     AS prev_won_pipeline
+            FROM federated.sales.metis_won_opps_fact
+            WHERE is_in_qoq_period = TRUE
+              AND DATE_TRUNC('quarter', close_date) = ADD_MONTHS(DATE_TRUNC('quarter', CURRENT_DATE()), -3)
+              {fed}
         ),
-        created_metrics AS (
-            -- Performance Hub: xCreated_Pipeline and x_OppsCreated_mdl measures
-            -- Uses gaim_snapshot_pipeline_created_cq_daily table
-            SELECT 
-                COUNT(DISTINCT opportunities_created_ids) as opps_created,
-                COALESCE(SUM(amount_towards_plan), 0) as created_pipeline
-            FROM {catalog}.{schema}.gaim_snapshot_pipeline_created_cq_daily
-            WHERE xtxtype <> 'Cancel'  -- ADDED: Critical cancellation filter
-              AND pipeline_entered_date BETWEEN '{start_date}' AND '{end_date}'
-              {filter_clause}  -- ADDED: Dynamic filters
+        created AS (
+            SELECT
+                COUNT(DISTINCT salesforce_opportunity_id) AS opps_created,
+                COALESCE(SUM(amount_towards_plan), 0)     AS created_pipeline
+            FROM federated.sales.metis_opened_opps_fact
+            WHERE DATE_TRUNC('quarter', pipeline_entered_date) = DATE_TRUNC('quarter', CURRENT_DATE())
+              {fed}
         ),
-        active_metrics AS (
-            -- Performance Hub: Active_Pipeline measure
-            -- Filters for Opp Stage = "1.Open"
-            SELECT 
-                COALESCE(SUM(amount_towards_plan), 0) as active_pipeline
-            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-            WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
-              AND data_day = (SELECT latest_day FROM max_data_day)
-              {filter_clause}  -- ADDED: Dynamic filters
+        tgt AS (
+            -- Real paced targets from metis_targets_summary
+            SELECT
+                COALESCE(SUM(paced_won_amount),    0) AS target_won_pipeline,
+                COALESCE(SUM(paced_won_opps),      0) AS target_won_volume,
+                COALESCE(SUM(paced_opened_amount), 0) AS target_created_pipeline,
+                COALESCE(SUM(paced_opened_opps),   0) AS target_opps_created
+            FROM federated.sales.metis_targets_summary
+            WHERE quarter_start_date = DATE_TRUNC('quarter', CURRENT_DATE())
+              AND plan_version = 'Plan'
+              {fed}
         ),
-        previous_period AS (
-            -- Previous period metrics for trend calculation
-            SELECT 
-                COALESCE(SUM(amount_towards_plan), 0) as prev_won_pipeline,
-                COUNT(DISTINCT opportunities_created_ids) as prev_won_volume
-            FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-            WHERE is_won = 'True'
+        snap AS (
+            SELECT MAX(data_day) AS latest_day
+            FROM datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot
+        ),
+        active AS (
+            -- Active pipeline: no federated equivalent, still uses MDL snapshot
+            SELECT COALESCE(SUM(amount_towards_plan), 0) AS active_pipeline
+            FROM datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot
+            WHERE data_day = (SELECT latest_day FROM snap)
+              AND stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
               AND xtxtype <> 'Cancel'
-              AND data_day = DATE_ADD((SELECT latest_day FROM max_data_day), -90)
-              {filter_clause}  -- ADDED: Dynamic filters
+              {mdl}
         )
-        SELECT 
-            -- Row 1: Won Pipeline $ (Performance Hub: Won_Pipeline)
-            'won_pipeline' as metric_name,
-            w.won_pipeline as metric_value,
-            w.won_pipeline * 0.9 as target_value,
-            pp.prev_won_pipeline as previous_period_value
-        FROM won_metrics w, previous_period pp
-        
+        SELECT 'won_pipeline'     AS metric_name,
+               w.won_pipeline     AS metric_value,
+               t.target_won_pipeline   AS target_value,
+               p.prev_won_pipeline     AS previous_period_value
+          FROM won w, tgt t, prev_won p
         UNION ALL
-        
-        -- Row 2: Won Volume # (Performance Hub: Won_Volume)
-        SELECT 
-            'won_volume' as metric_name,
-            w.won_volume as metric_value,
-            w.won_volume * 0.9 as target_value,
-            pp.prev_won_volume as previous_period_value
-        FROM won_metrics w, previous_period pp
-        
+        SELECT 'won_volume', w.won_volume, t.target_won_volume, p.prev_won_volume
+          FROM won w, tgt t, prev_won p
         UNION ALL
-        
-        -- Row 3: ADS $ (Performance Hub: ADS = Won_Pipeline / Won_Volume)
-        SELECT 
-            'ads' as metric_name,
-            COALESCE(w.won_pipeline / NULLIF(w.won_volume, 0), 0) as metric_value,
-            COALESCE(w.won_pipeline / NULLIF(w.won_volume, 0), 0) * 0.95 as target_value,
-            COALESCE(pp.prev_won_pipeline / NULLIF(pp.prev_won_volume, 0), 0) as previous_period_value
-        FROM won_metrics w, previous_period pp
-        
+        SELECT 'ads',
+               COALESCE(w.won_pipeline  / NULLIF(w.won_volume,              0), 0),
+               COALESCE(t.target_won_pipeline / NULLIF(t.target_won_volume, 0), 0),
+               COALESCE(p.prev_won_pipeline   / NULLIF(p.prev_won_volume,   0), 0)
+          FROM won w, tgt t, prev_won p
         UNION ALL
-        
-        -- Row 4: Opps Created # (Performance Hub: x_OppsCreated_mdl)
-        SELECT 
-            'opps_created' as metric_name,
-            c.opps_created as metric_value,
-            c.opps_created * 0.9 as target_value,
-            c.opps_created * 0.85 as previous_period_value
-        FROM created_metrics c
-        
+        SELECT 'opps_created', c.opps_created, t.target_opps_created, c.opps_created * 0.85
+          FROM created c, tgt t
         UNION ALL
-        
-        -- Row 5: Created Pipeline $ (Performance Hub: xCreated_Pipeline)
-        SELECT 
-            'created_pipeline' as metric_name,
-            c.created_pipeline as metric_value,
-            c.created_pipeline * 0.9 as target_value,
-            c.created_pipeline * 0.85 as previous_period_value
-        FROM created_metrics c
-        
+        SELECT 'created_pipeline', c.created_pipeline, t.target_created_pipeline, c.created_pipeline * 0.85
+          FROM created c, tgt t
         UNION ALL
-        
-        -- Row 6: Active Pipeline $ (Performance Hub: Active_Pipeline)
-        SELECT 
-            'active_pipeline' as metric_name,
-            a.active_pipeline as metric_value,
-            a.active_pipeline * 0.8 as target_value,
-            a.active_pipeline * 0.95 as previous_period_value
-        FROM active_metrics a
-        
+        SELECT 'active_pipeline', a.active_pipeline, t.target_created_pipeline * 0.8, a.active_pipeline * 0.95
+          FROM active a, tgt t
         UNION ALL
-        
-        -- Row 7: Close Rate % (Performance Hub: close_rate_vol = Won_Volume / x_OppsCreated_mdl)
-        SELECT 
-            'close_rate' as metric_name,
-            (w.won_volume * 100.0 / NULLIF(c.opps_created, 0)) as metric_value,
-            30.0 as target_value,  -- Standard 30% close rate target
-            28.0 as previous_period_value
-        FROM won_metrics w, created_metrics c
-        
+        SELECT 'close_rate', w.won_volume * 100.0 / NULLIF(c.opps_created, 0), 30.0, 28.0
+          FROM won w, created c
         UNION ALL
-        
-        -- Row 8: Coverage x (Performance Hub: xCvg_mdl)
-        -- FIXED: Should use Active_Pipeline / Daily_Plan$ (using proxy for now)
-        -- TODO: Add targets table join for real Daily_Plan$ value
-        SELECT 
-            'coverage' as metric_name,
-            LEAST(a.active_pipeline / NULLIF(c.created_pipeline * 0.33, 0), 10.0) as metric_value,  -- Capped at 10x
-            3.0 as target_value,  -- 3x coverage target
-            2.8 as previous_period_value
-        FROM active_metrics a, created_metrics c
+        SELECT 'coverage', LEAST(a.active_pipeline / NULLIF(t.target_created_pipeline, 0), 10.0), 3.0, 2.8
+          FROM active a, tgt t
         """
-        
         return await self.execute_query_async(query)
     
     async def fetch_chart_data(
@@ -411,9 +373,15 @@ class DataFetcher:
         
         try:
             if self.use_databricks:
-                return await self._fetch_historical_databricks(metric)
+                return await asyncio.wait_for(
+                    self._fetch_historical_databricks(metric),
+                    timeout=20.0,
+                )
             else:
                 return self._get_mock_historical_data(metric)
+        except asyncio.TimeoutError:
+            print(f"[DataFetcher] fetch_historical_data timed out after 20s, using mock data")
+            return self._get_mock_historical_data(metric)
         except Exception as e:
             print(f"Error fetching historical data: {e}")
             return self._get_mock_historical_data(metric)

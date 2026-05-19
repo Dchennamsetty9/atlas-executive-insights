@@ -1,6 +1,31 @@
+import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 
 const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsightId, onInsightToggle }) => {
+  const [aiInsight,  setAiInsight]  = useState(null);
+  const [aiLoading,  setAiLoading]  = useState(false);
+  const [aiOpen,     setAiOpen]     = useState(false);
+
+  const fetchAiInsight = async () => {
+    if (aiInsight) { setAiOpen(o => !o); return; }
+    setAiLoading(true);
+    setAiOpen(true);
+    try {
+      const res  = await fetch('/api/ai/kpi-card-insight', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          kpi_name:   kpi?.title || '',
+          kpi_value:  kpi?.value,
+          kpi_target: kpi?.target,
+          trend_data: [],
+        }),
+      });
+      const body = await res.json();
+      if (body.success && body.data) setAiInsight(body.data);
+    } catch { /* silent — button just stays visible */ }
+    finally { setAiLoading(false); }
+  };
 
   if (loading) {
     const p = compact ? 12 : 24;
@@ -229,6 +254,26 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
             </div>
           )}
 
+          {/* ◈ AI Insight Button (Feature 3) */}
+          {!compact && (
+            <button
+              onClick={fetchAiInsight}
+              style={{
+                width: '100%', marginTop: 4,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                padding: '4px 8px', fontSize: 10, fontWeight: 600,
+                color: aiOpen ? '#a78bfa' : '#7c3aed',
+                cursor: 'pointer',
+                background: aiOpen ? 'rgba(124,58,237,0.12)' : 'rgba(124,58,237,0.05)',
+                border: `1px solid ${aiOpen ? 'rgba(124,58,237,0.4)' : 'rgba(124,58,237,0.15)'}`,
+                borderRadius: 6, transition: 'all 0.15s', fontFamily: 'inherit',
+              }}
+            >
+              <span>◈</span>
+              <span>{aiLoading ? 'Analyzing…' : aiOpen ? '↑ AI Insight' : '↓ AI Insight'}</span>
+            </button>
+          )}
+
           {/* ↓ Compact Insight Toggle */}
           {insights && (
             <button
@@ -253,6 +298,39 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
       </div>
 
       {/* ── Compact Insight Panel (accordion, max 150px) ──────────────────── */}
+      {/* ── AI Insight Accordion (Feature 3) ─────────────────────────── */}
+      {!compact && aiOpen && (
+        <div style={{
+          borderTop: '1px solid rgba(124,58,237,0.2)',
+          background: 'rgba(124,58,237,0.06)',
+          padding: '8px 12px',
+          display: 'flex', flexDirection: 'column', gap: 5,
+        }}>
+          {aiLoading ? (
+            <div style={{ height: 11, borderRadius: 4, background: 'rgba(255,255,255,0.06)', animation: 'pulse 1.5s ease-in-out infinite' }} />
+          ) : aiInsight ? (
+            <>
+              {aiInsight.summary && (
+                <span style={{ fontSize: 11, color: '#c4b5fd', lineHeight: 1.5 }}>{aiInsight.summary}</span>
+              )}
+              {aiInsight.recommendation && (
+                <span style={{ fontSize: 10, color: '#a78bfa', fontWeight: 600 }}>→ {aiInsight.recommendation}</span>
+              )}
+              <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
+                {aiInsight.trend_direction && (
+                  <span style={{ fontSize: 9, color: '#7c3aed', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8 }}>Trend: {aiInsight.trend_direction}</span>
+                )}
+                {aiInsight.risk_level && (
+                  <span style={{ fontSize: 9, color: aiInsight.risk_level === 'high' ? '#f87171' : aiInsight.risk_level === 'medium' ? '#fbbf24' : '#34d399', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8 }}>Risk: {aiInsight.risk_level}</span>
+                )}
+              </div>
+            </>
+          ) : (
+            <span style={{ fontSize: 10, color: '#64748b' }}>Could not load AI insight.</span>
+          )}
+        </div>
+      )}
+
       {insights && activeInsightId === kpi?.id && (
         <div style={{
           borderTop: '1px solid rgba(255,255,255,0.07)',

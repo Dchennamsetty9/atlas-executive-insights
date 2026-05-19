@@ -19,15 +19,16 @@ from typing import Optional
 from fastapi import APIRouter
 
 from query_loader import load_query
-from services.databricks_connection import execute_query, DATABRICKS_AVAILABLE
+from services.databricks_connection import execute_query, token_available
 
 router = APIRouter(prefix="/api/coverage", tags=["coverage"])
 
 CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 SCHEMA  = os.getenv("DATABRICKS_SCHEMA",  "mdl_sales_analytics")
-TABLE   = f"`{CATALOG}`.`{SCHEMA}`.`gaim_pipeline_daily_snapshot`"
 
-_AVAILABLE = DATABRICKS_AVAILABLE and bool(os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN"))
+_on_databricks = bool(os.getenv("DATABRICKS_HOST"))
+_force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
+_AVAILABLE     = token_available() and (_on_databricks or _force_live)
 
 
 def _quarter_start(year_offset: int = 0) -> str:
@@ -111,8 +112,13 @@ def _demo_trend():
 
 def _query_current(year_offset: int = 0) -> dict:
     snap_date = _today(year_offset)
+    q_start   = _quarter_start(year_offset)
     q_end     = _quarter_end(year_offset)
-    sql = load_query("coverage/current", table=TABLE, snap_date=snap_date, q_end=q_end)
+    sql = load_query(
+        "coverage/current",
+        catalog=CATALOG, schema=SCHEMA,
+        snap_date=snap_date, q_start=q_start, q_end=q_end,
+    )
     rows = execute_query(sql)
     r = rows[0] if rows else {}
     open_p   = float(r.get("open_pipeline") or 0)
@@ -144,7 +150,11 @@ def _query_current(year_offset: int = 0) -> dict:
 def _query_trend() -> list:
     q_start = _quarter_start()
     q_end   = _quarter_end()
-    sql = load_query("coverage/trend", table=TABLE, q_start=q_start, q_end=q_end)
+    sql = load_query(
+        "coverage/trend",
+        catalog=CATALOG, schema=SCHEMA,
+        q_start=q_start, q_end=q_end,
+    )
     rows = execute_query(sql)
     return [{"date": str(r["snapshot_date"]), "coverage_ratio": float(r.get("coverage_ratio") or 0)} for r in rows]
 

@@ -1,19 +1,17 @@
 -- queries/mql/conversion.sql
--- Daily MQL-to-Opportunity conversion rate for the current quarter.
+-- Daily MQL count for the current quarter (gaim_mql_daily_snapshot).
+-- NOTE: mql-to-opp conversion rate is not available from this table;
+--       conversion_rate is returned as null for future enrichment.
 -- Placeholders: {table}, {quarter_start}
+--
+-- Column notes (gaim_mql_daily_snapshot):
+--   date column = report_date  (not snapshot_date)
+--   mql flag    = mqls = 1     (integer, not 'True')
 SELECT
-    snapshot_date                                                         AS date,
-    mql_count,
-    marketing_opps,
-    ROUND(SAFE_DIVIDE(marketing_opps, mql_count) * 100, 1)               AS conversion_rate
-FROM (
-    SELECT
-        snapshot_date,
-        COUNT(DISTINCT interest_name)    AS mql_count,
-        SUM(created_opp_flag)            AS marketing_opps
-    FROM {table}
-    WHERE mqls = 'True'
-      AND snapshot_date >= '{quarter_start}'
-    GROUP BY snapshot_date
-) sub
-ORDER BY snapshot_date
+    report_date                                      AS date,
+    SUM(CASE WHEN mqls = 1 THEN 1 ELSE 0 END)       AS mql_count,
+    CAST(NULL AS DOUBLE)                             AS conversion_rate
+FROM {table}
+WHERE report_date >= '{quarter_start}'
+GROUP BY report_date
+ORDER BY report_date

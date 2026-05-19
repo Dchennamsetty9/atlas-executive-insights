@@ -11,7 +11,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000,  // 120 s — allows Databricks warehouse cold-start (~60-90 s)
+  timeout: 15000,  // 15 s — backend falls back to demo data within 15 s; 120 s caused 2-min blank stalls
   headers: {
     'Content-Type': 'application/json',
   }
