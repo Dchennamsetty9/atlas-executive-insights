@@ -3,8 +3,8 @@ services/ai_service.py
 ========================
 AI insight generation using Databricks Foundation Model API.
 
-Primary endpoint:  databricks-claude-sonnet-4
-Fallback endpoint: databricks-gemini-2-5-flash
+Primary endpoint:  databricks-claude-sonnet-4-6
+Fallback endpoint: databricks-gemini-3-1-flash-lite
 
 Authentication
 --------------
@@ -24,8 +24,8 @@ never blocks the FastAPI event loop.
 
 Fallback chain
 --------------
-  1. databricks-claude-sonnet-4
-  2. databricks-gemini-2-5-flash
+  1. databricks-claude-sonnet-4-6
+  2. databricks-gemini-3-1-flash-lite
   3. Rule-based plain-text summary (no LLM call — always works)
 """
 
@@ -37,8 +37,8 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # ── Endpoint names ─────────────────────────────────────────────────────────────
-_PRIMARY_ENDPOINT  = "databricks-claude-sonnet-4"
-_FALLBACK_ENDPOINT = "databricks-gemini-2-5-flash"
+_PRIMARY_ENDPOINT  = "databricks-claude-sonnet-4-6"
+_FALLBACK_ENDPOINT = "databricks-gemini-3-1-flash-lite"
 _MAX_TOKENS        = 150   # ~3-4 sentences; executive summary only
 
 # ── Impact column → human-readable label ──────────────────────────────────────
