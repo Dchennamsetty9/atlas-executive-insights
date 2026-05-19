@@ -543,7 +543,13 @@ async def get_kpi_insights(kpi_id: str):
             'created_pipeline': {'current': 18700000, 'target': 88300000, 'previous': 17000000},
             'active_pipeline': {'current': 12000000, 'target': 10000000, 'previous': 11400000},
             'close_rate': {'current': 31.8, 'target': 30.0, 'previous': 31.3},
-            'coverage': {'current': 320, 'target': 300, 'previous': 310}
+            'coverage': {'current': 320, 'target': 300, 'previous': 310},
+            'mql_count': {'current': 450, 'target': 1800, 'previous': 420},
+            'win_rate': {'current': 28.5, 'target': 32.0, 'previous': 27.8},
+            'pipeline_attainment_pct': {'current': 21.1, 'target': 100.0, 'previous': 19.8},
+            'won_attainment_pct': {'current': 19.6, 'target': 100.0, 'previous': 18.1},
+            'aos': {'current': 2450, 'target': 2800, 'previous': 2380},
+            'close_rate_dollar': {'current': 34.2, 'target': 38.0, 'previous': 33.1},
         }
         
         if kpi_id not in kpi_data:
