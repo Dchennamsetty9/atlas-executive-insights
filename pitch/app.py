@@ -162,978 +162,566 @@ HTML = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"/>
 <style>
-:root {
-  --bg:        #080c14;
-  --surface:   #0f1623;
-  --surface2:  #161e2e;
-  --border:    rgba(255,255,255,0.07);
-  --blue:      #4f9cf9;
-  --purple:    #a78bfa;
-  --green:     #34d399;
-  --amber:     #fbbf24;
-  --red:       #f87171;
-  --text:      #e2e8f0;
-  --muted:     #64748b;
-  --accent-grd: linear-gradient(135deg,#4f9cf9,#a78bfa);
-}
+:root{--bg:#080c14;--surface:#0f1623;--surface2:#161e2e;--border:rgba(255,255,255,0.07);--blue:#4f9cf9;--purple:#a78bfa;--green:#34d399;--amber:#fbbf24;--red:#f87171;--text:#e2e8f0;--muted:#64748b;--accent-grd:linear-gradient(135deg,#4f9cf9,#a78bfa)}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:var(--bg);color:var(--text)}
-
-/* ── deck ── */
 #deck{width:100vw;height:100vh;position:relative}
-.slide{
-  position:absolute;inset:0;
-  display:flex;align-items:center;justify-content:center;
-  padding:60px 80px;
-  opacity:0;pointer-events:none;
-  transition:opacity .45s ease,transform .45s ease;
-  transform:translateX(40px);
-}
-.slide.active{opacity:1;pointer-events:all;transform:translateX(0)}
-.slide.exit-left{opacity:0;transform:translateX(-40px)}
-
-/* ── slide content wrapper ── */
-.slide-inner{
-  width:100%;max-width:1100px;
-  animation:fadeUp .5s ease both;
-}
-@keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
-
-/* ── typography ── */
-.tag{
-  display:inline-block;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
-  padding:4px 12px;border-radius:20px;margin-bottom:18px;
-  background:rgba(79,156,249,.15);color:var(--blue);border:1px solid rgba(79,156,249,.3);
-}
-h1{font-size:clamp(2.2rem,5vw,3.8rem);font-weight:900;line-height:1.1;margin-bottom:20px}
-h2{font-size:clamp(1.6rem,3.5vw,2.6rem);font-weight:800;line-height:1.2;margin-bottom:16px}
-h3{font-size:1.1rem;font-weight:700;margin-bottom:8px}
-p{font-size:1.05rem;line-height:1.7;color:#94a3b8}
+.slide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:56px 80px 80px;opacity:0;pointer-events:none;transition:opacity .3s ease;visibility:hidden}
+.slide.active{opacity:1;pointer-events:all;visibility:visible}
+.slide-inner{width:100%;max-width:1100px;animation:fadeUp .4s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:4px 12px;border-radius:20px;margin-bottom:16px;background:rgba(79,156,249,.15);color:var(--blue);border:1px solid rgba(79,156,249,.3)}
+h1{font-size:clamp(2rem,5vw,3.6rem);font-weight:900;line-height:1.1;margin-bottom:18px}
+h2{font-size:clamp(1.5rem,3.2vw,2.4rem);font-weight:800;line-height:1.2;margin-bottom:14px}
+h3{font-size:1rem;font-weight:700;margin-bottom:6px}
+p{font-size:1rem;line-height:1.7;color:#94a3b8}
 .grad{background:var(--accent-grd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-
-/* ── cards / grid ── */
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:24px}
-.card{
-  background:var(--surface);border:1px solid var(--border);border-radius:16px;
-  padding:24px;transition:border-color .25s;
-}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:20px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;transition:border-color .25s}
 .card:hover{border-color:rgba(79,156,249,.4)}
-.card .icon{font-size:1.8rem;margin-bottom:12px}
-.card h3{font-size:1rem;font-weight:700;margin-bottom:6px}
-.card p{font-size:.9rem;line-height:1.6;color:var(--muted)}
-
-/* ── pain point list ── */
-.pain-list{list-style:none;display:flex;flex-direction:column;gap:14px;margin-top:24px}
-.pain-list li{
-  display:flex;align-items:flex-start;gap:14px;
-  background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;
-}
-.pain-list li .num{
-  min-width:28px;height:28px;border-radius:50%;
-  background:rgba(248,113,113,.15);color:var(--red);
-  display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;
-  border:1px solid rgba(248,113,113,.3);
-}
-.pain-list li .txt{font-size:.95rem;line-height:1.5;color:var(--text)}
-
-/* ── comparison table ── */
-.cmp-table{width:100%;border-collapse:collapse;margin-top:24px;font-size:.9rem}
-.cmp-table th{
-  padding:12px 16px;text-align:left;font-weight:700;font-size:.8rem;letter-spacing:.06em;
-  text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);
-}
-.cmp-table td{
-  padding:13px 16px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5;
-}
-.cmp-table tr:last-child td{border-bottom:none}
-.cmp-table .col-pbi{color:#64748b}
-.cmp-table .col-atlas{color:var(--blue)}
-.badge-no{
-  display:inline-block;font-size:.75rem;font-weight:600;
-  padding:2px 9px;border-radius:20px;
-  background:rgba(100,116,139,.12);color:var(--muted);
-}
-.badge-yes{
-  display:inline-block;font-size:.75rem;font-weight:600;
-  padding:2px 9px;border-radius:20px;
-  background:rgba(52,211,153,.12);color:var(--green);
-}
-
-/* ── differentiators ── */
-.diff-card{
-  background:var(--surface);border:1px solid var(--border);border-radius:18px;
-  padding:32px;position:relative;overflow:hidden;
-}
-.diff-card::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:3px;
-  background:var(--accent-grd);
-}
-.diff-card .num-big{
-  font-size:3rem;font-weight:900;opacity:.06;position:absolute;top:16px;right:20px;
-}
-
-/* ── arch diagram ── */
-.arch{display:flex;align-items:center;justify-content:space-between;gap:0;margin-top:32px;flex-wrap:wrap}
-.arch-node{
-  background:var(--surface2);border:1px solid var(--border);border-radius:14px;
-  padding:20px 22px;text-align:center;min-width:140px;flex:1;
-}
-.arch-node .icon{font-size:1.6rem;margin-bottom:8px}
-.arch-node h3{font-size:.85rem;font-weight:700;margin-bottom:4px}
-.arch-node p{font-size:.75rem;color:var(--muted)}
-.arch-arrow{font-size:1.4rem;color:var(--muted);padding:0 6px;flex-shrink:0}
-
-/* ── AI features ── */
-.ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:24px}
-.ai-item{
-  background:var(--surface);border:1px solid var(--border);border-radius:12px;
-  padding:18px;display:flex;gap:12px;align-items:flex-start;
-}
-.ai-item .dot{
-  width:8px;height:8px;border-radius:50%;background:var(--accent-grd);
-  margin-top:6px;flex-shrink:0;
-}
-
-/* ── data table ── */
-.data-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}
-.data-block{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px}
-.data-block h3{font-size:.85rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--muted);margin-bottom:14px}
-.chip-list{display:flex;flex-wrap:wrap;gap:8px}
-.chip{
-  font-size:.78rem;font-weight:600;padding:4px 12px;border-radius:20px;
-  background:rgba(79,156,249,.1);color:var(--blue);border:1px solid rgba(79,156,249,.2);
-}
+.card .icon{font-size:1.6rem;margin-bottom:10px}
+.card h3{font-size:.95rem;font-weight:700;margin-bottom:5px}
+.card p{font-size:.85rem;line-height:1.6;color:var(--muted)}
+.chip{font-size:.76rem;font-weight:600;padding:3px 10px;border-radius:20px;background:rgba(79,156,249,.1);color:var(--blue);border:1px solid rgba(79,156,249,.2)}
 .chip.green{background:rgba(52,211,153,.1);color:var(--green);border-color:rgba(52,211,153,.2)}
 .chip.purple{background:rgba(167,139,250,.1);color:var(--purple);border-color:rgba(167,139,250,.2)}
 .chip.amber{background:rgba(251,191,36,.1);color:var(--amber);border-color:rgba(251,191,36,.2)}
-
-/* ── concerns ── */
-.concern-row{display:grid;grid-template-columns:1fr 1.6fr;gap:16px;margin-top:14px}
-.concern-item{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px}
-.concern-item .label{font-size:.8rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  margin-bottom:8px;}
-.risk{color:var(--red)}
-.fix{color:var(--green)}
-
-/* ── role matrix ── */
-.role-table{width:100%;border-collapse:collapse;margin-top:24px;font-size:.88rem}
-.role-table th{padding:11px 14px;text-align:left;font-size:.78rem;letter-spacing:.07em;
-  text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);font-weight:700}
-.role-table td{padding:13px 14px;border-bottom:1px solid var(--border);line-height:1.5}
+.chip.red{background:rgba(248,113,113,.1);color:var(--red);border-color:rgba(248,113,113,.2)}
+.chip-list{display:flex;flex-wrap:wrap;gap:7px}
+/* kpi cards */
+.kpi-row{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}
+.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;flex:1;min-width:140px}
+.kpi-card .label{font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.kpi-card .value{font-size:1.5rem;font-weight:900;line-height:1}
+.kpi-card .vs{font-size:.8rem;margin-top:4px;font-weight:600}
+.kpi-card .vs.up{color:var(--green)}.kpi-card .vs.down{color:var(--red)}.kpi-card .vs.warn{color:var(--amber)}
+/* atlas says box */
+.atlas-box{background:linear-gradient(135deg,rgba(79,156,249,.08),rgba(167,139,250,.08));border:1px solid rgba(79,156,249,.3);border-radius:16px;padding:24px 28px;margin-top:20px}
+.atlas-box .head{font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.atlas-box .insight{font-size:.95rem;line-height:1.6;color:var(--text);margin-bottom:10px}
+.atlas-box .action{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.25);border-radius:10px;padding:10px 16px;font-size:.88rem;color:var(--green);font-weight:600;margin-top:12px}
+/* forecast */
+.forecast-bar{height:10px;background:var(--surface2);border-radius:10px;margin-top:6px;overflow:hidden}
+.forecast-bar .fill{height:100%;border-radius:10px;background:var(--accent-grd);transition:width 1s ease}
+.forecast-bar .fill.warn{background:linear-gradient(90deg,var(--amber),var(--red))}
+.prob-circle{width:88px;height:88px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:900;font-size:1.3rem;border:3px solid}
+.prob-hi{color:var(--green);border-color:var(--green)}
+.prob-md{color:var(--amber);border-color:var(--amber)}
+.prob-lo{color:var(--red);border-color:var(--red)}
+/* scenario cards */
+.scenario{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start;margin-bottom:14px}
+.scenario-num{width:36px;height:36px;border-radius:50%;background:var(--accent-grd);color:#fff;font-weight:800;font-size:.9rem;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.scenario h3{font-size:.95rem;font-weight:700;margin-bottom:4px;color:var(--text)}
+.scenario p{font-size:.85rem;color:var(--muted);margin-bottom:8px;line-height:1.5}
+.scenario .result{font-size:.83rem;background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.2);border-radius:8px;padding:8px 12px;color:var(--green);font-weight:600}
+/* phase roadmap */
+.phase{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 24px;position:relative;overflow:hidden}
+.phase::before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;border-radius:2px 0 0 2px}
+.phase.p1::before{background:var(--green)}.phase.p2::before{background:var(--blue)}.phase.p3::before{background:var(--purple)}.phase.p4::before{background:var(--amber)}
+.phase .ph-label{font-size:.72rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
+.phase.p1 .ph-label{color:var(--green)}.phase.p2 .ph-label{color:var(--blue)}.phase.p3 .ph-label{color:var(--purple)}.phase.p4 .ph-label{color:var(--amber)}
+.phase h3{font-size:.95rem;font-weight:700;margin-bottom:8px}
+.phase ul{list-style:none;display:flex;flex-direction:column;gap:5px}
+.phase ul li{font-size:.82rem;color:var(--muted);display:flex;align-items:flex-start;gap:6px}
+.phase ul li::before{content:'·';color:var(--muted);margin-top:1px;flex-shrink:0}
+/* comparison */
+.cmp-table{width:100%;border-collapse:collapse;font-size:.88rem;margin-top:18px}
+.cmp-table th{padding:10px 14px;text-align:left;font-size:.76rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);font-weight:700}
+.cmp-table td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle;line-height:1.5}
+.cmp-table tr:last-child td{border-bottom:none}
+.cmp-table .col-pbi{color:#64748b}.cmp-table .col-atlas{color:var(--blue)}
+.badge-no{display:inline-block;font-size:.74rem;font-weight:600;padding:2px 9px;border-radius:20px;background:rgba(100,116,139,.12);color:var(--muted)}
+.badge-yes{display:inline-block;font-size:.74rem;font-weight:600;padding:2px 9px;border-radius:20px;background:rgba(52,211,153,.12);color:var(--green)}
+.badge-wip{display:inline-block;font-size:.74rem;font-weight:600;padding:2px 9px;border-radius:20px;background:rgba(251,191,36,.12);color:var(--amber)}
+/* pain list */
+.pain-list{list-style:none;display:flex;flex-direction:column;gap:12px;margin-top:18px}
+.pain-list li{display:flex;align-items:flex-start;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px}
+.pain-list li .num{min-width:26px;height:26px;border-radius:50%;background:rgba(248,113,113,.15);color:var(--red);display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:700;border:1px solid rgba(248,113,113,.3)}
+.pain-list li .txt{font-size:.9rem;line-height:1.5;color:var(--text)}
+/* arch */
+.arch{display:flex;align-items:center;gap:0;margin-top:26px;flex-wrap:wrap}
+.arch-node{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px 18px;text-align:center;flex:1;min-width:110px}
+.arch-node .icon{font-size:1.4rem;margin-bottom:6px}.arch-node h3{font-size:.8rem;font-weight:700;margin-bottom:3px}.arch-node p{font-size:.72rem;color:var(--muted)}
+.arch-arrow{font-size:1.2rem;color:var(--muted);padding:0 4px;flex-shrink:0}
+/* concerns */
+.concern{display:grid;grid-template-columns:1fr 1.5fr;gap:14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+.concern .lbl{font-size:.75rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;margin-bottom:5px}
+.concern .risk .lbl{color:var(--red)}.concern .fix .lbl{color:var(--green)}
+.concern p{font-size:.85rem;line-height:1.5;color:var(--muted)}
+/* role table */
+.role-table{width:100%;border-collapse:collapse;font-size:.86rem;margin-top:18px}
+.role-table th{padding:10px 12px;text-align:left;font-size:.74rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);font-weight:700}
+.role-table td{padding:11px 12px;border-bottom:1px solid var(--border);line-height:1.5}
 .role-table tr:last-child td{border-bottom:none}
-
-/* ── roadmap ── */
-.roadmap{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}
-.rm-col{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px}
-.rm-col h3{font-size:.85rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-  margin-bottom:16px}
-.rm-col.built h3{color:var(--green)}
-.rm-col.next h3{color:var(--purple)}
-.rm-list{list-style:none;display:flex;flex-direction:column;gap:10px}
-.rm-list li{display:flex;align-items:center;gap:10px;font-size:.9rem;line-height:1.5}
-.rm-list li::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.rm-col.built .rm-list li::before{background:var(--green)}
-.rm-col.next  .rm-list li::before{background:var(--purple)}
-
-/* ── asks ── */
-.ask-list{list-style:none;display:flex;flex-direction:column;gap:12px;margin-top:24px}
-.ask-list li{
-  display:flex;align-items:flex-start;gap:16px;
-  background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 22px;
-}
-.ask-num{
-  min-width:30px;height:30px;border-radius:50%;
-  background:var(--accent-grd);
-  display:flex;align-items:center;justify-content:center;
-  font-size:.8rem;font-weight:800;color:#fff;flex-shrink:0;
-}
-.ask-txt{font-size:.95rem;line-height:1.5}
-
-/* ── demo ── */
-.demo-box{
-  background:var(--surface);border:2px dashed rgba(79,156,249,.4);
-  border-radius:18px;padding:36px;text-align:center;margin-top:24px;
-}
-.demo-box a{
-  display:inline-block;margin-top:18px;padding:14px 36px;
-  background:var(--accent-grd);color:#fff;font-weight:700;
-  border-radius:12px;text-decoration:none;font-size:1rem;
-  transition:opacity .2s;
-}
-.demo-box a:hover{opacity:.85}
-.steps{text-align:left;max-width:480px;margin:24px auto 0;list-style:none;display:flex;flex-direction:column;gap:10px}
-.steps li{display:flex;align-items:center;gap:10px;font-size:.9rem;color:var(--text)}
-.steps li span{
-  width:24px;height:24px;border-radius:50%;background:rgba(79,156,249,.15);
-  color:var(--blue);font-size:.75rem;font-weight:700;
-  display:flex;align-items:center;justify-content:center;flex-shrink:0;
-}
-
-/* ── thank you ── */
-.thankyou-center{text-align:center;width:100%}
-.built-by{display:flex;align-items:center;justify-content:center;gap:20px;margin:28px 0;flex-wrap:wrap}
-.built-pill{
-  display:flex;align-items:center;gap:8px;
-  background:var(--surface);border:1px solid var(--border);border-radius:30px;
-  padding:8px 18px;font-size:.85rem;font-weight:600;
-}
-.feedback-cta{
-  display:inline-block;margin-top:8px;padding:14px 36px;
-  background:var(--accent-grd);color:#fff;font-weight:700;
-  border-radius:12px;cursor:pointer;font-size:1rem;border:none;
-  transition:opacity .2s,transform .15s;
-}
-.feedback-cta:hover{opacity:.88;transform:translateY(-2px)}
-
-/* ── nav bar ── */
-#nav{
-  position:fixed;bottom:0;left:0;right:0;
-  height:60px;display:flex;align-items:center;justify-content:space-between;
-  padding:0 40px;
-  background:rgba(8,12,20,.85);backdrop-filter:blur(12px);
-  border-top:1px solid var(--border);z-index:100;
-}
-.dots{display:flex;gap:6px;align-items:center}
-.dot-btn{
-  width:8px;height:8px;border-radius:50%;background:var(--border);
-  border:none;cursor:pointer;transition:all .25s;padding:0;
-}
-.dot-btn.active{width:24px;border-radius:4px;background:var(--blue)}
-.nav-btn{
-  display:flex;align-items:center;gap:8px;
-  background:var(--surface);border:1px solid var(--border);
-  color:var(--text);padding:8px 18px;border-radius:8px;cursor:pointer;
-  font-size:.85rem;font-weight:600;transition:border-color .2s,background .2s;
-  font-family:'Inter',sans-serif;
-}
+/* ask list */
+.ask-list{list-style:none;display:flex;flex-direction:column;gap:10px;margin-top:18px}
+.ask-list li{display:flex;align-items:flex-start;gap:14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px}
+.ask-num{min-width:28px;height:28px;border-radius:50%;background:var(--accent-grd);display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:800;color:#fff;flex-shrink:0}
+/* vision quote */
+.vision-quote{background:var(--surface);border-left:4px solid var(--blue);border-radius:0 14px 14px 0;padding:24px 28px;margin-top:24px}
+.vision-quote blockquote{font-size:clamp(1.05rem,2.3vw,1.5rem);font-weight:700;line-height:1.5;color:var(--text)}
+.vision-quote blockquote em{font-style:normal;color:var(--blue)}
+/* nav */
+#nav{position:fixed;bottom:0;left:0;right:0;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 40px;background:rgba(8,12,20,.9);backdrop-filter:blur(12px);border-top:1px solid var(--border);z-index:100}
+.dots{display:flex;gap:5px;align-items:center}
+.dot-btn{width:7px;height:7px;border-radius:50%;background:var(--border);border:none;cursor:pointer;transition:all .25s;padding:0}
+.dot-btn.active{width:22px;border-radius:3px;background:var(--blue)}
+.nav-btn{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:7px 16px;border-radius:7px;cursor:pointer;font-size:.82rem;font-weight:600;transition:border-color .2s;font-family:'Inter',sans-serif}
 .nav-btn:hover{border-color:var(--blue);background:rgba(79,156,249,.08)}
 .nav-btn:disabled{opacity:.3;cursor:default}
-.slide-counter{font-size:.8rem;color:var(--muted);font-weight:600;min-width:48px;text-align:center}
-
-/* ── reaction bar ── */
-#reaction-bar{
-  position:fixed;top:18px;right:20px;
-  display:flex;gap:8px;align-items:center;z-index:100;
-}
-.rxn-btn{
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:30px;padding:6px 14px;cursor:pointer;
-  font-size:.9rem;transition:all .2s;color:var(--text);
-  font-family:'Inter',sans-serif;
-}
+.slide-counter{font-size:.78rem;color:var(--muted);font-weight:600;min-width:46px;text-align:center}
+/* reaction */
+#reaction-bar{position:fixed;top:16px;right:18px;display:flex;gap:7px;align-items:center;z-index:100}
+.rxn-btn{background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:5px 12px;cursor:pointer;font-size:.88rem;transition:all .2s;color:var(--text);font-family:'Inter',sans-serif}
 .rxn-btn:hover{border-color:var(--blue);transform:scale(1.08)}
 .rxn-btn.active{border-color:var(--green);background:rgba(52,211,153,.1)}
-
-/* ── feedback modal ── */
-#modal-overlay{
-  position:fixed;inset:0;background:rgba(0,0,0,.7);
-  backdrop-filter:blur(6px);z-index:200;
-  display:flex;align-items:center;justify-content:center;
-  opacity:0;pointer-events:none;transition:opacity .3s;
-}
+/* modal */
+#modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s}
 #modal-overlay.open{opacity:1;pointer-events:all}
-#modal{
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:20px;width:min(520px,90vw);max-height:90vh;
-  overflow-y:auto;padding:36px;
-  transform:translateY(20px);transition:transform .3s;
-}
+#modal{background:var(--surface);border:1px solid var(--border);border-radius:18px;width:min(500px,90vw);max-height:90vh;overflow-y:auto;padding:32px;transform:translateY(18px);transition:transform .3s}
 #modal-overlay.open #modal{transform:translateY(0)}
-#modal h2{font-size:1.4rem;font-weight:800;margin-bottom:8px}
-#modal p.sub{font-size:.9rem;color:var(--muted);margin-bottom:24px}
-.form-group{margin-bottom:18px}
-.form-group label{display:block;font-size:.82rem;font-weight:700;
-  letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-.form-group input,
-.form-group select,
-.form-group textarea{
-  width:100%;background:var(--surface2);border:1px solid var(--border);
-  color:var(--text);border-radius:10px;padding:10px 14px;font-size:.9rem;
-  font-family:'Inter',sans-serif;outline:none;transition:border-color .2s;
-  resize:vertical;
-}
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus{border-color:var(--blue)}
+#modal h2{font-size:1.3rem;font-weight:800;margin-bottom:6px}
+#modal p.sub{font-size:.88rem;color:var(--muted);margin-bottom:22px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.form-group input,.form-group select,.form-group textarea{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 13px;font-size:.88rem;font-family:'Inter',sans-serif;outline:none;transition:border-color .2s;resize:vertical}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--blue)}
 .form-group select option{background:var(--surface2)}
-.star-row{display:flex;gap:8px}
-.star{font-size:1.6rem;cursor:pointer;filter:grayscale(1);transition:filter .15s,transform .15s}
-.star.on{filter:grayscale(0);transform:scale(1.15)}
-.btn-row{display:flex;gap:12px;margin-top:24px}
-.btn-submit{
-  flex:1;padding:12px;background:var(--accent-grd);color:#fff;
-  font-weight:700;border:none;border-radius:10px;cursor:pointer;
-  font-family:'Inter',sans-serif;font-size:.95rem;transition:opacity .2s;
-}
+.star-row{display:flex;gap:7px}
+.star{font-size:1.5rem;cursor:pointer;filter:grayscale(1);transition:filter .15s,transform .15s}
+.star.on{filter:grayscale(0);transform:scale(1.12)}
+.btn-row{display:flex;gap:10px;margin-top:22px}
+.btn-submit{flex:1;padding:11px;background:var(--accent-grd);color:#fff;font-weight:700;border:none;border-radius:9px;cursor:pointer;font-family:'Inter',sans-serif;font-size:.92rem;transition:opacity .2s}
 .btn-submit:hover{opacity:.88}
-.btn-cancel{
-  padding:12px 20px;background:var(--surface2);border:1px solid var(--border);
-  color:var(--muted);border-radius:10px;cursor:pointer;
-  font-family:'Inter',sans-serif;font-size:.95rem;
-}
-.success-msg{
-  text-align:center;padding:24px 0;
-}
-.success-msg .check{font-size:2.5rem;margin-bottom:12px}
-.success-msg h3{font-size:1.1rem;font-weight:700;margin-bottom:6px}
-.success-msg p{font-size:.9rem;color:var(--muted)}
-
-/* ── progress bar ── */
-#progress{
-  position:fixed;top:0;left:0;height:3px;
-  background:var(--accent-grd);z-index:300;
-  transition:width .4s ease;
-}
-
-/* ── vision quote ── */
-.vision-quote{
-  background:var(--surface);border-left:4px solid var(--blue);
-  border-radius:0 14px 14px 0;padding:28px 32px;margin-top:28px;
-}
-.vision-quote blockquote{
-  font-size:clamp(1.1rem,2.5vw,1.6rem);font-weight:700;line-height:1.5;color:var(--text);
-}
-.vision-quote blockquote em{font-style:normal;color:var(--blue)}
-.vision-quote .attrib{margin-top:12px;font-size:.85rem;color:var(--muted);font-weight:600}
+.btn-cancel{padding:11px 18px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:9px;cursor:pointer;font-family:'Inter',sans-serif;font-size:.92rem}
+.success-msg{text-align:center;padding:22px 0}
+.success-msg .check{font-size:2.2rem;margin-bottom:10px}
+#progress{position:fixed;top:0;left:0;height:3px;background:var(--accent-grd);z-index:300;transition:width .35s ease}
 </style>
 </head>
 <body>
-
 <div id="progress"></div>
-
-<!-- ─────────────────── SLIDES ─────────────────── -->
 <div id="deck">
 
-  <!-- 1: Title -->
-  <div class="slide" data-idx="0">
-    <div class="slide-inner" style="text-align:center">
-      <div class="tag">Internal Pitch · May 2026</div>
-      <h1>Atlas<br/><span class="grad">Executive Insights</span></h1>
-      <p style="font-size:1.15rem;max-width:520px;margin:0 auto 32px">
-        AI-powered decision intelligence for sales leadership.<br/>
-        Not another dashboard — a thinking partner.
-      </p>
-      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-        <span class="chip">Live on Databricks</span>
-        <span class="chip green">14 KPIs tracked</span>
-        <span class="chip purple">Claude Sonnet 4.6</span>
-        <span class="chip amber">Unity Catalog secured</span>
-      </div>
-    </div>
-  </div>
+<!-- 1: Title -->
+<div class="slide" data-idx="0">
+<div class="slide-inner" style="text-align:center">
+<div class="tag">Internal Pitch · May 2026</div>
+<h1>Atlas<br/><span class="grad">Executive Insights</span></h1>
+<p style="font-size:1.1rem;max-width:520px;margin:0 auto 28px">Not another dashboard. A decision intelligence layer built on top of your live Databricks data — telling sales leaders what to do, not just what happened.</p>
+<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+<span class="chip">Live on Databricks Apps</span>
+<span class="chip green">14 KPIs · Real-time</span>
+<span class="chip purple">Claude Sonnet 4.6</span>
+<span class="chip amber">Unity Catalog auth</span>
+</div>
+</div>
+</div>
 
-  <!-- 2: The Problem -->
-  <div class="slide" data-idx="1">
-    <div class="slide-inner">
-      <div class="tag">The Problem</div>
-      <h2>What executives actually deal with today</h2>
-      <ul class="pain-list">
-        <li><span class="num">1</span><span class="txt"><strong>Data is scattered</strong> — 5 different dashboards, none talking to each other. No single view of what's happening.</span></li>
-        <li><span class="num">2</span><span class="txt"><strong>Dashboards describe, they don't decide</strong> — You see the number. Nobody tells you what to do about it.</span></li>
-        <li><span class="num">3</span><span class="txt"><strong>Insights arrive late</strong> — Weekly email reports. QBR decks built manually. By the time you see it, the quarter is over.</span></li>
-        <li><span class="num">4</span><span class="txt"><strong>Context is missing</strong> — A win rate drop means nothing without knowing which segment, which rep pool, and what changed.</span></li>
-        <li><span class="num">5</span><span class="txt"><strong>No one connects data to action</strong> — Even great analysts stop at "here's what happened." They rarely say "here's what to do."</span></li>
-      </ul>
-    </div>
-  </div>
+<!-- 2: The Problem -->
+<div class="slide" data-idx="1">
+<div class="slide-inner">
+<div class="tag">The Problem</div>
+<h2>What sales leaders deal with today</h2>
+<ul class="pain-list">
+<li><span class="num">1</span><span class="txt"><strong>Numbers without context.</strong> Win rate is 28%. Is that good or bad? Vs last quarter? Vs which segment? KPI Trends shows the number — nothing else.</span></li>
+<li><span class="num">2</span><span class="txt"><strong>No "so what."</strong> Pipeline coverage is 2.1x. Should you be worried? What does 2.1x mean for end-of-quarter attainment? Nobody tells you.</span></li>
+<li><span class="num">3</span><span class="txt"><strong>Insights arrive too late.</strong> MQL count dropped 18% WoW. You find out in Friday's report. By then the pipeline gap is already baked in for next quarter.</span></li>
+<li><span class="num">4</span><span class="txt"><strong>Disconnected dashboards.</strong> KPI Trends shows pacing. Performance Hub shows history. Neither tells you how today's win rate connects to your Q3 quota number.</span></li>
+<li><span class="num">5</span><span class="txt"><strong>Every question requires an analyst.</strong> "What's driving the ADS drop in Enterprise NA?" — that's a 2-day Databricks query. It should be a 10-second chat message.</span></li>
+</ul>
+</div>
+</div>
 
-  <!-- 3: The Vision -->
-  <div class="slide" data-idx="2">
-    <div class="slide-inner">
-      <div class="tag">The Vision</div>
-      <h2>What Atlas is built to do</h2>
-      <div class="vision-quote">
-        <blockquote>
-          "Power BI tells you the score.<br/>
-          <em>Atlas tells you the play to run next.</em>"
-        </blockquote>
-        <p class="attrib">— The core idea behind every design decision</p>
-      </div>
-      <div class="grid3" style="margin-top:28px">
-        <div class="card">
-          <div class="icon">🎯</div>
-          <h3>Proactive</h3>
-          <p>Surfaces risks and patterns before the QBR — not after</p>
-        </div>
-        <div class="card">
-          <div class="icon">💬</div>
-          <h3>Conversational</h3>
-          <p>Ask "why is win rate down?" in plain English — get a real answer</p>
-        </div>
-        <div class="card">
-          <div class="icon">🧠</div>
-          <h3>Actionable</h3>
-          <p>Every insight ends with a recommended lever to pull</p>
-        </div>
-      </div>
-    </div>
-  </div>
+<!-- 3: The Vision -->
+<div class="slide" data-idx="2">
+<div class="slide-inner">
+<div class="tag">The Vision</div>
+<h2>From reporting to decision intelligence</h2>
+<div class="vision-quote">
+<blockquote>"Power BI tells you the score.<br/><em>Atlas tells you the play to run next.</em>"</blockquote>
+<p style="margin-top:10px;font-size:.85rem;color:var(--muted);font-weight:600">— The core idea behind every design decision</p>
+</div>
+<div class="grid3" style="margin-top:20px">
+<div class="card"><div class="icon">🔭</div><h3>Predictive</h3><p>Where will your quarter land based on today's pipeline, win rate, and coverage trend?</p></div>
+<div class="card"><div class="icon">⚡</div><h3>Proactive</h3><p>Surfaces risks before the QBR — not after. Alerts when a KPI crosses a dangerous threshold.</p></div>
+<div class="card"><div class="icon">🎯</div><h3>Actionable</h3><p>Every insight ends with a specific recommendation tied to the data — not generic advice.</p></div>
+</div>
+</div>
+</div>
 
-  <!-- 4: Comparison -->
-  <div class="slide" data-idx="3">
-    <div class="slide-inner">
-      <div class="tag">Comparison</div>
-      <h2>Power BI vs Atlas — the real difference</h2>
-      <table class="cmp-table">
-        <thead>
-          <tr>
-            <th>Capability</th>
-            <th class="col-pbi">Power BI Today</th>
-            <th class="col-atlas">Atlas</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>Shows KPI values</td><td><span class="badge-yes">Yes</span></td><td><span class="badge-yes">Yes</span></td></tr>
-          <tr><td>Explains <em>why</em> a KPI moved</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Yes — AI narrative</span></td></tr>
-          <tr><td>Recommends what to do</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Yes — action layer</span></td></tr>
-          <tr><td>Natural language questions</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Yes — chat interface</span></td></tr>
-          <tr><td>Proactive risk alerts</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Roadmap Q3</span></td></tr>
-          <tr><td>Per-user data governance</td><td><span class="badge-yes">Unity Catalog</span></td><td><span class="badge-yes">Same — user OAuth token</span></td></tr>
-          <tr><td>Quarter-end forecast</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Roadmap Q3</span></td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
+<!-- 4: Real Example -->
+<div class="slide" data-idx="3">
+<div class="slide-inner">
+<div class="tag">Real Example</div>
+<h2>Week 8 of Q2 — here's what Atlas does</h2>
+<div class="kpi-row">
+<div class="kpi-card"><div class="label">Won Pipeline</div><div class="value" style="color:var(--green)">$18.4M</div><div class="vs up">↑ on pace (67% of target)</div></div>
+<div class="kpi-card"><div class="label">Win Rate</div><div class="value" style="color:var(--red)">28.1%</div><div class="vs down">↓ 3.2 pts vs last Q</div></div>
+<div class="kpi-card"><div class="label">Coverage</div><div class="value" style="color:var(--amber)">2.1×</div><div class="vs warn">⚠ below 2.5× threshold</div></div>
+<div class="kpi-card"><div class="label">Pipeline Att.</div><div class="value">67%</div><div class="vs up">60% of quarter elapsed</div></div>
+<div class="kpi-card"><div class="label">MQL Count</div><div class="value" style="color:var(--red)">412</div><div class="vs down">↓ 18% WoW</div></div>
+</div>
+<div class="atlas-box">
+<div class="head">🤖 Atlas says</div>
+<div class="insight">Pipeline attainment is on pace, but two risk signals need attention: <strong>Win Rate dropped 3.2 pts QoQ</strong> — disproportionately in <strong>Enterprise NA</strong> where it fell from 34% to 27%. Coverage at <strong>2.1× is below the 2.5× historical threshold</strong> that correlates with quota attainment. Combined with the MQL drop, late-quarter pipeline replenishment is at risk.</div>
+<div class="action">▶ Recommended: Accelerate top 5 Enterprise NA deals in next 2 weeks. Review conversion drop from MQL → Opp — likely a lead quality or response time issue in that segment.</div>
+</div>
+</div>
+</div>
 
-  <!-- 5: Three Differentiators -->
-  <div class="slide" data-idx="4">
-    <div class="slide-inner">
-      <div class="tag">What Makes It Different</div>
-      <h2>Three layers Power BI doesn't have</h2>
-      <div class="grid3" style="margin-top:28px">
-        <div class="diff-card">
-          <span class="num-big">1</span>
-          <div class="icon" style="font-size:1.8rem;margin-bottom:12px">💡</div>
-          <h3 style="font-size:1.1rem;margin-bottom:10px">The "So What?" Layer</h3>
-          <p style="font-size:.9rem;color:var(--muted);line-height:1.6">
-            Every KPI card has an AI-generated narrative. Not just the number — the implication. 
-            "Win rate is down 3 pts vs last quarter. Primary driver: NA Enterprise segment. 
-            Recommended action: review recent lost opps in that segment."
-          </p>
-        </div>
-        <div class="diff-card">
-          <span class="num-big">2</span>
-          <div class="icon" style="font-size:1.8rem;margin-bottom:12px">👤</div>
-          <h3 style="font-size:1.1rem;margin-bottom:10px">Personalised Views</h3>
-          <p style="font-size:.9rem;color:var(--muted);line-height:1.6">
-            A CRO sees everything. A Regional VP sees their geo. An ISG leader sees ISG metrics. 
-            Unity Catalog enforces this at the data layer — not through manual filters 
-            someone forgets to apply.
-          </p>
-        </div>
-        <div class="diff-card">
-          <span class="num-big">3</span>
-          <div class="icon" style="font-size:1.8rem;margin-bottom:12px">🗣️</div>
-          <h3 style="font-size:1.1rem;margin-bottom:10px">Conversational</h3>
-          <p style="font-size:.9rem;color:var(--muted);line-height:1.6">
-            Ask it anything about the data. "Show me coverage trends for Enterprise." 
-            "What's driving the ADS drop?" It answers in plain English, grounded in live numbers — 
-            not a generic LLM answer.
-          </p>
-        </div>
-      </div>
-    </div>
-  </div>
+<!-- 5: Power BI vs Atlas -->
+<div class="slide" data-idx="4">
+<div class="slide-inner">
+<div class="tag">Comparison</div>
+<h2>Power BI (KPI Trends) vs Atlas</h2>
+<table class="cmp-table">
+<thead><tr><th>Capability</th><th class="col-pbi">KPI Trends / Perf Hub Today</th><th class="col-atlas">Atlas</th></tr></thead>
+<tbody>
+<tr><td>Shows live KPI values</td><td><span class="badge-yes">Yes</span></td><td><span class="badge-yes">Yes — same Databricks source</span></td></tr>
+<tr><td>Explains <em>why</em> a KPI moved</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">AI narrative per KPI</span></td></tr>
+<tr><td>Quarter-end projection</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 2 — pacing model</span></td></tr>
+<tr><td>Coverage → attainment probability</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 2 — statistical model</span></td></tr>
+<tr><td>Proactive risk alerts</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 3 — threshold monitoring</span></td></tr>
+<tr><td>Natural language chat about data</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Live — ask anything</span></td></tr>
+<tr><td>Recommended actions</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Built in to every insight</span></td></tr>
+<tr><td>Per-user data governance</td><td><span class="badge-yes">Unity Catalog</span></td><td><span class="badge-yes">Same — user OAuth token</span></td></tr>
+</tbody>
+</table>
+</div>
+</div>
 
-  <!-- 6: Architecture -->
-  <div class="slide" data-idx="5">
-    <div class="slide-inner">
-      <div class="tag">Architecture</div>
-      <h2>How it works — simple version</h2>
-      <div class="arch">
-        <div class="arch-node">
-          <div class="icon">🗄️</div>
-          <h3>Databricks</h3>
-          <p>Unity Catalog<br/>Delta tables<br/>Live SQL queries</p>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-node">
-          <div class="icon">⚡</div>
-          <h3>FastAPI</h3>
-          <p>Python backend<br/>14 KPI endpoints<br/>2-min cache</p>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-node">
-          <div class="icon">🤖</div>
-          <h3>Claude Sonnet</h3>
-          <p>AI narratives<br/>Chat answers<br/>Databricks serving</p>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-node">
-          <div class="icon">⚛️</div>
-          <h3>React UI</h3>
-          <p>Dark dashboard<br/>Filters &amp; slicers<br/>Chat panel</p>
-        </div>
-        <div class="arch-arrow">→</div>
-        <div class="arch-node" style="border-color:rgba(79,156,249,.4)">
-          <div class="icon">👤</div>
-          <h3>User</h3>
-          <p>Authenticates via<br/>Databricks OAuth<br/>Sees their data only</p>
-        </div>
-      </div>
-      <div style="margin-top:24px;display:flex;gap:12px;flex-wrap:wrap">
-        <span class="chip">Databricks Apps platform</span>
-        <span class="chip green">No separate infra to manage</span>
-        <span class="chip purple">x-forwarded-access-token auth</span>
-        <span class="chip amber">Fallback to demo data if warehouse offline</span>
-      </div>
-    </div>
-  </div>
+<!-- 6: Forecasting & Prediction -->
+<div class="slide" data-idx="5">
+<div class="slide-inner">
+<div class="tag">Prediction &amp; Forecasting</div>
+<h2>Three models — not AI guesses, math with AI narrative</h2>
+<div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
 
-  <!-- 7: AI Features -->
-  <div class="slide" data-idx="6">
-    <div class="slide-inner">
-      <div class="tag">AI Layer</div>
-      <h2>7 places AI adds real value</h2>
-      <div class="ai-grid">
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">KPI Narrative</h3><p style="font-size:.82rem;color:var(--muted)">Plain-English explanation of each metric's current status</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Risk Flagging</h3><p style="font-size:.82rem;color:var(--muted)">"You're 15% behind pace — here's which segment is driving it"</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Chat Interface</h3><p style="font-size:.82rem;color:var(--muted)">Ask any question about live data in natural language</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Recommended Actions</h3><p style="font-size:.82rem;color:var(--muted)">Each insight ends with a concrete lever to pull</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Pattern Recognition</h3><p style="font-size:.82rem;color:var(--muted)">Cross-segment correlations that are hard to spot in static tables</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Quarter-End Forecast</h3><p style="font-size:.82rem;color:var(--muted)">Statistical pacing model — "on current trajectory, you'll land at X%"</p></div></div>
-        <div class="ai-item"><div class="dot"></div><div><h3 style="font-size:.9rem;margin-bottom:4px">Rule-Based Safety</h3><p style="font-size:.82rem;color:var(--muted)">Deterministic checks run first — AI narrates, math is never outsourced to the model</p></div></div>
-      </div>
-    </div>
-  </div>
+<div class="card" style="padding:18px 22px">
+<div style="display:flex;align-items:center;gap:16px">
+<div class="prob-circle prob-hi" style="flex-shrink:0"><span>87%</span><span style="font-size:.6rem;font-weight:600">attain</span></div>
+<div style="flex:1">
+<h3>🔢 Pacing Model</h3>
+<p style="font-size:.86rem;margin-bottom:8px">Won Pipeline = $18.4M at 60% of quarter elapsed. Linear extrapolation → <strong style="color:var(--green)">projected $30.7M</strong> vs $27.4M target = 112% attainment.</p>
+<div class="forecast-bar"><div class="fill" style="width:87%"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:4px"><span>0%</span><span>Target: 100%</span><span>Projected: 112%</span></div>
+</div>
+</div>
+</div>
 
-  <!-- 8: Data Foundation -->
-  <div class="slide" data-idx="7">
-    <div class="slide-inner">
-      <div class="tag">Data Foundation</div>
-      <h2>What's underneath</h2>
-      <div class="data-grid">
-        <div class="data-block">
-          <h3>Source Tables</h3>
-          <div class="chip-list">
-            <span class="chip">gaim_pipeline_daily_snapshot</span>
-            <span class="chip">gaim_snapshot_pipeline_created_cq_daily</span>
-            <span class="chip">cds_targets_monthly</span>
-            <span class="chip">MQL count table</span>
-          </div>
-        </div>
-        <div class="data-block">
-          <h3>14 Live KPIs</h3>
-          <div class="chip-list">
-            <span class="chip green">Won Pipeline</span>
-            <span class="chip green">Won Volume</span>
-            <span class="chip green">ADS</span>
-            <span class="chip green">Win Rate</span>
-            <span class="chip green">Coverage</span>
-            <span class="chip green">Active Pipeline</span>
-            <span class="chip green">MQL Count</span>
-            <span class="chip green">Opps Created</span>
-            <span class="chip green">Created Pipeline</span>
-            <span class="chip green">Close Rate $</span>
-            <span class="chip green">Pipeline Attainment</span>
-            <span class="chip green">Won Attainment</span>
-            <span class="chip green">AOS</span>
-            <span class="chip green">Close Rate</span>
-          </div>
-        </div>
-        <div class="data-block">
-          <h3>Filter Dimensions</h3>
-          <div class="chip-list">
-            <span class="chip purple">Geo / Market</span>
-            <span class="chip purple">Channel (SMB / Mid-Market / Enterprise)</span>
-            <span class="chip purple">Product (Connect / Resolve / All)</span>
-            <span class="chip purple">Date range</span>
-          </div>
-        </div>
-        <div class="data-block">
-          <h3>Data Refresh</h3>
-          <div class="chip-list">
-            <span class="chip amber">2-minute in-memory cache</span>
-            <span class="chip amber">Falls back to demo data on timeout</span>
-            <span class="chip amber">Same Databricks warehouse as Hermes</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+<div class="card" style="padding:18px 22px">
+<div style="display:flex;align-items:center;gap:16px">
+<div class="prob-circle prob-md" style="flex-shrink:0"><span>64%</span><span style="font-size:.6rem;font-weight:600">prob</span></div>
+<div style="flex:1">
+<h3>📊 Coverage Model</h3>
+<p style="font-size:.86rem;margin-bottom:8px">Coverage 2.1× with 40% of quarter left. Historically, <strong style="color:var(--amber)">coverage below 2.5× at this stage</strong> yields quota attainment 64% of the time (vs 89% at 2.5×+).</p>
+<div class="forecast-bar"><div class="fill warn" style="width:64%"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:4px"><span>0%</span><span style="color:var(--amber)">Risk zone (below 2.5×)</span><span>Safe zone</span></div>
+</div>
+</div>
+</div>
 
-  <!-- 9: Concerns -->
-  <div class="slide" data-idx="8">
-    <div class="slide-inner">
-      <div class="tag">Concerns &amp; Mitigations</div>
-      <h2>Risks we've thought through</h2>
-      <div style="display:flex;flex-direction:column;gap:14px;margin-top:24px">
-        <div class="card" style="display:grid;grid-template-columns:200px 1fr;gap:20px;align-items:start">
-          <div><div class="label risk" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">⚠️ Data Governance</div><p style="font-size:.85rem;color:var(--muted)">Revenue data sensitivity; who can see what</p></div>
-          <div><div class="label fix" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">✅ Mitigation</div><p style="font-size:.88rem;line-height:1.5">x-forwarded-access-token: every user authenticates with their own Databricks identity. Unity Catalog row/column permissions apply automatically. No shared service account exposes data to the wrong person.</p></div>
-        </div>
-        <div class="card" style="display:grid;grid-template-columns:200px 1fr;gap:20px;align-items:start">
-          <div><div class="label risk" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">⚠️ AI Hallucination</div><p style="font-size:.85rem;color:var(--muted)">LLM makes up numbers or trends</p></div>
-          <div><div class="label fix" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">✅ Mitigation</div><p style="font-size:.88rem;line-height:1.5">AI never calculates — it narrates. Numbers come from SQL. The model receives the actual KPI values and explains them. Rule-based checks run first and override the AI if they conflict.</p></div>
-        </div>
-        <div class="card" style="display:grid;grid-template-columns:200px 1fr;gap:20px;align-items:start">
-          <div><div class="label risk" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">⚠️ Cost</div><p style="font-size:.85rem;color:var(--muted)">LLM API calls add up</p></div>
-          <div><div class="label fix" style="font-size:.78rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">✅ Mitigation</div><p style="font-size:.88rem;line-height:1.5">AI calls are per-click, not always-on. Rule-based fallback means many requests never reach the LLM. SQL warehouse already used by Hermes — no new infra cost.</p></div>
-        </div>
-      </div>
-    </div>
-  </div>
+<div class="card" style="padding:18px 22px">
+<div style="display:flex;align-items:center;gap:16px">
+<div class="prob-circle prob-lo" style="flex-shrink:0"><span>↓</span><span style="font-size:.6rem;font-weight:600">trend</span></div>
+<div style="flex:1">
+<h3>📉 Win Rate Trend Model</h3>
+<p style="font-size:.86rem;margin-bottom:8px">Win rate declining at <strong style="color:var(--red)">-0.4 pts/week</strong> for 4 weeks. If trend continues: <strong style="color:var(--red)">projected 26.5%</strong> at quarter end vs 30% target. Early intervention window is now.</p>
+<div class="forecast-bar"><div class="fill warn" style="width:53%"></div></div>
+<div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:4px"><span>Current: 28.1%</span><span style="color:var(--red)">Projected: 26.5%</span><span>Target: 30%</span></div>
+</div>
+</div>
+</div>
 
-  <!-- 10: Role-Based Views -->
-  <div class="slide" data-idx="9">
-    <div class="slide-inner">
-      <div class="tag">User-Centric Design</div>
-      <h2>Who sees what — role-based profiles</h2>
-      <p style="margin-bottom:4px">Currently: all 14 KPIs are visible to everyone with app access. <strong style="color:var(--amber)">Next phase: scoped views per role.</strong></p>
-      <table class="role-table">
-        <thead>
-          <tr>
-            <th>Role</th>
-            <th>KPI Scope</th>
-            <th>Data Scope</th>
-            <th>Extra Features</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>CRO</strong></td>
-            <td>All 14 KPIs</td>
-            <td>All geos, channels, products</td>
-            <td>Cross-segment benchmarks, forecasts</td>
-          </tr>
-          <tr>
-            <td><strong>Regional VP</strong></td>
-            <td>All 14 KPIs</td>
-            <td>Their geo only (auto-filtered)</td>
-            <td>Peer-geo comparison (anonymised)</td>
-          </tr>
-          <tr>
-            <td><strong>ISG Leader</strong></td>
-            <td>MQL, pipeline, coverage</td>
-            <td>ISG product lines</td>
-            <td>MQL-to-opportunity funnel</td>
-          </tr>
-          <tr>
-            <td><strong>Sales Director</strong></td>
-            <td>Win rate, ADS, volume</td>
-            <td>Their channel × geo</td>
-            <td>Rep-level rollup (roadmap)</td>
-          </tr>
-          <tr>
-            <td><strong>Finance</strong></td>
-            <td>Attainment, pipeline $</td>
-            <td>All (read-only)</td>
-            <td>Quarter-end projection</td>
-          </tr>
-        </tbody>
-      </table>
-      <p style="margin-top:16px;font-size:.85rem;color:var(--muted)">
-        <strong style="color:var(--blue)">How it works:</strong> On login, the app reads the user's email from the Databricks OAuth token → looks up their role in a config table → filters KPIs and data automatically. Unity Catalog enforces the data boundary — even if the UI shows a filter, the warehouse rejects queries outside the user's permission set.
-      </p>
-    </div>
-  </div>
+</div>
+<p style="margin-top:12px;font-size:.82rem;color:var(--muted)">⚠ These are deterministic statistical models. The LLM adds the narrative — it never does the math.</p>
+</div>
+</div>
 
-  <!-- 11: Roadmap -->
-  <div class="slide" data-idx="10">
-    <div class="slide-inner">
-      <div class="tag">Current State &amp; Roadmap</div>
-      <h2>Where we are and where we're going</h2>
-      <div class="roadmap">
-        <div class="rm-col built">
-          <h3>✅ Built &amp; Live</h3>
-          <ul class="rm-list">
-            <li>14 live KPIs from Databricks (gaim_pipeline, targets, MQL)</li>
-            <li>AI narrative for every KPI (Claude Sonnet 4.6)</li>
-            <li>Conversational chat interface grounded in live data</li>
-            <li>3 filter dimensions: Geo, Channel, Product</li>
-            <li>x-forwarded-access-token auth (Unity Catalog)</li>
-            <li>2-minute cache + graceful demo-data fallback</li>
-            <li>Deployed on Databricks Apps (goto-shared/gaim-executive-app)</li>
-          </ul>
-        </div>
-        <div class="rm-col next">
-          <h3>🔜 Next Phase</h3>
-          <ul class="rm-list">
-            <li>Role-based profiles (CRO vs VP vs ISG) with auto-scoped views</li>
-            <li>Quarter-end forecast (statistical pacing model)</li>
-            <li>Proactive risk alerts ("Win rate crossed a threshold")</li>
-            <li>Rep-level rollup data (pending governance sign-off)</li>
-            <li>Historical trend comparison (QoQ, YoY)</li>
-            <li>Mobile-friendly responsive layout</li>
-            <li>Feedback loop: thumbs up/down on AI narratives to improve prompts</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </div>
+<!-- 7: AI in Action — Scenarios -->
+<div class="slide" data-idx="6">
+<div class="slide-inner">
+<div class="tag">AI in Action</div>
+<h2>Three real GoTo scenarios Atlas would handle</h2>
+<div class="scenario">
+<div class="scenario-num">1</div>
+<div>
+<h3>VP Sales asks: "Why is win rate down in Enterprise NA?"</h3>
+<p><em>Today:</em> 2-day Databricks query by analytics team. Result arrives Friday.<br/><em>With Atlas:</em> Chat interface, live data, 10 seconds.</p>
+<div class="result">Atlas: "Enterprise NA win rate dropped from 34% → 27% over 6 weeks. Pattern matches deals lost in 45–90 day range (AOS $85K+). Close rate on deals with &gt;2 stakeholders fell 8 pts. Suggest reviewing multi-thread strategy for large Enterprise deals."</div>
+</div>
+</div>
+<div class="scenario">
+<div class="scenario-num">2</div>
+<div>
+<h3>Monday morning: MQL count dropped 18% WoW. What do I tell my team?</h3>
+<p><em>Today:</em> Email Marketing. Wait for report. No context on whether it matters.<br/><em>With Atlas:</em> Proactive alert already in your dashboard at 8am.</p>
+<div class="result">Atlas: "MQL count fell 412 → 338 (18.6% WoW). Historical pipeline impact: each 10% MQL drop reduces next-quarter created pipeline by ~$2.1M at current conversion rates. At this rate, Q3 created pipeline is at risk unless volume recovers by week 10."</div>
+</div>
+</div>
+<div class="scenario">
+<div class="scenario-num">3</div>
+<div>
+<h3>CFO asks: "Are we going to hit Q2 quota?"</h3>
+<p><em>Today:</em> Sales ops builds a spreadsheet. 1 day turnaround. Snapshot, not live.<br/><em>With Atlas:</em> Live pacing view with probability and trend in one click.</p>
+<div class="result">Atlas: "Pacing model: 87% attainment likely. Risk: win rate trend (-0.4 pts/week) and coverage at 2.1× are lagging signals. If both recover to Q1 levels, probability rises to 94%. Primary action lever: 3 at-risk Enterprise deals totalling $4.2M need executive escalation this week."</div>
+</div>
+</div>
+</div>
+</div>
 
-  <!-- 12: What I Need -->
-  <div class="slide" data-idx="11">
-    <div class="slide-inner">
-      <div class="tag">Five Asks</div>
-      <h2>What I need from this group</h2>
-      <ul class="ask-list">
-        <li><span class="ask-num">1</span><span class="ask-txt"><strong>Data governance sign-off</strong> — Which tables and columns are approved for AI queries? Should the model see revenue numbers, or only derived KPIs?</span></li>
-        <li><span class="ask-num">2</span><span class="ask-txt"><strong>A pilot group of 3–4 executives</strong> — 30 minutes each to test and give feedback on what's useful vs what's noise.</span></li>
-        <li><span class="ask-num">3</span><span class="ask-txt"><strong>Unity Catalog permissions setup</strong> — Define who should have access to which schemas so the x-forwarded-token pattern can enforce it properly.</span></li>
-        <li><span class="ask-num">4</span><span class="ask-txt"><strong>KPI prioritisation</strong> — Of the 14 KPIs, which 5–6 matter most to each executive role? We'll build the personalised views around those.</span></li>
-        <li><span class="ask-num">5</span><span class="ask-txt"><strong>Feedback on the AI narratives</strong> — Are they accurate? Too detailed? Too vague? The quality of the prompts depends entirely on domain input from you.</span></li>
-      </ul>
-    </div>
-  </div>
+<!-- 8: Architecture -->
+<div class="slide" data-idx="7">
+<div class="slide-inner">
+<div class="tag">Architecture</div>
+<h2>How it works — built on what you already have</h2>
+<div class="arch">
+<div class="arch-node"><div class="icon">🗄️</div><h3>Databricks</h3><p>Delta tables<br/>Unity Catalog<br/>Same warehouse as Hermes</p></div>
+<div class="arch-arrow">→</div>
+<div class="arch-node"><div class="icon">⚡</div><h3>FastAPI</h3><p>Python backend<br/>14 KPI endpoints<br/>2-min cache</p></div>
+<div class="arch-arrow">→</div>
+<div class="arch-node"><div class="icon">🔢</div><h3>Rule Engine</h3><p>Pacing calc<br/>Coverage model<br/>Win rate trend</p></div>
+<div class="arch-arrow">→</div>
+<div class="arch-node"><div class="icon">🤖</div><h3>Claude 4.6</h3><p>Narrative<br/>Chat answers<br/>Recommendations</p></div>
+<div class="arch-arrow">→</div>
+<div class="arch-node" style="border-color:rgba(79,156,249,.4)"><div class="icon">👤</div><h3>You</h3><p>OAuth token<br/>Your data only<br/>Unity Catalog</p></div>
+</div>
+<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap">
+<span class="chip">No new infrastructure — runs on existing Databricks workspace</span>
+<span class="chip green">x-forwarded-access-token: each user's own permissions</span>
+<span class="chip purple">AI narrates math, never replaces it</span>
+</div>
+<div class="grid2" style="margin-top:18px">
+<div class="card"><h3>Source Tables (live)</h3><div class="chip-list" style="margin-top:8px"><span class="chip">gaim_pipeline_daily_snapshot</span><span class="chip">gaim_snapshot_pipeline_created_cq_daily</span><span class="chip">cds_targets_monthly</span><span class="chip">MQL count</span></div></div>
+<div class="card"><h3>14 KPIs tracked</h3><div class="chip-list" style="margin-top:8px"><span class="chip green">Won Pipeline</span><span class="chip green">Win Rate</span><span class="chip green">Coverage</span><span class="chip green">Pipeline Att.</span><span class="chip green">MQL Count</span><span class="chip green">ADS · AOS · Close Rate</span><span class="chip green">+6 more</span></div></div>
+</div>
+</div>
+</div>
 
-  <!-- 13: Live Demo -->
-  <div class="slide" data-idx="12">
-    <div class="slide-inner" style="text-align:center">
-      <div class="tag">Live Demo</div>
-      <h2>See it in action</h2>
-      <div class="demo-box">
-        <p style="font-size:1rem;color:var(--muted)">The app is deployed and live on Databricks Apps.</p>
-        <a href="#" onclick="return false;" id="demo-link">🚀 Open Atlas Executive Insights</a>
-        <ul class="steps">
-          <li><span>1</span>Log in with your Databricks SSO</li>
-          <li><span>2</span>See the 14 KPI cards load from live data</li>
-          <li><span>3</span>Click any KPI → read the AI narrative</li>
-          <li><span>4</span>Change a filter (e.g. Geo = NA) → watch it update</li>
-          <li><span>5</span>Open the chat → ask "why is win rate down?"</li>
-        </ul>
-      </div>
-    </div>
-  </div>
+<!-- 9: Phase Roadmap -->
+<div class="slide" data-idx="8">
+<div class="slide-inner">
+<div class="tag">Roadmap</div>
+<h2>Four phases from intelligence to decision engine</h2>
+<div class="grid2" style="margin-top:18px">
+<div class="phase p1">
+<div class="ph-label">✅ Phase 1 — Intelligence Layer · Live Now</div>
+<h3>Know what's happening</h3>
+<ul>
+<li>14 live KPIs from Databricks (real data, not mocks)</li>
+<li>AI narrative per KPI explaining the "so what"</li>
+<li>Conversational chat grounded in live numbers</li>
+<li>Filter by Geo / Channel / Product</li>
+<li>x-forwarded-token auth via Unity Catalog</li>
+<li>Deployed on Databricks Apps (goto-shared)</li>
+</ul>
+</div>
+<div class="phase p2">
+<div class="ph-label">🔵 Phase 2 — Prediction Layer · Q3 2026</div>
+<h3>Know where you're going</h3>
+<ul>
+<li>Quarter-end projection (linear pacing model)</li>
+<li>Coverage × win rate → attainment probability score</li>
+<li>Historical QoQ comparison (same point in quarter)</li>
+<li>Role-based profiles (CRO, VP, ISG) — auto-scoped views</li>
+<li>Win rate trend model with early warning</li>
+<li>Forecast confidence interval display</li>
+</ul>
+</div>
+<div class="phase p3">
+<div class="ph-label">🟣 Phase 3 — Proactive Alerts · Q4 2026</div>
+<h3>Get told before it's a problem</h3>
+<ul>
+<li>Threshold alerts: "Coverage crossed below 2.5×"</li>
+<li>MQL drop → pipeline impact forecast (3-week lag model)</li>
+<li>Win rate decline detection (weekly trend check)</li>
+<li>Rep-level rollup (pending governance sign-off)</li>
+<li>Slack / email alert integration for critical signals</li>
+<li>Anomaly detection across all 14 KPIs</li>
+</ul>
+</div>
+<div class="phase p4">
+<div class="ph-label">🟡 Phase 4 — Decision Engine · H1 2027</div>
+<h3>Know exactly what to do</h3>
+<ul>
+<li>Scenario modeling: "What if win rate improves 2pts?"</li>
+<li>Deal prioritisation: rank open opps by close probability</li>
+<li>Cross-signal: MQL quality × pipeline conversion rate</li>
+<li>Marketing ↔ Sales causal attribution (MQL → Won $)</li>
+<li>Mobile-first executive view</li>
+<li>Feedback loop: rate AI recommendations to improve them</li>
+</ul>
+</div>
+</div>
+</div>
+</div>
 
-  <!-- 14: Thank You -->
-  <div class="slide" data-idx="13">
-    <div class="slide-inner thankyou-center">
-      <div class="tag">Thank You</div>
-      <h1 style="font-size:clamp(1.8rem,4vw,3rem)">Atlas <span class="grad">Executive Insights</span></h1>
-      <p style="font-size:1.05rem;max-width:480px;margin:16px auto 0;color:var(--muted)">
-        Built to help sales leadership act faster on better information.<br/>Your feedback shapes what comes next.
-      </p>
-      <div class="built-by">
-        <span class="built-pill">🗄️ Databricks</span>
-        <span class="built-pill">🤖 Claude Sonnet 4.6</span>
-        <span class="built-pill">🔐 Unity Catalog</span>
-        <span class="built-pill">⚛️ React + FastAPI</span>
-      </div>
-      <button class="feedback-cta" onclick="openModal()">📝 Leave Your Feedback</button>
-      <p style="margin-top:20px;font-size:.85rem;color:var(--muted)">
-        Questions? Find me in Slack or open a GitHub issue on <strong style="color:var(--blue)">goto-shared/gaim-executive-app</strong>
-      </p>
-    </div>
-  </div>
+<!-- 10: Concerns -->
+<div class="slide" data-idx="9">
+<div class="slide-inner">
+<div class="tag">Concerns &amp; Mitigations</div>
+<h2>Hard questions — honest answers</h2>
+<div class="concern">
+<div class="risk"><div class="lbl">⚠️ Data Governance</div><p>Revenue data and rep-level metrics are sensitive. Who controls who sees what?</p></div>
+<div class="fix"><div class="lbl">✅ Mitigation</div><p>x-forwarded-access-token: every user authenticates with their own Databricks identity. Unity Catalog row/column permissions apply automatically — no shared service account. We need your team to define the permission tiers.</p></div>
+</div>
+<div class="concern">
+<div class="risk"><div class="lbl">⚠️ AI Accuracy</div><p>What if the AI says the wrong thing? An exec acts on a bad recommendation?</p></div>
+<div class="fix"><div class="lbl">✅ Mitigation</div><p>AI <em>never</em> calculates — it narrates. Every number shown comes from SQL. The rule engine runs first and overrides the AI if they conflict. Source numbers are always visible alongside the narrative.</p></div>
+</div>
+<div class="concern">
+<div class="risk"><div class="lbl">⚠️ Model Drift</div><p>The pacing and coverage models assume historical patterns hold. What if Q2 is structurally different?</p></div>
+<div class="fix"><div class="lbl">✅ Mitigation</div><p>Models show confidence intervals, not point estimates. The AI narrative explicitly flags when current patterns deviate significantly from the historical baseline used in the model.</p></div>
+</div>
+<div class="concern">
+<div class="risk"><div class="lbl">⚠️ Cost &amp; Maintenance</div><p>Another tool to maintain. LLM API costs. Who owns this?</p></div>
+<div class="fix"><div class="lbl">✅ Mitigation</div><p>Same Databricks warehouse already running. AI calls are per-click, not always-on. Rule-based fallback means most requests never hit the LLM. One engineer can maintain this — the codebase is 800 lines.</p></div>
+</div>
+</div>
+</div>
+
+<!-- 11: Role-Based Views -->
+<div class="slide" data-idx="10">
+<div class="slide-inner">
+<div class="tag">User-Centric Design</div>
+<h2>One app, scoped to each person's world</h2>
+<p style="margin-bottom:4px">Phase 1: everyone with app access sees all 14 KPIs. <strong style="color:var(--amber)">Phase 2: role-scoped views, auto-applied on login.</strong></p>
+<table class="role-table">
+<thead><tr><th>Role</th><th>Default KPIs</th><th>Data Scope</th><th>Key Question Atlas Answers</th></tr></thead>
+<tbody>
+<tr><td><strong>CRO</strong></td><td>All 14 + attainment probability</td><td>All geos · all channels</td><td>"Are we hitting Q2? Where's the risk?"</td></tr>
+<tr><td><strong>Regional VP</strong></td><td>Won Pipeline, Win Rate, Coverage, ADS</td><td>Their geo only (auto)</td><td>"How does my geo compare to pace? What do I prioritise?"</td></tr>
+<tr><td><strong>ISG Leader</strong></td><td>MQL Count, Created Pipeline, Coverage</td><td>ISG product lines</td><td>"Is the MQL drop going to hurt next quarter's pipeline?"</td></tr>
+<tr><td><strong>Sales Director</strong></td><td>Win Rate, ADS, Opps Created, Close Rate</td><td>Channel × Geo</td><td>"What's killing our win rate? Which deals are at risk?"</td></tr>
+<tr><td><strong>Finance / Ops</strong></td><td>Won Attainment %, Pipeline Att. %, AOS</td><td>All (read-only)</td><td>"What's the Q2 close number going to be?"</td></tr>
+</tbody>
+</table>
+<p style="margin-top:14px;font-size:.82rem;color:var(--muted)">
+<strong style="color:var(--blue)">How it works:</strong> On login, app reads user email from OAuth token → looks up role in a config table → sets default KPI set + data filters. Unity Catalog enforces the data boundary even if someone manually changes a URL parameter.
+</p>
+</div>
+</div>
+
+<!-- 12: What I Need -->
+<div class="slide" data-idx="11">
+<div class="slide-inner">
+<div class="tag">Five Asks</div>
+<h2>What I need from this group to go further</h2>
+<ul class="ask-list">
+<li><span class="ask-num">1</span><span style="font-size:.92rem;line-height:1.5"><strong>Governance sign-off:</strong> Which tables and columns are approved for AI queries? Can the model see won $ amounts, or only derived KPIs like attainment %? This determines Phase 2 scope.</span></li>
+<li><span class="ask-num">2</span><span style="font-size:.92rem;line-height:1.5"><strong>Pilot group — 3 to 4 executives:</strong> 30 minutes each to test Phase 1 and tell me what's missing. Specifically need someone from each of: CRO level, Regional VP, ISG/Marketing leader.</span></li>
+<li><span class="ask-num">3</span><span style="font-size:.92rem;line-height:1.5"><strong>Unity Catalog permission tiers:</strong> Define who should have row-level access to what schemas. Without this, everyone sees everything — which is a blocker for broader rollout.</span></li>
+<li><span class="ask-num">4</span><span style="font-size:.92rem;line-height:1.5"><strong>Historical baselines:</strong> For the coverage and win rate models to have accurate thresholds, I need 6–8 quarters of historical KPI data validated against actual quota attainment outcomes.</span></li>
+<li><span class="ask-num">5</span><span style="font-size:.92rem;line-height:1.5"><strong>Priority call on Phase 2 vs Phase 3:</strong> Should we build forecasting + role-profiles first (Phase 2), or is proactive alerting (Phase 3) more urgent for the team right now?</span></li>
+</ul>
+</div>
+</div>
+
+<!-- 13: Live Demo -->
+<div class="slide" data-idx="12">
+<div class="slide-inner" style="text-align:center">
+<div class="tag">Live Demo</div>
+<h2>See Phase 1 — live now on Databricks Apps</h2>
+<div style="background:var(--surface);border:2px dashed rgba(79,156,249,.4);border-radius:16px;padding:32px;margin-top:18px">
+<p style="font-size:.95rem;color:var(--muted);margin-bottom:18px">The app is deployed at <strong style="color:var(--blue)">goto-shared/gaim-executive-app</strong> on Databricks Apps.</p>
+<div style="display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:18px">
+<div style="text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:18px 22px;max-width:280px">
+<h3 style="color:var(--blue);margin-bottom:12px;font-size:.9rem">Try this in the demo</h3>
+<ol style="list-style:none;display:flex;flex-direction:column;gap:9px">
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">1</span>Log in with Databricks SSO</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">2</span>See 14 KPIs load from live data</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">3</span>Click Win Rate → read AI narrative</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">4</span>Filter to Enterprise → watch it update</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">5</span>Chat: "why is win rate down?"</li>
+</ol>
+</div>
+<div style="text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:18px 22px;max-width:280px">
+<h3 style="color:var(--purple);margin-bottom:12px;font-size:.9rem">What Phase 2 will add</h3>
+<ul style="list-style:none;display:flex;flex-direction:column;gap:8px">
+<li style="font-size:.85rem;color:var(--muted);display:flex;gap:8px"><span style="color:var(--purple)">→</span>Quarter-end attainment projection</li>
+<li style="font-size:.85rem;color:var(--muted);display:flex;gap:8px"><span style="color:var(--purple)">→</span>Coverage probability score (live)</li>
+<li style="font-size:.85rem;color:var(--muted);display:flex;gap:8px"><span style="color:var(--purple)">→</span>Win rate trend with ETA to target</li>
+<li style="font-size:.85rem;color:var(--muted);display:flex;gap:8px"><span style="color:var(--purple)">→</span>Role-based profile (you only see your data)</li>
+<li style="font-size:.85rem;color:var(--muted);display:flex;gap:8px"><span style="color:var(--purple)">→</span>QoQ same-point-in-quarter comparison</li>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- 14: Thank You -->
+<div class="slide" data-idx="13">
+<div class="slide-inner" style="text-align:center">
+<div class="tag">Thank You</div>
+<h1>Atlas <span class="grad">Executive Insights</span></h1>
+<p style="font-size:1rem;max-width:500px;margin:14px auto 0;color:var(--muted)">Phase 1 is live. The path to a real prediction and decision intelligence layer is defined. Your feedback and governance decisions are the next unlock.</p>
+<div style="display:flex;align-items:center;justify-content:center;gap:16px;margin:24px 0;flex-wrap:wrap">
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🗄️ Databricks · Unity Catalog</span>
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🤖 Claude Sonnet 4.6</span>
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">⚛️ React + FastAPI</span>
+</div>
+<button class="btn-submit" style="padding:13px 36px;font-size:.95rem;cursor:pointer;border-radius:11px;width:auto" onclick="openModal()">📝 Leave Your Feedback</button>
+<p style="margin-top:18px;font-size:.82rem;color:var(--muted)">Find me in Slack · <strong style="color:var(--blue)">goto-shared/gaim-executive-app</strong> on GitHub</p>
+</div>
+</div>
 
 </div><!-- /deck -->
 
-<!-- ─────────────────── NAV BAR ─────────────────── -->
 <div id="nav">
-  <button class="nav-btn" id="btn-prev" onclick="prevSlide()">◀ Prev</button>
-  <div style="display:flex;align-items:center;gap:14px">
-    <div class="dots" id="dots"></div>
-    <span class="slide-counter" id="counter">1 / 14</span>
-  </div>
-  <button class="nav-btn" id="btn-next" onclick="nextSlide()">Next ▶</button>
+<button class="nav-btn" id="btn-prev" onclick="prevSlide()">◀ Prev</button>
+<div style="display:flex;align-items:center;gap:12px">
+<div class="dots" id="dots"></div>
+<span class="slide-counter" id="counter">1 / 14</span>
+</div>
+<button class="nav-btn" id="btn-next" onclick="nextSlide()">Next ▶</button>
 </div>
 
-<!-- ─────────────────── REACTION BAR ─────────────────── -->
 <div id="reaction-bar">
-  <button class="rxn-btn" title="Makes sense" onclick="react('👍')">👍</button>
-  <button class="rxn-btn" title="Have a question" onclick="react('❓')">❓</button>
-  <button class="rxn-btn" title="New idea" onclick="react('💡')">💡</button>
-  <button class="rxn-btn" title="Concern" onclick="react('⚠️')">⚠️</button>
-  <button class="nav-btn" style="margin-left:8px" onclick="openModal()">📝 Feedback</button>
+<button class="rxn-btn" onclick="react('👍')">👍</button>
+<button class="rxn-btn" onclick="react('❓')">❓</button>
+<button class="rxn-btn" onclick="react('💡')">💡</button>
+<button class="rxn-btn" onclick="react('⚠️')">⚠️</button>
+<button class="nav-btn" style="margin-left:6px" onclick="openModal()">📝 Feedback</button>
 </div>
 
-<!-- ─────────────────── FEEDBACK MODAL ─────────────────── -->
 <div id="modal-overlay" onclick="closeModalOnOverlay(event)">
-  <div id="modal">
-    <div id="modal-form">
-      <h2>Share Your Feedback</h2>
-      <p class="sub">Your input directly shapes the roadmap. Takes 2 minutes.</p>
-
-      <div class="form-group">
-        <label>Your Name (optional)</label>
-        <input type="text" id="f-name" placeholder="e.g. Alex Johnson"/>
-      </div>
-      <div class="form-group">
-        <label>Your Role</label>
-        <select id="f-role">
-          <option value="">Select your role</option>
-          <option>CRO</option>
-          <option>VP Sales</option>
-          <option>Regional VP</option>
-          <option>Sales Director</option>
-          <option>ISG / Marketing Leader</option>
-          <option>Finance</option>
-          <option>Sales Ops / Analytics</option>
-          <option>Engineering / Product</option>
-          <option>Other</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Overall impression (1–5)</label>
-        <div class="star-row" id="stars">
-          <span class="star" data-v="1" onclick="setStar(1)">⭐</span>
-          <span class="star" data-v="2" onclick="setStar(2)">⭐</span>
-          <span class="star" data-v="3" onclick="setStar(3)">⭐</span>
-          <span class="star" data-v="4" onclick="setStar(4)">⭐</span>
-          <span class="star" data-v="5" onclick="setStar(5)">⭐</span>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Most valuable feature to you</label>
-        <select id="f-valuable">
-          <option value="">Select one</option>
-          <option>AI narrative explaining KPIs</option>
-          <option>Conversational chat interface</option>
-          <option>Live data (not static reports)</option>
-          <option>Recommended actions</option>
-          <option>Role-based personalised views</option>
-          <option>Quarter-end forecasting (planned)</option>
-          <option>Proactive alerts (planned)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Biggest concern</label>
-        <textarea id="f-concern" rows="2" placeholder="Data accuracy? Governance? Something else?"></textarea>
-      </div>
-      <div class="form-group">
-        <label>Would you use this in your workflow?</label>
-        <select id="f-use">
-          <option value="">Select one</option>
-          <option>Yes — immediately</option>
-          <option>Yes — after some changes (tell me below)</option>
-          <option>Maybe — need to see more</option>
-          <option>No — not relevant to my role</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Any other comments or ideas</label>
-        <textarea id="f-comments" rows="3" placeholder="What would make this a must-have for you?"></textarea>
-      </div>
-      <div class="btn-row">
-        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
-        <button class="btn-submit" onclick="submitFeedback()">Submit Feedback →</button>
-      </div>
-    </div>
-    <div id="modal-success" style="display:none">
-      <div class="success-msg">
-        <div class="check">🎉</div>
-        <h3>Thank you!</h3>
-        <p>Your feedback has been saved. It'll be reviewed before the next iteration.</p>
-        <button class="btn-submit" style="margin-top:20px;width:100%" onclick="closeModal()">Close</button>
-      </div>
-    </div>
-  </div>
+<div id="modal">
+<div id="modal-form">
+<h2>Share Your Feedback</h2>
+<p class="sub">Your input directly shapes the Phase 2 roadmap. Takes 2 minutes.</p>
+<div class="form-group"><label>Your Name (optional)</label><input type="text" id="f-name" placeholder="e.g. Alex Johnson"/></div>
+<div class="form-group"><label>Your Role</label><select id="f-role"><option value="">Select your role</option><option>CRO</option><option>VP Sales</option><option>Regional VP</option><option>Sales Director</option><option>ISG / Marketing Leader</option><option>Finance / Sales Ops</option><option>Engineering / Analytics</option><option>Other</option></select></div>
+<div class="form-group"><label>Overall impression (1–5)</label><div class="star-row" id="stars"><span class="star" onclick="setStar(1)">⭐</span><span class="star" onclick="setStar(2)">⭐</span><span class="star" onclick="setStar(3)">⭐</span><span class="star" onclick="setStar(4)">⭐</span><span class="star" onclick="setStar(5)">⭐</span></div></div>
+<div class="form-group"><label>Most valuable to you</label><select id="f-valuable"><option value="">Select one</option><option>AI narrative explaining each KPI</option><option>Quarter-end forecast / attainment projection</option><option>Coverage → probability score</option><option>Win rate trend detection</option><option>Role-based personalised view</option><option>Conversational chat about live data</option><option>Proactive alerts (Phase 3)</option></select></div>
+<div class="form-group"><label>Phase priority — what should we build next?</label><select id="f-concern"><option value="">Select one</option><option>Phase 2: Forecasting + role profiles (Q3 2026)</option><option>Phase 3: Proactive alerts + threshold monitoring (Q4 2026)</option><option>Phase 4: Scenario modeling + deal prioritisation</option><option>Fix Phase 1 first — something is missing or wrong</option></select></div>
+<div class="form-group"><label>Would you use this in your workflow?</label><select id="f-use"><option value="">Select one</option><option>Yes — replace my current Power BI usage</option><option>Yes — alongside Power BI for the AI layer</option><option>Maybe — need to see forecasting first</option><option>No — not relevant to my role</option></select></div>
+<div class="form-group"><label>Any other feedback or ideas</label><textarea id="f-comments" rows="3" placeholder="What would make this a must-have for your weekly workflow?"></textarea></div>
+<div class="btn-row"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-submit" onclick="submitFeedback()">Submit →</button></div>
+</div>
+<div id="modal-success" style="display:none">
+<div class="success-msg"><div class="check">🎉</div><h3>Thank you!</h3><p>Saved. Your input shapes what Phase 2 looks like.</p><button class="btn-submit" style="margin-top:18px;width:100%" onclick="closeModal()">Close</button></div>
+</div>
+</div>
 </div>
 
 <script>
-// ── State ────────────────────────────────────────────────────────────────────
-const TOTAL = 14;
-let current  = 0;
-let starVal  = 0;
-const reactions = {};  // { slideIdx: [emoji, ...] }
-
-// ── Init ─────────────────────────────────────────────────────────────────────
-const slides   = document.querySelectorAll('.slide');
-const dotsEl   = document.getElementById('dots');
-const counter  = document.getElementById('counter');
-const progress = document.getElementById('progress');
-
-// Build dots
-for (let i = 0; i < TOTAL; i++) {
-  const b = document.createElement('button');
-  b.className = 'dot-btn' + (i === 0 ? ' active' : '');
-  b.title = `Slide ${i + 1}`;
-  b.addEventListener('click', () => goTo(i));
-  dotsEl.appendChild(b);
-}
+const TOTAL=14;let current=0,starVal=0;const reactions={};
+const slides=document.querySelectorAll('.slide');
+const dotsEl=document.getElementById('dots');
+for(let i=0;i<TOTAL;i++){const b=document.createElement('button');b.className='dot-btn'+(i===0?' active':'');b.title=`Slide ${i+1}`;b.addEventListener('click',()=>goTo(i));dotsEl.appendChild(b)}
 goTo(0);
-
-// ── Navigation ───────────────────────────────────────────────────────────────
-function goTo(n) {
-  slides[current].classList.remove('active');
-  slides[current].classList.add('exit-left');
-  setTimeout(() => slides[current].classList.remove('exit-left'), 500);
-  current = Math.max(0, Math.min(TOTAL - 1, n));
-  slides[current].classList.add('active');
-  // dots
-  document.querySelectorAll('.dot-btn').forEach((d, i) =>
-    d.classList.toggle('active', i === current));
-  // counter
-  counter.textContent = `${current + 1} / ${TOTAL}`;
-  // progress bar
-  progress.style.width = `${((current + 1) / TOTAL) * 100}%`;
-  // nav buttons
-  document.getElementById('btn-prev').disabled = current === 0;
-  document.getElementById('btn-next').disabled = current === TOTAL - 1;
-}
-function nextSlide() { goTo(current + 1); }
-function prevSlide() { goTo(current - 1); }
-
-// Keyboard navigation
-document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-  if (e.key === 'ArrowRight' || e.key === ' ')  { e.preventDefault(); nextSlide(); }
-  if (e.key === 'ArrowLeft')                    { e.preventDefault(); prevSlide(); }
-  if (e.key === 'Escape')                        closeModal();
-});
-
-// ── Reactions ────────────────────────────────────────────────────────────────
-function react(emoji) {
-  if (!reactions[current]) reactions[current] = [];
-  if (!reactions[current].includes(emoji)) {
-    reactions[current].push(emoji);
-  }
-  // visual feedback
-  const btns = document.querySelectorAll('.rxn-btn');
-  btns.forEach(b => { if (b.textContent.trim() === emoji) { b.classList.add('active'); setTimeout(() => b.classList.remove('active'), 600); }});
-}
-
-// ── Stars ────────────────────────────────────────────────────────────────────
-function setStar(n) {
-  starVal = n;
-  document.querySelectorAll('.star').forEach((s, i) =>
-    s.classList.toggle('on', i < n));
-}
-
-// ── Modal ────────────────────────────────────────────────────────────────────
-function openModal() {
-  document.getElementById('modal-overlay').classList.add('open');
-  document.getElementById('modal-form').style.display = 'block';
-  document.getElementById('modal-success').style.display = 'none';
-}
-function closeModal() {
-  document.getElementById('modal-overlay').classList.remove('open');
-}
-function closeModalOnOverlay(e) {
-  if (e.target === document.getElementById('modal-overlay')) closeModal();
-}
-
-async function submitFeedback() {
-  const data = {
-    name:           document.getElementById('f-name').value.trim(),
-    role:           document.getElementById('f-role').value,
-    overall_rating: starVal,
-    most_valuable:  document.getElementById('f-valuable').value,
-    main_concern:   document.getElementById('f-concern').value.trim(),
-    would_use:      document.getElementById('f-use').value,
-    comments:       document.getElementById('f-comments').value.trim(),
-    reactions:      reactions,
-  };
-  try {
-    const res  = await fetch('/api/feedback', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify(data),
-    });
-    const json = await res.json();
-    if (json.success) {
-      document.getElementById('modal-form').style.display  = 'none';
-      document.getElementById('modal-success').style.display = 'block';
-    } else {
-      alert('Could not save feedback: ' + (json.error || 'unknown error'));
-    }
-  } catch (err) {
-    alert('Network error — check your connection.');
-  }
-}
+function goTo(n){slides[current].classList.remove('active');current=Math.max(0,Math.min(TOTAL-1,n));slides[current].classList.add('active');document.querySelectorAll('.dot-btn').forEach((d,i)=>d.classList.toggle('active',i===current));document.getElementById('counter').textContent=`${current+1} / ${TOTAL}`;document.getElementById('progress').style.width=`${((current+1)/TOTAL)*100}%`;document.getElementById('btn-prev').disabled=current===0;document.getElementById('btn-next').disabled=current===TOTAL-1}
+function nextSlide(){goTo(current+1)}function prevSlide(){goTo(current-1)}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();nextSlide()}if(e.key==='ArrowLeft'){e.preventDefault();prevSlide()}if(e.key==='Escape')closeModal()});
+function react(emoji){if(!reactions[current])reactions[current]=[];if(!reactions[current].includes(emoji))reactions[current].push(emoji);document.querySelectorAll('.rxn-btn').forEach(b=>{if(b.textContent.trim()===emoji){b.classList.add('active');setTimeout(()=>b.classList.remove('active'),600)}})}
+function setStar(n){starVal=n;document.querySelectorAll('.star').forEach((s,i)=>s.classList.toggle('on',i<n))}
+function openModal(){document.getElementById('modal-overlay').classList.add('open');document.getElementById('modal-form').style.display='block';document.getElementById('modal-success').style.display='none'}
+function closeModal(){document.getElementById('modal-overlay').classList.remove('open')}
+function closeModalOnOverlay(e){if(e.target===document.getElementById('modal-overlay'))closeModal()}
+async function submitFeedback(){const data={name:document.getElementById('f-name').value.trim(),role:document.getElementById('f-role').value,overall_rating:starVal,most_valuable:document.getElementById('f-valuable').value,main_concern:document.getElementById('f-concern').value,would_use:document.getElementById('f-use').value,comments:document.getElementById('f-comments').value.trim(),reactions};try{const res=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await res.json();if(j.success){document.getElementById('modal-form').style.display='none';document.getElementById('modal-success').style.display='block'}else{alert('Could not save: '+(j.error||'unknown'))}}catch{alert('Network error')}}
 </script>
 </body>
 </html>"""
