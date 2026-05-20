@@ -309,10 +309,10 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide-inner" style="text-align:center">
 <div class="tag">Internal Pitch · May 2026</div>
 <h1>Atlas<br/><span class="grad">Executive Insights</span></h1>
-<p style="font-size:1.1rem;max-width:520px;margin:0 auto 28px">Not another dashboard. A decision intelligence layer built on top of your live Databricks data — telling sales leaders what to do, not just what happened.</p>
+<p style="font-size:1.1rem;max-width:520px;margin:0 auto 28px">Not another dashboard. A decision intelligence layer on top of GoTo's live data — giving executives and business planning leaders the "so what" behind every number.</p>
 <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-<span class="chip">Live · Real GoTo Data</span>
-<span class="chip green">Sales Intelligence · Real-time</span>
+<span class="chip">Built for SFO Business Planning</span>
+<span class="chip green">Executive Intelligence</span>
 <span class="chip purple">AI-Powered Insights</span>
 <span class="chip amber">Your Data · Your Access</span>
 </div>
@@ -340,7 +340,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="tag">The Vision</div>
 <h2>From reporting to decision intelligence</h2>
 <div class="vision-quote">
-<blockquote>"Power BI tells you the score.<br/><em>Atlas tells you the play to run next.</em>"</blockquote>
+<blockquote>“Our dashboards tell you the score.<br/><em>Atlas Executive Insights tells you the play to run next.”</em></blockquote>
 <p style="margin-top:10px;font-size:.85rem;color:var(--muted);font-weight:600">— The core idea behind every design decision</p>
 </div>
 <div class="grid3" style="margin-top:20px">
@@ -355,7 +355,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="3">
 <div class="slide-inner">
 <div class="tag">Real Example</div>
-<h2>Week 8 of Q2 — here's what Atlas does</h2>
+<h2>Week 8 of Q2 — here’s what Atlas Executive Insights does</h2>
 <div class="kpi-row">
 <div class="kpi-card"><div class="label">Won Pipeline</div><div class="value" style="color:var(--green)">$18.4M</div><div class="vs up">↑ on pace (67% of target)</div></div>
 <div class="kpi-card"><div class="label">Win Rate</div><div class="value" style="color:var(--red)">28.1%</div><div class="vs down">↓ 3.2 pts vs last Q</div></div>
@@ -375,18 +375,18 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="4">
 <div class="slide-inner">
 <div class="tag">Comparison</div>
-<h2>Power BI (KPI Trends) vs Atlas</h2>
+<h2>Current dashboards vs Atlas Executive Insights</h2>
 <table class="cmp-table">
-<thead><tr><th>Capability</th><th class="col-pbi">KPI Trends / Perf Hub Today</th><th class="col-atlas">Atlas</th></tr></thead>
+<thead><tr><th>Capability</th><th class="col-pbi">Current Power BI Dashboards</th><th class="col-atlas">Atlas Executive Insights</th></tr></thead>
 <tbody>
-<tr><td>Shows live KPI values</td><td><span class="badge-yes">Yes</span></td><td><span class="badge-yes">Yes — same Databricks source</span></td></tr>
-<tr><td>Explains <em>why</em> a KPI moved</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">AI narrative per KPI</span></td></tr>
-<tr><td>Quarter-end projection</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 2 — pacing model</span></td></tr>
-<tr><td>Coverage → attainment probability</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 2 — statistical model</span></td></tr>
-<tr><td>Proactive risk alerts</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Phase 3 — threshold monitoring</span></td></tr>
-<tr><td>Natural language chat about data</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Live — ask anything</span></td></tr>
-<tr><td>Recommended actions</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Built in to every insight</span></td></tr>
-<tr><td>Per-user data governance</td><td><span class="badge-yes">Unity Catalog</span></td><td><span class="badge-yes">Same — user OAuth token</span></td></tr>
+<tr><td>Shows live metric values</td><td><span class="badge-yes">Yes</span></td><td><span class="badge-yes">Yes — same GoTo federated data</span></td></tr>
+<tr><td>Explains <em>why</em> a metric moved</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">AI narrative per metric</span></td></tr>
+<tr><td>Quarter-end attainment projection</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Planned — pacing model</span></td></tr>
+<tr><td>Coverage → attainment probability</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Planned — statistical model</span></td></tr>
+<tr><td>Proactive risk alerts</td><td><span class="badge-no">No</span></td><td><span class="badge-wip">Planned — threshold monitoring</span></td></tr>
+<tr><td>Natural language chat about your data</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Ask anything about the numbers</span></td></tr>
+<tr><td>Recommended next actions</td><td><span class="badge-no">No</span></td><td><span class="badge-yes">Built in to every insight</span></td></tr>
+<tr><td>Per-user data access</td><td><span class="badge-yes">Role-based</span></td><td><span class="badge-yes">Same — your identity, your data</span></td></tr>
 </tbody>
 </table>
 </div>
@@ -444,29 +444,29 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="6">
 <div class="slide-inner">
 <div class="tag">AI in Action</div>
-<h2>Three real GoTo scenarios Atlas would handle</h2>
+<h2>Three questions Atlas Executive Insights would answer for your team</h2>
 <div class="scenario">
 <div class="scenario-num">1</div>
 <div>
-<h3>VP Sales asks: "Why is win rate down in Enterprise NA?"</h3>
-<p><em>Today:</em> 2-day Databricks query by analytics team. Result arrives Friday.<br/><em>With Atlas:</em> Chat interface, live data, 10 seconds.</p>
+<h3>Peter asks: "Why is win rate down in Enterprise NA this quarter?"</h3>
+<p><em>Today:</em> A multi-day data pull by the analytics team. Answer arrives days later.<br/><em>With Atlas Executive Insights:</em> Type the question. Answer in seconds, grounded in live data.</p>
 <div class="result">Atlas Executive Insights: "Enterprise NA win rate dropped from 34% → 27% over 6 weeks. Pattern matches deals lost in the 45–90 day range (AOS $85K+). Close rate on deals with more than 2 stakeholders fell 8 pts — suggest reviewing multi-thread engagement strategy for large Enterprise deals."</div>
 </div>
 </div>
 <div class="scenario">
 <div class="scenario-num">2</div>
 <div>
-<h3>Monday morning: MQL count dropped 18% WoW. What do I tell my team?</h3>
-<p><em>Today:</em> Email Marketing. Wait for report. No context on whether it matters.<br/><em>With Atlas:</em> Proactive alert already in your dashboard at 8am.</p>
+<h3>Derek is prepping the Monday business review: MQL count dropped 18% WoW — does it matter for next quarter?</h3>
+<p><em>Today:</em> Email Marketing, wait for context, piece together manually.<br/><em>With Atlas Executive Insights:</em> The impact is already quantified when you open the app.</p>
 <div class="result">Atlas Executive Insights: "MQL count fell 412 → 338 (18.6% WoW). Based on GoTo's historical conversion rates, a 10% MQL drop typically reduces next-quarter created pipeline by ~$2.1M. At this pace, Q3 created pipeline target is at risk unless inbound volume recovers by Week 10."</div>
 </div>
 </div>
 <div class="scenario">
 <div class="scenario-num">3</div>
 <div>
-<h3>CFO asks: "Are we going to hit Q2 quota?"</h3>
-<p><em>Today:</em> Sales ops builds a spreadsheet. 1 day turnaround. Snapshot, not live.<br/><em>With Atlas:</em> Live pacing view with probability and trend in one click.</p>
-<div class="result">Atlas Executive Insights: "Pacing model shows 87% attainment likely based on current pipeline. Risk flags: win rate declining at -0.4 pts/week, coverage at 2.1× below the 2.5× threshold we've historically needed to close the quarter. If both stabilise at Q1 levels, probability rises to 94%. Immediate focus: 3 at-risk Enterprise deals totalling $4.2M need executive engagement this week."</div>
+<h3>David needs the Q2 attainment call for the monthly business review</h3>
+<p><em>Today:</em> SFO builds a spreadsheet — 1 day turnaround, snapshot not live, revised multiple times.<br/><em>With Atlas Executive Insights:</em> Live pacing view with probability, trend, and narrative in one click.</p>
+<div class="result">Atlas Executive Insights: "Pacing model shows 87% attainment likely based on current pipeline. Risk flags: win rate declining at -0.4 pts/week, coverage at 2.1× below the 2.5× threshold historically needed. If both stabilise at last period's levels, probability rises to 94%. Immediate focus: 3 at-risk Enterprise deals totalling $4.2M need executive engagement this week."</div>
 </div>
 </div>
 </div>
@@ -478,23 +478,23 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="tag">Architecture</div>
 <h2>How it works — built on what you already have</h2>
 <div class="arch">
-<div class="arch-node"><div class="icon">🗄️</div><h3>Databricks</h3><p>Delta tables<br/>Unity Catalog<br/>Same warehouse as Hermes</p></div>
+<div class="arch-node"><div class="icon">🗄️</div><h3>Metis</h3><p>Federated Sales<br/>data layer<br/>Single source of truth</p></div>
 <div class="arch-arrow">→</div>
 <div class="arch-node"><div class="icon">⚡</div><h3>API Layer</h3><p>Python backend<br/>KPI endpoints<br/>2-min cache</p></div>
 <div class="arch-arrow">→</div>
 <div class="arch-node"><div class="icon">🔢</div><h3>Rule Engine</h3><p>Pacing calc<br/>Coverage model<br/>Win rate trend</p></div>
 <div class="arch-arrow">→</div>
-<div class="arch-node"><div class="icon">🤖</div><h3>Claude 4.6</h3><p>Narrative<br/>Chat answers<br/>Recommendations</p></div>
+<div class="arch-node"><div class="icon">🤖</div><h3>AI Layer</h3><p>Narrative<br/>Chat answers<br/>Recommendations</p></div>
 <div class="arch-arrow">→</div>
-<div class="arch-node" style="border-color:rgba(79,156,249,.4)"><div class="icon">👤</div><h3>You</h3><p>OAuth token<br/>Your data only<br/>Unity Catalog</p></div>
+<div class="arch-node" style="border-color:rgba(79,156,249,.4)"><div class="icon">👤</div><h3>You</h3><p>GoTo SSO<br/>Your data only<br/>Role-based access</p></div>
 </div>
 <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap">
-<span class="chip">No new infrastructure — runs on existing Databricks workspace</span>
-<span class="chip green">x-forwarded-access-token: each user's own permissions</span>
+<span class="chip">Uses GoTo’s existing Metis data infrastructure</span>
+<span class="chip green">Each user sees only their approved data</span>
 <span class="chip purple">AI narrates math, never replaces it</span>
 </div>
 <div class="grid2" style="margin-top:18px">
-<div class="card"><h3>Source Tables (live)</h3><div class="chip-list" style="margin-top:8px"><span class="chip">gaim_pipeline_daily_snapshot</span><span class="chip">gaim_snapshot_pipeline_created_cq_daily</span><span class="chip">cds_targets_monthly</span><span class="chip">MQL count</span></div></div>
+<div class="card"><h3>Source Data (Metis Federated Layer)</h3><div class="chip-list" style="margin-top:8px"><span class="chip">Federated Pipeline Data</span><span class="chip">Created Pipeline</span><span class="chip">Targets</span><span class="chip">MQL &amp; Lead Data</span><span class="chip">Won Opps</span></div></div>
 <div class="card"><h3>Key KPIs tracked</h3><div class="chip-list" style="margin-top:8px"><span class="chip green">Won Pipeline</span><span class="chip green">Win Rate</span><span class="chip green">Coverage</span><span class="chip green">Pipeline Att.</span><span class="chip green">MQL Count</span><span class="chip green">ADS · AOS · Close Rate</span><span class="chip green">Created Pipeline</span><span class="chip green">+ more</span></div></div>
 </div>
 </div>
@@ -507,31 +507,31 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <h2>Four phases from intelligence to decision engine</h2>
 <div class="grid2" style="margin-top:18px">
 <div class="phase p1">
-<div class="ph-label">✅ Phase 1 — Intelligence Layer · Live Now</div>
+<div class="ph-label">🟢 Phase 1 — Intelligence Layer</div>
 <h3>Know what's happening</h3>
 <ul>
-<li>Live KPIs pulled directly from Databricks (real data, not mocks)</li>
+<li>Live KPIs from GoTo’s Metis federated data layer</li>
 <li>AI narrative per KPI explaining the "so what"</li>
 <li>Conversational chat grounded in live numbers</li>
 <li>Filter by Geo / Channel / Product</li>
-<li>x-forwarded-token auth via Unity Catalog</li>
-<li>Deployed on Databricks Apps (goto-shared)</li>
+<li>Role-based data access — each user sees their approved data</li>
+<li>Deployed on GoTo’s internal app platform</li>
 </ul>
 </div>
 <div class="phase p2">
-<div class="ph-label">🔵 Phase 2 — Prediction Layer · Q3 2026</div>
+<div class="ph-label">🔵 Phase 2 — Prediction Layer</div>
 <h3>Know where you're going</h3>
 <ul>
 <li>Quarter-end projection (linear pacing model)</li>
 <li>Coverage × win rate → attainment probability score</li>
 <li>Historical QoQ comparison (same point in quarter)</li>
-<li>Role-based profiles (CRO, VP, ISG) — auto-scoped views</li>
+<li>Personalised views for each stakeholder</li>
 <li>Win rate trend model with early warning</li>
 <li>Forecast confidence interval display</li>
 </ul>
 </div>
 <div class="phase p3">
-<div class="ph-label">🟣 Phase 3 — Proactive Alerts · Q4 2026</div>
+<div class="ph-label">🟣 Phase 3 — Proactive Alerts</div>
 <h3>Get told before it's a problem</h3>
 <ul>
 <li>Threshold alerts: "Coverage crossed below 2.5×"</li>
@@ -543,7 +543,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 </ul>
 </div>
 <div class="phase p4">
-<div class="ph-label">🟡 Phase 4 — Decision Engine · H1 2027</div>
+<div class="ph-label">🟡 Phase 4 — Decision Engine</div>
 <h3>Know exactly what to do</h3>
 <ul>
 <li>Scenario modeling: "What if win rate improves 2pts?"</li>
@@ -565,7 +565,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <h2>Hard questions — honest answers</h2>
 <div class="concern">
 <div class="risk"><div class="lbl">⚠️ Data Governance</div><p>Revenue data and rep-level metrics are sensitive. Who controls who sees what?</p></div>
-<div class="fix"><div class="lbl">✅ Mitigation</div><p>x-forwarded-access-token: every user authenticates with their own Databricks identity. Unity Catalog row/column permissions apply automatically — no shared service account. We need your team to define the permission tiers.</p></div>
+<div class="fix"><div class="lbl">✅ Mitigation</div><p>Every user authenticates with their own GoTo identity. Data access permissions apply automatically based on their existing role — no shared service account, no new permission grants needed. We define the access tiers once; the platform enforces them.</p></div>
 </div>
 <div class="concern">
 <div class="risk"><div class="lbl">⚠️ AI Accuracy</div><p>What if the AI says the wrong thing? An exec acts on a bad recommendation?</p></div>
@@ -585,21 +585,23 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <!-- 11: Role-Based Views -->
 <div class="slide" data-idx="10">
 <div class="slide-inner">
-<div class="tag">User-Centric Design</div>
-<h2>One app, scoped to each person's world</h2>
-<p style="margin-bottom:4px">Phase 1: everyone with app access sees all tracked KPIs. <strong style="color:var(--amber)">Phase 2: role-scoped views, auto-applied on login.</strong></p>
+<div class="tag">Who This Is For</div>
+<h2>Built specifically for the SFO Business Planning team</h2>
+<p style="margin-bottom:16px;font-size:.9rem;color:var(--muted)">These are the people who would use Atlas Executive Insights day-to-day — and the question it replaces manual work for each of them.</p>
 <table class="role-table">
-<thead><tr><th>Role</th><th>Default KPIs</th><th>Data Scope</th><th>Key Question Atlas Answers</th></tr></thead>
+<thead><tr><th>Person</th><th>Focus Area</th><th>Key Metrics</th><th>Question Atlas Executive Insights Answers</th></tr></thead>
 <tbody>
-<tr><td><strong>CRO</strong></td><td>All 14 + attainment probability</td><td>All geos · all channels</td><td>"Are we hitting Q2? Where's the risk?"</td></tr>
-<tr><td><strong>Regional VP</strong></td><td>Won Pipeline, Win Rate, Coverage, ADS</td><td>Their geo only (auto)</td><td>"How does my geo compare to pace? What do I prioritise?"</td></tr>
-<tr><td><strong>ISG Leader</strong></td><td>MQL Count, Created Pipeline, Coverage</td><td>ISG product lines</td><td>"Is the MQL drop going to hurt next quarter's pipeline?"</td></tr>
-<tr><td><strong>Sales Director</strong></td><td>Win Rate, ADS, Opps Created, Close Rate</td><td>Channel × Geo</td><td>"What's killing our win rate? Which deals are at risk?"</td></tr>
-<tr><td><strong>Finance / Ops</strong></td><td>Won Attainment %, Pipeline Att. %, AOS</td><td>All (read-only)</td><td>"What's the Q2 close number going to be?"</td></tr>
+<tr><td><strong>Peter Mahoney</strong></td><td>SFO Leadership</td><td>Win Rate, Coverage, Pipeline Att.</td><td>"What’s driving attainment risk right now, and where?"</td></tr>
+<tr><td><strong>Derek Keller</strong></td><td>SFO Business Planning</td><td>Pipeline, Won $, ADS by segment</td><td>"Where are we pacing vs plan, and which cut shows the gap?"</td></tr>
+<tr><td><strong>David Williams</strong></td><td>SFO Business Planning</td><td>All tracked metrics + trends</td><td>"Help me build the narrative for the business review."</td></tr>
+<tr><td><strong>Damon Covey</strong></td><td>SFO Business Planning</td><td>Coverage, Created Pipeline, MQL</td><td>"Is next quarter’s pipeline at risk based on today’s signals?"</td></tr>
+<tr><td><strong>Joseph George</strong></td><td>SFO Business Planning</td><td>Win Rate, Close Rate, Opps</td><td>"What’s changing in deal conversion this period?"</td></tr>
+<tr><td><strong>Emily Puopolo</strong></td><td>SFO Business Planning</td><td>MQL, Created Pipeline, Attainment</td><td>"Is the MQL drop a this-quarter or next-quarter problem?"</td></tr>
+<tr><td><strong>Jorge</strong></td><td>SFO Business Planning</td><td>Attainment %, AOS, Pipeline Att.</td><td>"How are we trending vs the same point last year?"</td></tr>
 </tbody>
 </table>
 <p style="margin-top:14px;font-size:.82rem;color:var(--muted)">
-<strong style="color:var(--blue)">How it works:</strong> On login, app reads user email from OAuth token → looks up role in a config table → sets default KPI set + data filters. Unity Catalog enforces the data boundary even if someone manually changes a URL parameter.
+<strong style="color:var(--blue)">Design principle:</strong> Each person logs in with their GoTo identity. The app surfaces the data they’re already approved to see — no new permission grants, no shared credentials, no re-work of existing access controls.
 </p>
 </div>
 </div>
@@ -608,13 +610,13 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="11">
 <div class="slide-inner">
 <div class="tag">Five Asks</div>
-<h2>What I need from this group to go further</h2>
+<h2>What I need from this group to move forward</h2>
 <ul class="ask-list">
-<li><span class="ask-num">1</span><span style="font-size:.92rem;line-height:1.5"><strong>Governance sign-off:</strong> Which tables and columns are approved for AI queries? Can the model see won $ amounts, or only derived KPIs like attainment %? This determines Phase 2 scope.</span></li>
-<li><span class="ask-num">2</span><span style="font-size:.92rem;line-height:1.5"><strong>Pilot group — 3 to 4 executives:</strong> 30 minutes each to test Phase 1 and tell me what's missing. Specifically need someone from each of: CRO level, Regional VP, ISG/Marketing leader.</span></li>
-<li><span class="ask-num">3</span><span style="font-size:.92rem;line-height:1.5"><strong>Unity Catalog permission tiers:</strong> Define who should have row-level access to what schemas. Without this, everyone sees everything — which is a blocker for broader rollout.</span></li>
-<li><span class="ask-num">4</span><span style="font-size:.92rem;line-height:1.5"><strong>Historical baselines:</strong> For the coverage and win rate models to have accurate thresholds, I need 6–8 quarters of historical KPI data validated against actual quota attainment outcomes.</span></li>
-<li><span class="ask-num">5</span><span style="font-size:.92rem;line-height:1.5"><strong>Priority call on Phase 2 vs Phase 3:</strong> Should we build forecasting + role-profiles first (Phase 2), or is proactive alerting (Phase 3) more urgent for the team right now?</span></li>
+<li><span class="ask-num">1</span><span style="font-size:.92rem;line-height:1.5"><strong>Governance sign-off:</strong> Which Metis tables and fields are approved for AI queries? Can the model surface won $ amounts directly, or only derived metrics like attainment %? This shapes what gets built next.</span></li>
+<li><span class="ask-num">2</span><span style="font-size:.92rem;line-height:1.5"><strong>Working session with the team:</strong> 30 minutes each to walk through Phase 1 and tell me what’s missing or wrong. Specifically: Peter, Derek, David, and one other from this group.</span></li>
+<li><span class="ask-num">3</span><span style="font-size:.92rem;line-height:1.5"><strong>Data access tiers:</strong> Define who should see what — do all SFO Business Planning members see all geos and channels, or is there a sub-scoping needed? Without this defined, everyone sees everything.</span></li>
+<li><span class="ask-num">4</span><span style="font-size:.92rem;line-height:1.5"><strong>Historical baselines:</strong> For the coverage and win rate models to work accurately, I need validated historical attainment data — what coverage and win rate levels actually correlated with quota hits in past periods.</span></li>
+<li><span class="ask-num">5</span><span style="font-size:.92rem;line-height:1.5"><strong>Priority call on what to build next:</strong> Should the focus be forecasting + personalised views (Phase 2) or proactive alerting (Phase 3)? Your answer determines where engineering time goes.</span></li>
 </ul>
 </div>
 </div>
@@ -623,9 +625,9 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="12">
 <div class="slide-inner" style="text-align:center">
 <div class="tag">Live Demo</div>
-<h2>See Phase 1 — live now</h2>
+<h2>See what Phase 1 will look like</h2>
 <div style="background:var(--surface);border:2px dashed rgba(79,156,249,.4);border-radius:16px;padding:32px;margin-top:18px">
-<p style="font-size:.95rem;color:var(--muted);margin-bottom:18px">Atlas Executive Insights is deployed and live. Log in with your GoTo SSO — it reads your data in real time from the same Databricks warehouse that powers KPI Trends and Performance Hub.</p>
+<p style="font-size:.95rem;color:var(--muted);margin-bottom:18px">Atlas Executive Insights is currently in development. When deployed, you log in with your GoTo SSO and it reads your data in real time from the same Metis federated layer that powers our current dashboards — no new data pipelines needed.</p>
 <div style="display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:18px">
 <div style="text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:18px 22px;max-width:280px">
 <h3 style="color:var(--blue);margin-bottom:12px;font-size:.9rem">Try this in the demo</h3>
@@ -691,14 +693,14 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div id="modal">
 <div id="modal-form">
 <h2>Share Your Feedback</h2>
-<p class="sub">Your input directly shapes the Phase 2 roadmap. Takes 2 minutes.</p>
-<div class="form-group"><label>Your Name (optional)</label><input type="text" id="f-name" placeholder="e.g. Alex Johnson"/></div>
-<div class="form-group"><label>Your Role</label><select id="f-role"><option value="">Select your role</option><option>CRO</option><option>VP Sales</option><option>Regional VP</option><option>Sales Director</option><option>ISG / Marketing Leader</option><option>Finance / Sales Ops</option><option>Engineering / Analytics</option><option>Other</option></select></div>
+<p class="sub">Your input directly shapes what gets built next. Takes 2 minutes.</p>
+<div class="form-group"><label>Your Name (optional)</label><input type="text" id="f-name" placeholder="e.g. Peter Mahoney"/></div>
+<div class="form-group"><label>Your Team / Role</label><select id="f-role"><option value="">Select your role</option><option>SFO Business Planning</option><option>SFO Leadership</option><option>Sales Analytics</option><option>Engineering / Analytics</option><option>Other</option></select></div>
 <div class="form-group"><label>Overall impression (1–5)</label><div class="star-row" id="stars"><span class="star" onclick="setStar(1)">⭐</span><span class="star" onclick="setStar(2)">⭐</span><span class="star" onclick="setStar(3)">⭐</span><span class="star" onclick="setStar(4)">⭐</span><span class="star" onclick="setStar(5)">⭐</span></div></div>
-<div class="form-group"><label>Most valuable to you</label><select id="f-valuable"><option value="">Select one</option><option>AI narrative explaining each KPI</option><option>Quarter-end forecast / attainment projection</option><option>Coverage → probability score</option><option>Win rate trend detection</option><option>Role-based personalised view</option><option>Conversational chat about live data</option><option>Proactive alerts (Phase 3)</option></select></div>
-<div class="form-group"><label>Phase priority — what should we build next?</label><select id="f-concern"><option value="">Select one</option><option>Phase 2: Forecasting + role profiles (Q3 2026)</option><option>Phase 3: Proactive alerts + threshold monitoring (Q4 2026)</option><option>Phase 4: Scenario modeling + deal prioritisation</option><option>Fix Phase 1 first — something is missing or wrong</option></select></div>
-<div class="form-group"><label>Would you use this in your workflow?</label><select id="f-use"><option value="">Select one</option><option>Yes — replace my current Power BI usage</option><option>Yes — alongside Power BI for the AI layer</option><option>Maybe — need to see forecasting first</option><option>No — not relevant to my role</option></select></div>
-<div class="form-group"><label>Any other feedback or ideas</label><textarea id="f-comments" rows="3" placeholder="What would make this a must-have for your weekly workflow?"></textarea></div>
+<div class="form-group"><label>Most valuable to you</label><select id="f-valuable"><option value="">Select one</option><option>AI narrative explaining each metric</option><option>Quarter-end attainment projection</option><option>Coverage → probability score</option><option>Win rate trend detection</option><option>Personalised view per person</option><option>Conversational chat about your data</option><option>Proactive alerts before problems escalate</option></select></div>
+<div class="form-group"><label>What should we build next?</label><select id="f-concern"><option value="">Select one</option><option>Phase 2: Forecasting + personalised views</option><option>Phase 3: Proactive alerts + threshold monitoring</option><option>Phase 4: Scenario modeling + deal prioritisation</option><option>Improve Phase 1 first — something is missing or wrong</option></select></div>
+<div class="form-group"><label>Would you use this in your workflow?</label><select id="f-use"><option value="">Select one</option><option>Yes — replace my manual prep work</option><option>Yes — alongside current dashboards for the AI layer</option><option>Maybe — need to see forecasting first</option><option>No — not relevant to my role</option></select></div>
+<div class="form-group"><label>Any other feedback or ideas</label><textarea id="f-comments" rows="3" placeholder="What would make this a must-have for your weekly business review prep?"></textarea></div>
 <div class="btn-row"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-submit" onclick="submitFeedback()">Submit →</button></div>
 </div>
 <div id="modal-success" style="display:none">
