@@ -1,0 +1,35 @@
+# Databricks Apps configuration — Atlas Pitch Presentation
+# Deploy this as a SEPARATE app from the main atlas-executive-insights app.
+# Name it something like "atlas-pitch" in the Databricks Apps UI.
+
+name: atlas-pitch
+description: Interactive team pitch presentation for Atlas Executive Insights
+
+command:
+  - python
+  - pitch/start.py
+
+requirements: pitch/requirements.txt
+
+env:
+  - name: PORT
+    value: "8001"
+
+  # Optional: override the feedback table
+  # - name: FEEDBACK_TABLE
+  #   value: "main.default.atlas_pitch_feedback"
+
+  # DATABRICKS_HOST and DATABRICKS_TOKEN are auto-injected by Databricks Apps
+
+  - name: DATABRICKS_HTTP_PATH
+    value: "/sql/1.0/warehouses/c24ee33594e13e93"
+
+  - name: ENVIRONMENT
+    value: "production"
+
+health_check:
+  path: /api/health
+  port: 8001
+  interval_seconds: 30
+
+port: 8001
