@@ -311,10 +311,10 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <h1>Atlas<br/><span class="grad">Executive Insights</span></h1>
 <p style="font-size:1.1rem;max-width:520px;margin:0 auto 28px">Not another dashboard. A decision intelligence layer built on top of your live Databricks data — telling sales leaders what to do, not just what happened.</p>
 <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-<span class="chip">Live on Databricks Apps</span>
-<span class="chip green">14 KPIs · Real-time</span>
-<span class="chip purple">Claude Sonnet 4.6</span>
-<span class="chip amber">Unity Catalog auth</span>
+<span class="chip">Live · Real GoTo Data</span>
+<span class="chip green">Sales Intelligence · Real-time</span>
+<span class="chip purple">AI-Powered Insights</span>
+<span class="chip amber">Your Data · Your Access</span>
 </div>
 </div>
 </div>
@@ -345,7 +345,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 </div>
 <div class="grid3" style="margin-top:20px">
 <div class="card"><div class="icon">🔭</div><h3>Predictive</h3><p>Where will your quarter land based on today's pipeline, win rate, and coverage trend?</p></div>
-<div class="card"><div class="icon">⚡</div><h3>Proactive</h3><p>Surfaces risks before the QBR — not after. Alerts when a KPI crosses a dangerous threshold.</p></div>
+<div class="card"><div class="icon">⚡</div><h3>Proactive</h3><p>Surfaces risks before your weekly pipeline review — not after. Alerts when a metric crosses a threshold that historically signals attainment risk.</p></div>
 <div class="card"><div class="icon">🎯</div><h3>Actionable</h3><p>Every insight ends with a specific recommendation tied to the data — not generic advice.</p></div>
 </div>
 </div>
@@ -364,7 +364,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="kpi-card"><div class="label">MQL Count</div><div class="value" style="color:var(--red)">412</div><div class="vs down">↓ 18% WoW</div></div>
 </div>
 <div class="atlas-box">
-<div class="head">🤖 Atlas says</div>
+<div class="head">🤖 Atlas Executive Insights</div>
 <div class="insight">Pipeline attainment is on pace, but two risk signals need attention: <strong>Win Rate dropped 3.2 pts QoQ</strong> — disproportionately in <strong>Enterprise NA</strong> where it fell from 34% to 27%. Coverage at <strong>2.1× is below the 2.5× historical threshold</strong> that correlates with quota attainment. Combined with the MQL drop, late-quarter pipeline replenishment is at risk.</div>
 <div class="action">▶ Recommended: Accelerate top 5 Enterprise NA deals in next 2 weeks. Review conversion drop from MQL → Opp — likely a lead quality or response time issue in that segment.</div>
 </div>
@@ -450,7 +450,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div>
 <h3>VP Sales asks: "Why is win rate down in Enterprise NA?"</h3>
 <p><em>Today:</em> 2-day Databricks query by analytics team. Result arrives Friday.<br/><em>With Atlas:</em> Chat interface, live data, 10 seconds.</p>
-<div class="result">Atlas: "Enterprise NA win rate dropped from 34% → 27% over 6 weeks. Pattern matches deals lost in 45–90 day range (AOS $85K+). Close rate on deals with &gt;2 stakeholders fell 8 pts. Suggest reviewing multi-thread strategy for large Enterprise deals."</div>
+<div class="result">Atlas Executive Insights: "Enterprise NA win rate dropped from 34% → 27% over 6 weeks. Pattern matches deals lost in the 45–90 day range (AOS $85K+). Close rate on deals with more than 2 stakeholders fell 8 pts — suggest reviewing multi-thread engagement strategy for large Enterprise deals."</div>
 </div>
 </div>
 <div class="scenario">
@@ -458,7 +458,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div>
 <h3>Monday morning: MQL count dropped 18% WoW. What do I tell my team?</h3>
 <p><em>Today:</em> Email Marketing. Wait for report. No context on whether it matters.<br/><em>With Atlas:</em> Proactive alert already in your dashboard at 8am.</p>
-<div class="result">Atlas: "MQL count fell 412 → 338 (18.6% WoW). Historical pipeline impact: each 10% MQL drop reduces next-quarter created pipeline by ~$2.1M at current conversion rates. At this rate, Q3 created pipeline is at risk unless volume recovers by week 10."</div>
+<div class="result">Atlas Executive Insights: "MQL count fell 412 → 338 (18.6% WoW). Based on GoTo's historical conversion rates, a 10% MQL drop typically reduces next-quarter created pipeline by ~$2.1M. At this pace, Q3 created pipeline target is at risk unless inbound volume recovers by Week 10."</div>
 </div>
 </div>
 <div class="scenario">
@@ -466,7 +466,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div>
 <h3>CFO asks: "Are we going to hit Q2 quota?"</h3>
 <p><em>Today:</em> Sales ops builds a spreadsheet. 1 day turnaround. Snapshot, not live.<br/><em>With Atlas:</em> Live pacing view with probability and trend in one click.</p>
-<div class="result">Atlas: "Pacing model: 87% attainment likely. Risk: win rate trend (-0.4 pts/week) and coverage at 2.1× are lagging signals. If both recover to Q1 levels, probability rises to 94%. Primary action lever: 3 at-risk Enterprise deals totalling $4.2M need executive escalation this week."</div>
+<div class="result">Atlas Executive Insights: "Pacing model shows 87% attainment likely based on current pipeline. Risk flags: win rate declining at -0.4 pts/week, coverage at 2.1× below the 2.5× threshold we've historically needed to close the quarter. If both stabilise at Q1 levels, probability rises to 94%. Immediate focus: 3 at-risk Enterprise deals totalling $4.2M need executive engagement this week."</div>
 </div>
 </div>
 </div>
@@ -480,7 +480,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="arch">
 <div class="arch-node"><div class="icon">🗄️</div><h3>Databricks</h3><p>Delta tables<br/>Unity Catalog<br/>Same warehouse as Hermes</p></div>
 <div class="arch-arrow">→</div>
-<div class="arch-node"><div class="icon">⚡</div><h3>FastAPI</h3><p>Python backend<br/>14 KPI endpoints<br/>2-min cache</p></div>
+<div class="arch-node"><div class="icon">⚡</div><h3>API Layer</h3><p>Python backend<br/>KPI endpoints<br/>2-min cache</p></div>
 <div class="arch-arrow">→</div>
 <div class="arch-node"><div class="icon">🔢</div><h3>Rule Engine</h3><p>Pacing calc<br/>Coverage model<br/>Win rate trend</p></div>
 <div class="arch-arrow">→</div>
@@ -495,7 +495,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 </div>
 <div class="grid2" style="margin-top:18px">
 <div class="card"><h3>Source Tables (live)</h3><div class="chip-list" style="margin-top:8px"><span class="chip">gaim_pipeline_daily_snapshot</span><span class="chip">gaim_snapshot_pipeline_created_cq_daily</span><span class="chip">cds_targets_monthly</span><span class="chip">MQL count</span></div></div>
-<div class="card"><h3>14 KPIs tracked</h3><div class="chip-list" style="margin-top:8px"><span class="chip green">Won Pipeline</span><span class="chip green">Win Rate</span><span class="chip green">Coverage</span><span class="chip green">Pipeline Att.</span><span class="chip green">MQL Count</span><span class="chip green">ADS · AOS · Close Rate</span><span class="chip green">+6 more</span></div></div>
+<div class="card"><h3>Key KPIs tracked</h3><div class="chip-list" style="margin-top:8px"><span class="chip green">Won Pipeline</span><span class="chip green">Win Rate</span><span class="chip green">Coverage</span><span class="chip green">Pipeline Att.</span><span class="chip green">MQL Count</span><span class="chip green">ADS · AOS · Close Rate</span><span class="chip green">Created Pipeline</span><span class="chip green">+ more</span></div></div>
 </div>
 </div>
 </div>
@@ -510,7 +510,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="ph-label">✅ Phase 1 — Intelligence Layer · Live Now</div>
 <h3>Know what's happening</h3>
 <ul>
-<li>14 live KPIs from Databricks (real data, not mocks)</li>
+<li>Live KPIs pulled directly from Databricks (real data, not mocks)</li>
 <li>AI narrative per KPI explaining the "so what"</li>
 <li>Conversational chat grounded in live numbers</li>
 <li>Filter by Geo / Channel / Product</li>
@@ -539,7 +539,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <li>Win rate decline detection (weekly trend check)</li>
 <li>Rep-level rollup (pending governance sign-off)</li>
 <li>Slack / email alert integration for critical signals</li>
-<li>Anomaly detection across all 14 KPIs</li>
+<li>Anomaly detection across all tracked KPIs</li>
 </ul>
 </div>
 <div class="phase p4">
@@ -587,7 +587,7 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide-inner">
 <div class="tag">User-Centric Design</div>
 <h2>One app, scoped to each person's world</h2>
-<p style="margin-bottom:4px">Phase 1: everyone with app access sees all 14 KPIs. <strong style="color:var(--amber)">Phase 2: role-scoped views, auto-applied on login.</strong></p>
+<p style="margin-bottom:4px">Phase 1: everyone with app access sees all tracked KPIs. <strong style="color:var(--amber)">Phase 2: role-scoped views, auto-applied on login.</strong></p>
 <table class="role-table">
 <thead><tr><th>Role</th><th>Default KPIs</th><th>Data Scope</th><th>Key Question Atlas Answers</th></tr></thead>
 <tbody>
@@ -623,15 +623,15 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <div class="slide" data-idx="12">
 <div class="slide-inner" style="text-align:center">
 <div class="tag">Live Demo</div>
-<h2>See Phase 1 — live now on Databricks Apps</h2>
+<h2>See Phase 1 — live now</h2>
 <div style="background:var(--surface);border:2px dashed rgba(79,156,249,.4);border-radius:16px;padding:32px;margin-top:18px">
-<p style="font-size:.95rem;color:var(--muted);margin-bottom:18px">The app is deployed at <strong style="color:var(--blue)">goto-shared/gaim-executive-app</strong> on Databricks Apps.</p>
+<p style="font-size:.95rem;color:var(--muted);margin-bottom:18px">Atlas Executive Insights is deployed and live. Log in with your GoTo SSO — it reads your data in real time from the same Databricks warehouse that powers KPI Trends and Performance Hub.</p>
 <div style="display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:18px">
 <div style="text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:18px 22px;max-width:280px">
 <h3 style="color:var(--blue);margin-bottom:12px;font-size:.9rem">Try this in the demo</h3>
 <ol style="list-style:none;display:flex;flex-direction:column;gap:9px">
-<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">1</span>Log in with Databricks SSO</li>
-<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">2</span>See 14 KPIs load from live data</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">1</span>Log in with your GoTo SSO</li>
+<li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">2</span>See your live KPIs load from real GoTo data</li>
 <li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">3</span>Click Win Rate → read AI narrative</li>
 <li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">4</span>Filter to Enterprise → watch it update</li>
 <li style="font-size:.85rem;display:flex;gap:8px;align-items:flex-start"><span style="background:rgba(79,156,249,.2);color:var(--blue);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">5</span>Chat: "why is win rate down?"</li>
@@ -659,12 +659,12 @@ p{font-size:1rem;line-height:1.7;color:#94a3b8}
 <h1>Atlas <span class="grad">Executive Insights</span></h1>
 <p style="font-size:1rem;max-width:500px;margin:14px auto 0;color:var(--muted)">Phase 1 is live. The path to a real prediction and decision intelligence layer is defined. Your feedback and governance decisions are the next unlock.</p>
 <div style="display:flex;align-items:center;justify-content:center;gap:16px;margin:24px 0;flex-wrap:wrap">
-<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🗄️ Databricks · Unity Catalog</span>
-<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🤖 Claude Sonnet 4.6</span>
-<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">⚛️ React + FastAPI</span>
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">� Built on GoTo's Live Data</span>
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🤖 AI-Powered Insights</span>
+<span style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:28px;padding:8px 16px;font-size:.82rem;font-weight:600">🔒 Your Data · Your Access</span>
 </div>
 <button class="btn-submit" style="padding:13px 36px;font-size:.95rem;cursor:pointer;border-radius:11px;width:auto" onclick="openModal()">📝 Leave Your Feedback</button>
-<p style="margin-top:18px;font-size:.82rem;color:var(--muted)">Find me in Slack · <strong style="color:var(--blue)">goto-shared/gaim-executive-app</strong> on GitHub</p>
+<p style="margin-top:18px;font-size:.82rem;color:var(--muted)">Find me in <strong style="color:var(--blue)">#gaim-atlas</strong> on Slack or reach out directly</p>
 </div>
 </div>
 
