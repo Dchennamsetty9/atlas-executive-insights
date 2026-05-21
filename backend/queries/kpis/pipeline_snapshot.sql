@@ -1,81 +1,50 @@
 -- queries/kpis/pipeline_snapshot.sql
--- Core pipeline KPIs: Won Pipeline, Won Volume, Win Rate, ADS, Active Pipeline.
--- Compares current snapshot vs 90 days prior.
+-- Won pipeline KPIs from federated.sales.metis_won_opps_fact.
+-- Active pipeline, win rate, and lost volume are not available in the federated
+-- layer; they return NULL (coerced to 0 in gaim_data_service.py).
+-- Compares current period vs 90 days prior (same-length window shifted back).
 --
--- Placeholders: {catalog}, {schema}, {filter_clause}
+-- Placeholders: {start_date}, {end_date}, {filter_clause}
 -- Note: {filter_clause} is constructed from VALIDATED whitelist values only —
 --       never from raw user input.
---
--- Column notes (gaim_pipeline_daily_snapshot):
---   data_day            = STRING in 'yyyyMMdd' format → cast with TO_DATE(data_day,'yyyyMMdd')
---   amount_towards_plan = pipeline dollar amount (NOT 'amount')
---   is_won              = 'true'/'false' (lowercase string)
---   market              = sales market filter column (NOT 'sales_market')
 WITH latest AS (
-    SELECT
-        MAX(data_day)                                                        AS d,
-        DATE_FORMAT(
-            DATE_ADD(TO_DATE(MAX(data_day), 'yyyyMMdd'), -90),
-            'yyyyMMdd'
-        )                                                                    AS d_prev
-    FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-),
-snap AS (
-    SELECT *
-    FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-    WHERE data_day = (SELECT d FROM latest)
-      AND xtxtype <> 'Cancel'
-      {filter_clause}
+    SELECT MAX(data_date) AS max_date
+    FROM   federated.sales.metis_won_opps_fact
 ),
 won AS (
     SELECT
-        SUM(amount_towards_plan)                      AS won_pipeline,
-        COUNT(DISTINCT opportunities_created_ids)     AS won_volume
-    FROM snap
-    WHERE is_won = 'true'
-),
-lost AS (
-    SELECT
-        COUNT(DISTINCT opportunities_created_ids)     AS lost_volume
-    FROM snap
-    WHERE is_won = 'false'
-      AND stage_name IN ('Closed Lost', 'Closed-Cancelled')
-),
-active AS (
-    SELECT
-        SUM(amount_towards_plan)                      AS active_pipeline,
-        COUNT(DISTINCT opportunities_created_ids)     AS open_volume
-    FROM snap
-    WHERE stage_name NOT IN ('Closed Won', 'Closed Lost', 'Closed-Cancelled')
+        COALESCE(SUM(w.amount_towards_plan), 0)           AS won_pipeline,
+        COUNT(DISTINCT w.salesforce_opportunity_id)        AS won_volume
+    FROM federated.sales.metis_won_opps_fact w
+    CROSS JOIN latest ld
+    WHERE w.data_date  = ld.max_date
+      AND w.close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}')
+      {filter_clause}
 ),
 prev AS (
     SELECT
-        SUM(amount_towards_plan)                      AS prev_won_pipeline,
-        COUNT(DISTINCT opportunities_created_ids)     AS prev_won_volume
-    FROM {catalog}.{schema}.gaim_pipeline_daily_snapshot
-    WHERE data_day = (SELECT d_prev FROM latest)
-      AND is_won = 'true'
-      AND xtxtype <> 'Cancel'
+        COALESCE(SUM(w.amount_towards_plan), 0)           AS prev_won_pipeline,
+        COUNT(DISTINCT w.salesforce_opportunity_id)        AS prev_won_volume
+    FROM federated.sales.metis_won_opps_fact w
+    CROSS JOIN latest ld
+    WHERE w.data_date  = ld.max_date
+      AND w.close_date BETWEEN DATE_ADD(DATE('{start_date}'), -90)
+                           AND DATE_ADD(DATE('{end_date}'),   -90)
       {filter_clause}
 )
 SELECT
     w.won_pipeline,
     w.won_volume,
-    l.lost_volume,
-    a.active_pipeline,
-    a.open_volume,
+    CAST(NULL AS DOUBLE)  AS lost_volume,
+    CAST(NULL AS DOUBLE)  AS active_pipeline,
+    CAST(NULL AS DOUBLE)  AS open_volume,
     p.prev_won_pipeline,
     p.prev_won_volume,
-    -- Win Rate: resolved deals only (not affected by open-deal timing)
-    CASE WHEN (w.won_volume + l.lost_volume) > 0
-         THEN w.won_volume * 100.0 / (w.won_volume + l.lost_volume)
-         ELSE 0 END AS win_rate_pct,
+    CAST(NULL AS DOUBLE)  AS win_rate_pct,
     -- Average Deal Size
     CASE WHEN w.won_volume > 0
          THEN w.won_pipeline / w.won_volume
-         ELSE 0 END AS ads,
-    -- Average Open Opportunity Size
-    CASE WHEN a.open_volume > 0
-         THEN a.active_pipeline / a.open_volume
-         ELSE 0 END AS open_opp_size
-FROM won w, lost l, active a, prev p
+         ELSE 0 END       AS ads,
+    CAST(NULL AS DOUBLE)  AS open_opp_size
+FROM won w
+CROSS JOIN prev p

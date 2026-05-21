@@ -56,12 +56,16 @@ _PRODUCT_MAP = {
 }
 
 
-def _filter_sql(filters: Dict[str, str], alias: str = "") -> str:
+def _filter_sql(filters: Dict[str, str], alias: str = "", channel_col: str = "sales_channel") -> str:
     """Build AND-prefixed WHERE fragment from filter dict.
 
     All user-supplied values are validated against strict whitelists before
     being embedded in SQL.  Unrecognised values are silently ignored so that
     the query degrades to an unfiltered result rather than raising an error.
+
+    channel_col: column name for the channel filter.  Use "sales_channel" for
+        federated.sales.* tables (default) and "smoothed_channel" for raw
+        datagroup_mdl.mdl_sales_analytics.* tables.
     """
     prefix = f"{alias}." if alias else ""
     parts  = []
@@ -72,7 +76,7 @@ def _filter_sql(filters: Dict[str, str], alias: str = "") -> str:
 
     channel = filters.get("channel", "")
     if channel and channel != "All" and channel in _VALID_CHANNEL:
-        parts.append(f"AND {prefix}smoothed_channel = '{channel}'")
+        parts.append(f"AND {prefix}{channel_col} = '{channel}'")
 
     product = filters.get("product", "")
     if product and product != "All":
@@ -175,30 +179,30 @@ class GAIMDataService:
         Uses a single multi-CTE query where possible for efficiency.
         """
         filter_clause = _filter_sql(filters)
+        # Raw-table queries (MQL) need smoothed_channel instead of sales_channel
+        filter_clause_raw = _filter_sql(filters, channel_col="smoothed_channel")
         c, s = CATALOG, SCHEMA
 
         pipeline_sql = load_query(
             "kpis/pipeline_snapshot",
-            catalog=c, schema=s,
+            start_date=start_date, end_date=end_date,
             filter_clause=filter_clause,
         )
         created_sql = load_query(
             "kpis/created_pipeline",
-            catalog=c, schema=s,
             start_date=start_date, end_date=end_date,
             filter_clause=filter_clause,
         )
         targets_sql = load_query(
             "kpis/targets",
-            catalog=c, schema=s,
-            start_date=start_date, end_date=end_date,
+            start_date=start_date,
             filter_clause=filter_clause,
         )
         mql_sql = load_query(
             "kpis/mql",
             catalog=c, schema=s,
             start_date=start_date, end_date=end_date,
-            filter_clause=filter_clause,
+            filter_clause=filter_clause_raw,
         )
 
         # Execute all queries
@@ -227,13 +231,17 @@ class GAIMDataService:
         opps_created     = float(c_.get("opps_created", 0)   or 0)
         created_pipeline = float(c_.get("created_pipeline", 0) or 0)
 
-        # Targets from cds_targets_monthly (full quarter totals)
+        # Targets from federated.sales.metis_targets_summary
         target_won_pipe      = float(t.get("target_won_pipeline",   0) or 0)
         target_won_vol       = float(t.get("target_won_volume",     0) or 0)
         target_pipeline      = float(t.get("target_pipeline",       0) or 0)
         target_mql           = float(t.get("target_mql",            0) or 0)
 
-        # Pro-rate full-quarter targets to QTD elapsed days
+        # Paced targets: prefer pre-computed values from metis_targets_summary;
+        # fall back to Python pro-ration (still needed for MQL which has no federated table).
+        paced_won_table    = float(t.get("paced_won_amount",    0) or 0)
+        paced_opened_table = float(t.get("paced_opened_amount", 0) or 0)
+
         from datetime import datetime as _dt
         q_start_dt  = _dt.strptime(start_date, "%Y-%m-%d")
         today_dt    = _dt.strptime(end_date,   "%Y-%m-%d")
@@ -248,9 +256,9 @@ class GAIMDataService:
         days_elapsed = max((today_dt - q_start_dt).days + 1, 1)
         pace_factor  = days_elapsed / days_in_q
 
-        paced_won_target  = target_won_pipe * pace_factor
-        paced_pipe_target = target_pipeline * pace_factor
-        paced_mql_target  = target_mql      * pace_factor
+        paced_won_target  = paced_won_table    if paced_won_table    > 0 else target_won_pipe * pace_factor
+        paced_pipe_target = paced_opened_table if paced_opened_table > 0 else target_pipeline * pace_factor
+        paced_mql_target  = target_mql         * pace_factor
 
         mql_count        = float(m.get("mql_reached", 0)    or 0)
         prev_mql         = mql_count * 0.9   # No prior-period MQL table; use 10% growth estimate
@@ -369,17 +377,19 @@ class GAIMDataService:
         filters:    Dict[str, str],
     ) -> List[Dict[str, Any]]:
         """Return daily [{date, value}] for a single KPI — used by KPIDetailModal."""
-        f    = _filter_sql(filters)
-        c, s = CATALOG, SCHEMA
+        # Federated tables use sales_channel; raw tables use smoothed_channel.
+        f     = _filter_sql(filters)
+        f_raw = _filter_sql(filters, channel_col="smoothed_channel")
+        c, s  = CATALOG, SCHEMA
 
         queries = {
             "won_pipeline": f"""
-                SELECT data_day AS date,
+                SELECT close_date AS date,
                        SUM(amount_towards_plan) AS value
-                FROM {c}.{s}.gaim_pipeline_daily_snapshot
-                WHERE is_won='true' AND xtxtype<>'Cancel'
-                  AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
-                GROUP BY data_day ORDER BY data_day
+                FROM federated.sales.metis_won_opps_fact
+                WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
+                  AND close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                GROUP BY close_date ORDER BY close_date
             """,
             "active_pipeline": f"""
                 SELECT data_day AS date,
@@ -387,29 +397,29 @@ class GAIMDataService:
                 FROM {c}.{s}.gaim_pipeline_daily_snapshot
                 WHERE stage_name NOT IN ('Closed Won','Closed Lost','Closed-Cancelled')
                   AND xtxtype<>'Cancel'
-                  AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
+                  AND data_day BETWEEN '{start_date}' AND '{end_date}' {f_raw}
                 GROUP BY data_day ORDER BY data_day
             """,
             "created_pipeline": f"""
                 SELECT pipeline_entered_date AS date,
                        SUM(amount_towards_plan) AS value
-                FROM {c}.{s}.gaim_snapshot_pipeline_created_cq_daily
-                WHERE xtxtype<>'Cancel'
-                  AND pipeline_entered_date BETWEEN '{start_date}' AND '{end_date}' {f}
+                FROM federated.sales.metis_opened_opps_fact
+                WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
+                  AND pipeline_entered_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
                 GROUP BY pipeline_entered_date ORDER BY pipeline_entered_date
             """,
             "won_volume": f"""
-                SELECT data_day AS date,
-                       COUNT(DISTINCT opportunities_created_ids) AS value
-                FROM {c}.{s}.gaim_pipeline_daily_snapshot
-                WHERE is_won='true' AND xtxtype<>'Cancel'
-                  AND data_day BETWEEN '{start_date}' AND '{end_date}' {f}
-                GROUP BY data_day ORDER BY data_day
+                SELECT close_date AS date,
+                       COUNT(DISTINCT salesforce_opportunity_id) AS value
+                FROM federated.sales.metis_won_opps_fact
+                WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
+                  AND close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                GROUP BY close_date ORDER BY close_date
             """,
             "mql_count": f"""
                 SELECT report_date AS date, SUM(CASE WHEN mqls=1 THEN 1 ELSE 0 END) AS value
                 FROM {c}.{s}.gaim_mql_daily_snapshot
-                WHERE report_date BETWEEN '{start_date}' AND '{end_date}' {f}
+                WHERE report_date BETWEEN '{start_date}' AND '{end_date}' {f_raw}
                 GROUP BY report_date ORDER BY report_date
             """,
         }
