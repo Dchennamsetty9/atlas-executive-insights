@@ -103,7 +103,10 @@ class GAIMDataService:
         # token in .env but without being on the Databricks internal network.
         _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
         _force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
-        self.available = token_available() and (_on_databricks or _force_live)
+        # On Databricks Apps DATABRICKS_HOST is always set and the user token
+        # is forwarded per-request via x-forwarded-access-token (see middleware).
+        # Don't require a static token at startup — the ContextVar supplies it.
+        self.available = DATABRICKS_AVAILABLE and (_on_databricks or _force_live or token_available())
 
     # ── Public API ────────────────────────────────────────────────────────────
 

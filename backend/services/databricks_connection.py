@@ -12,6 +12,7 @@ Token priority (first non-empty wins):
 import logging
 import os
 import time
+from contextvars import ContextVar
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -34,19 +35,34 @@ HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13
 # On Databricks Apps (warm warehouse, local network) this is plenty.
 _RETRY_TIMEOUT = 12.0
 
+# Per-request token (set by inject_forwarded_token middleware in main.py).
+# Databricks Apps forwards the active user's OAuth token as
+# x-forwarded-access-token on every request; capturing it here allows all
+# downstream SQL calls within that request to run as the user rather than
+# as the app's service account.
+_request_token: ContextVar[str] = ContextVar("_request_token", default="")
+
+
+def set_request_token(token: str) -> None:
+    """Called by the request middleware to store the forwarded user token."""
+    _request_token.set(token)
+
 
 def _resolve_token() -> str:
     """
     Return the active Databricks PAT from any configured source.
 
     Priority:
-      1. DATABRICKS_TOKEN env var  — set by Databricks Apps at runtime
-      2. DATABRICKS_ACCESS_TOKEN env var — set in local .env (loaded by
+      1. Per-request ContextVar   — set by middleware from x-forwarded-access-token
+         (Databricks Apps user identity passthrough)
+      2. DATABRICKS_TOKEN env var  — injected by Databricks Apps service account
+      3. DATABRICKS_ACCESS_TOKEN env var — set in local .env (loaded by
          pydantic-settings when the Settings singleton is constructed)
-      3. settings.databricks_access_token — direct pydantic-settings read
-         (catches the case where pydantic-settings has the value but hasn't
-         propagated it to os.environ, which is the default in v2)
+      4. settings.databricks_access_token — direct pydantic-settings read
     """
+    tok = _request_token.get()
+    if tok:
+        return tok
     token = os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
     if not token:
         try:

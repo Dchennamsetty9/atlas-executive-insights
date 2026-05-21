@@ -32,9 +32,12 @@ _POLL_TIMEOUT   = 60  # seconds before giving up
 
 
 def _token() -> str:
-    """Return PAT â€” prefers DATABRICKS_TOKEN, falls back to DATABRICKS_ACCESS_TOKEN."""
+    """Return active token — checks per-request ContextVar first (Databricks Apps
+    user identity passthrough), then falls back to static env vars."""
+    from services.databricks_connection import _request_token as _req_tok
     return (
-        os.environ.get("DATABRICKS_TOKEN")
+        _req_tok.get()
+        or os.environ.get("DATABRICKS_TOKEN")
         or os.environ.get("DATABRICKS_ACCESS_TOKEN")
         or ""
     )

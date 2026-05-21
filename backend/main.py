@@ -8,7 +8,7 @@ import os
 import signal
 import sys
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -21,6 +21,7 @@ import pandas as pd
 from config.settings import settings
 from services.data_fetcher import DataFetcher  # Direct Databricks connection (live queries)
 from services.gaim_data_service import GAIMDataService  # GAIM-specific KPI queries with exact formulas
+from services.databricks_connection import set_request_token  # Per-request token forwarding
 from services.data_cache import data_cache             # In-memory TTL cache (15-min refresh)
 from services.forecasting import ForecastingService
 from services.insights_engine import InsightsEngine
@@ -65,6 +66,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def inject_forwarded_token(request: Request, call_next):
+    """
+    Capture the user's OAuth token forwarded by Databricks Apps and store it
+    in a ContextVar so all downstream Databricks SQL calls within this request
+    run as the user (user identity passthrough).
+
+    Databricks Apps forwards the token in the x-forwarded-access-token header.
+    When that header is absent (local dev, health checks) the ContextVar stays
+    empty and _resolve_token() falls back to DATABRICKS_TOKEN / .env.
+    """
+    token = request.headers.get("x-forwarded-access-token", "")
+    if token:
+        set_request_token(token)
+    return await call_next(request)
 
 # Initialize services with DIRECT Databricks connection
 data_fetcher = DataFetcher()
