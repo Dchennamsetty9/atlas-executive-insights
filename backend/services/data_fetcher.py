@@ -525,7 +525,66 @@ class DataFetcher:
                 'revenue': [1800000, 1950000, 2100000, 2050000, 2200000, 2300000]
             })
         return pd.DataFrame()
-    
+
+    # ── Pre-computed ARR forecast from Databricks notebook ────────────────────
+
+    ARR_FORECAST_TABLE = (
+        "datagroup_mdl.mdl_sales_analytics.arr_forecast_prophet"
+    )
+
+    async def fetch_arr_forecast_results(
+        self,
+        geo: str = "Total",
+        product_group: str = "Total",
+        run_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Read pre-computed Prophet forecast from the Delta table written by the
+        ARR Forecast Prophet Databricks notebook.
+
+        Returns a DataFrame with columns:
+            forecast_date, most_likely, worst_case, best_case,
+            actual, is_historical, model_mape, run_date
+        Falls back to an empty DataFrame (caller can fall through to inline Prophet).
+        """
+        if not self.use_databricks:
+            return pd.DataFrame()
+
+        run_filter = (
+            f"run_date = '{run_date}'"
+            if run_date
+            else f"run_date = (SELECT MAX(run_date) FROM {self.ARR_FORECAST_TABLE})"
+        )
+        query = f"""
+            SELECT
+                CAST(forecast_date AS DATE) AS forecast_date,
+                most_likely,
+                worst_case,
+                best_case,
+                actual,
+                is_historical,
+                model_mape,
+                run_date
+            FROM {self.ARR_FORECAST_TABLE}
+            WHERE geo           = '{geo}'
+              AND product_group = '{product_group}'
+              AND {run_filter}
+            ORDER BY forecast_date
+        """
+        try:
+            df = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.execute_query(query)
+                ),
+                timeout=15.0,
+            )
+            if not df.empty:
+                df["forecast_date"] = pd.to_datetime(df["forecast_date"])
+            return df
+        except Exception as e:
+            print(f"[DataFetcher] fetch_arr_forecast_results failed: {e}")
+            return pd.DataFrame()
+
     def _get_mock_historical_data(self, metric: str) -> pd.DataFrame:
         """Mock historical data for forecasting"""
         dates = pd.date_range(end=datetime.now(), periods=180, freq='D')

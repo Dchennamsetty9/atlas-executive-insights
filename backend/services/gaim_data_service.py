@@ -106,7 +106,16 @@ class GAIMDataService:
         # On Databricks Apps DATABRICKS_HOST is always set and the user token
         # is forwarded per-request via x-forwarded-access-token (see middleware).
         # Don't require a static token at startup — the ContextVar supplies it.
-        self.available = DATABRICKS_AVAILABLE and (_on_databricks or _force_live or token_available())
+        _demo_mode = os.getenv("DEMO_MODE", "false").lower() == "true"
+        try:
+            from config.settings import settings as _settings
+            _demo_mode = _demo_mode or _settings.demo_mode
+        except Exception:
+            pass
+        self.available = (not _demo_mode) and DATABRICKS_AVAILABLE and (_on_databricks or _force_live or token_available())
+        # Circuit-breaker: set to False after first connection failure so
+        # subsequent requests return demo data instantly without blocking threads.
+        self._db_reachable = True
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -128,16 +137,18 @@ class GAIMDataService:
         if filters is None:
             filters = {}
 
-        if self.available:
+        if self.available and self._db_reachable:
             try:
                 return await asyncio.wait_for(
                     asyncio.to_thread(self._query_kpis, start_date, end_date, filters),
                     timeout=15.0,  # 15 s: covers 4 queries × 5 s socket timeout + overhead
                 )
             except asyncio.TimeoutError:
-                print("[GAIMDataService] Databricks query timed out after 20s. Using demo data.")
+                print("[GAIMDataService] Databricks query timed out. Circuit breaker open — using demo data.")
+                self._db_reachable = False
             except Exception as exc:
-                print(f"[GAIMDataService] Databricks query failed: {exc}. Using demo data.")
+                print(f"[GAIMDataService] Databricks query failed: {exc}. Circuit breaker open — using demo data.")
+                self._db_reachable = False
 
         return _demo_kpis()
 
@@ -238,6 +249,7 @@ class GAIMDataService:
         target_won_pipe      = float(t.get("target_won_pipeline",   0) or 0)
         target_won_vol       = float(t.get("target_won_volume",     0) or 0)
         target_pipeline      = float(t.get("target_pipeline",       0) or 0)
+        target_pipeline_vol  = float(t.get("target_pipeline_volume",0) or 0)  # opened opps target
         target_mql           = float(t.get("target_mql",            0) or 0)
 
         # Paced targets: prefer pre-computed values from metis_targets_summary;
@@ -304,7 +316,7 @@ class GAIMDataService:
             {
                 "metric_name":           "opps_created",
                 "metric_value":          opps_created,
-                "target_value":          target_won_vol or opps_created * 1.1,
+                "target_value":          target_pipeline_vol or opps_created * 1.1,
                 "previous_period_value": opps_created * 0.9,
             },
             {
@@ -528,8 +540,22 @@ async def get_current_kpi_data(
         # ADS
         "ads_actual":          actual("ads"),
         "ads_target":          target("ads"),
-        # Rates (kept as 0-100 percentages — InsightEngine normalises internally)
-        "close_rate_vol":      actual("close_rate"),
+        # Opened opps (top of funnel)
+        "opps_created_actual": actual("opps_created"),
+        "opps_created_target": target("opps_created"),
+        # Created pipeline (dollar funnel top)
+        "created_pipeline_actual": actual("created_pipeline"),
+        "created_pipeline_target": target("created_pipeline"),
+        # Average Opp Size
+        "aos_actual":          actual("aos"),
+        "aos_target":          target("aos"),
+        # Close Rate (Vol) — 0-100 scale
+        "close_rate_vol":          actual("close_rate"),
+        "close_rate_vol_target":   target("close_rate"),
+        # Close Rate ($) — 0-100 scale
+        "close_rate_dollar":        actual("close_rate_dollar"),
+        "close_rate_dollar_target": target("close_rate_dollar"),
+        # Win rate (resolved deals only)
         "win_rate":            actual("win_rate"),
         # Active pipeline
         "active_pipeline_actual": actual("active_pipeline"),

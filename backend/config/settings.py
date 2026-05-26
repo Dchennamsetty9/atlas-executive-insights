@@ -54,7 +54,43 @@ class Settings(BaseSettings):
     # Forecasting
     forecast_default_periods: int = 90
     forecast_confidence_interval: float = 0.95
-    
+
+    # Set DEMO_MODE=true in .env to skip Databricks entirely and use built-in demo data.
+    demo_mode: bool = False
+
+    # ── Notifications ─────────────────────────────────────────────────────────
+    # SMTP (email alerts)
+    smtp_host: str = os.getenv("SMTP_HOST", "")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str = os.getenv("SMTP_USER", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from: str = os.getenv("SMTP_FROM", "atlas-alerts@goto.com")
+    smtp_tls: bool = os.getenv("SMTP_TLS", "true").lower() == "true"
+
+    # Slack (webhook-based alerts)
+    slack_webhook_url: str = os.getenv("SLACK_WEBHOOK_URL", "")
+    slack_channel: str = os.getenv("SLACK_CHANNEL", "#atlas-alerts")
+
+    # Alert thresholds (default: alert when metric drops below N% of target)
+    alert_threshold_at_risk: float = float(os.getenv("ALERT_THRESHOLD_AT_RISK", "0.90"))
+    alert_threshold_critical: float = float(os.getenv("ALERT_THRESHOLD_CRITICAL", "0.75"))
+
+    # ── User Preferences Delta table (Databricks) ─────────────────────────────
+    user_prefs_catalog: str = os.getenv("USER_PREFS_CATALOG", "datagroup_mdl")
+    user_prefs_schema: str = os.getenv("USER_PREFS_SCHEMA", "mdl_sales_analytics")
+    user_prefs_table: str = os.getenv("USER_PREFS_TABLE", "atlas_user_preferences")
+    actions_table: str = os.getenv("ACTIONS_TABLE", "atlas_executive_actions")
+    notifications_table: str = os.getenv("NOTIFICATIONS_TABLE", "atlas_notifications")
+
+    # ── Gold Layer (pre-computed Delta tables) ────────────────────────────────
+    atlas_catalog: str = os.getenv("ATLAS_CATALOG", "datagroup_mdl")
+    atlas_schema: str = os.getenv("ATLAS_SCHEMA", "atlas")
+
+    # ── AWS SES (email notifications via Amazon SES) ──────────────────────────
+    # When ses_region is set, SES is preferred over SMTP.
+    ses_region: str = os.getenv("AWS_SES_REGION", "")
+    ses_from_email: str = os.getenv("SES_FROM_EMAIL", "atlas-alerts@goto.com")
+
     class Config:
         env_file = ".env"
         case_sensitive = False

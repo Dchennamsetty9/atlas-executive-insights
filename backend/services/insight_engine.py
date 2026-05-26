@@ -30,21 +30,27 @@ class InsightEngine:
 
     def decompose_revenue_gap(self, data: dict) -> List[Dict]:
         """
-        Translates each KPI gap into revenue dollar impact.
+        Dollarized impact decomposition — exact methodology from the KPI Trends dashboard.
 
-        Formula: "If this KPI had been on target, how much would CWA change?"
+        Two parallel funnels both reconcile to Won Amount:
 
-        Impact formulas:
-          Won Opps Impact   = (Actual won opps - Target won opps) x Target ADS
-          ADS Impact        = (Actual ADS - Target ADS) x Actual won opps
-          Opened Opps Impact= (Actual opened - Target opened) x Target CR x Target ADS
-          Close Rate Impact = Actual opened x (Actual CR - Target CR) x Target ADS
-          Pipeline Impact   = (Actual pipeline - Target pipeline) x Target close rate
-          AOS Impact        = Actual opened x (Actual AOS - Target AOS) x Target CR
+          Opp Volume Funnel
+          ─────────────────
+          Opened Opps impact     = (actual − target) × target_CR_vol × target_ADS
+          Close Rate (Vol) impact= actual_opened × (actual_CR_vol − target_CR_vol) × target_ADS
+          Won Opps impact        = (actual − target) × target_ADS          ← sum of above two
+          ADS impact             = actual_won_opps × (actual_ADS − target_ADS)
+          Won Amount impact      = actual − target                          ← sum of Won Opps + ADS
 
-        Use impact % to prioritize:
-          Large negative pipeline + small close rate gap -> VOLUME problem
-          Large negative close rate + small pipeline gap -> CONVERSION problem
+          Dollar Funnel
+          ─────────────
+          Avg Opp Size impact    = actual_opened × (actual_AOS − target_AOS) × target_CR_dollar
+          Pipeline impact        = (actual − target) × target_CR_dollar
+          Close Rate ($) impact  = actual_pipeline × (actual_CR_dollar − target_CR_dollar)
+          Won Amount impact      = actual − target                          ← sum of Pipeline + CR($)
+
+        Rates from data dict are on the 0-100 scale; divide by 100 for formula use.
+        Returns an insight for every call (positive gap = tailwind analysis).
         """
         insights = []
 
@@ -52,39 +58,105 @@ class InsightEngine:
         cwa_target = float(data.get("won_pipeline_target") or 0)
         cwa_gap    = cwa_actual - cwa_target
 
-        if cwa_gap >= 0 or cwa_target == 0:
+        if cwa_target == 0:
             return insights
 
-        ads_actual      = float(data.get("ads_actual")      or 0)
-        ads_target      = float(data.get("ads_target")      or 0)
-        won_opps_actual = float(data.get("won_opps_actual") or 0)
-        won_opps_target = float(data.get("won_opps_target") or 0)
+        # Pull all inputs
+        won_opps_actual     = float(data.get("won_opps_actual")         or 0)
+        won_opps_target     = float(data.get("won_opps_target")         or 0)
+        ads_actual          = float(data.get("ads_actual")              or 0)
+        ads_target          = float(data.get("ads_target")              or 0)
+        opps_actual         = float(data.get("opps_created_actual")     or 0)
+        opps_target         = float(data.get("opps_created_target")     or 0)
+        pipeline_actual     = float(data.get("created_pipeline_actual") or 0)
+        pipeline_target     = float(data.get("created_pipeline_target") or 0)
+        aos_actual          = float(data.get("aos_actual")              or 0)
+        aos_target          = float(data.get("aos_target")              or 0)
 
-        ads_impact      = (ads_actual - ads_target) * won_opps_actual
-        won_opps_impact = (won_opps_actual - won_opps_target) * (ads_target or ads_actual)
+        # Rates: stored 0-100, convert to fractions for formula
+        cr_vol_actual   = float(data.get("close_rate_vol")           or 0) / 100
+        cr_vol_target   = float(data.get("close_rate_vol_target")    or 0) / 100
+        cr_dol_actual   = float(data.get("close_rate_dollar")        or 0) / 100
+        cr_dol_target   = float(data.get("close_rate_dollar_target") or 0) / 100
+
+        # Guard against zero targets — fall back to actuals so the formula still runs
+        ads_target     = ads_target     or ads_actual
+        cr_vol_target  = cr_vol_target  or cr_vol_actual
+        cr_dol_target  = cr_dol_target  or cr_dol_actual
+
+        # ── Opp Volume Funnel ──────────────────────────────────────────────────
+        opened_opps_impact = (opps_actual     - opps_target)    * cr_vol_target * ads_target
+        cr_vol_impact      = opps_actual      * (cr_vol_actual  - cr_vol_target) * ads_target
+        won_opps_impact    = (won_opps_actual - won_opps_target) * ads_target
+        ads_impact         = won_opps_actual  * (ads_actual     - ads_target)
+
+        # ── Dollar Funnel ──────────────────────────────────────────────────────
+        aos_impact         = opps_actual      * (aos_actual     - aos_target)    * cr_dol_target
+        pipeline_impact    = (pipeline_actual - pipeline_target) * cr_dol_target
+        cr_dollar_impact   = pipeline_actual  * (cr_dol_actual  - cr_dol_target)
 
         impacts = {
-            "ADS":        ads_impact,
-            "Won Volume": won_opps_impact,
+            "Opened Opps":     round(opened_opps_impact, 0),
+            "Close Rate (Vol)": round(cr_vol_impact,      0),
+            "Won Opps":        round(won_opps_impact,     0),
+            "ADS":             round(ads_impact,          0),
+            "Avg Opp Size":    round(aos_impact,          0),
+            "Pipeline ($)":    round(pipeline_impact,     0),
+            "Close Rate ($)":  round(cr_dollar_impact,    0),
         }
 
-        worst_driver = min(impacts, key=impacts.get)
-        driver_share = abs(impacts[worst_driver] / cwa_gap) * 100 if cwa_gap != 0 else 0
+        # Primary driver = KPI with largest absolute impact (drag or tailwind)
+        sorted_impacts = sorted(impacts.items(), key=lambda x: abs(x[1]), reverse=True)
+        primary_driver, primary_val = sorted_impacts[0]
+        driver_pct = abs(primary_val / cwa_gap) * 100 if cwa_gap != 0 else 0
+
+        below_target = cwa_gap < 0
+        gap_abs_str  = f"${abs(cwa_gap):,.0f}"
+        direction    = "below paced target" if below_target else "ahead of paced target"
+
+        # Actionable recommendation based on top drag (if below target)
+        drag_kpi, _ = min(impacts.items(), key=lambda x: x[1])
+        rec_map = {
+            "Opened Opps":      "Drive more qualified opportunities into the funnel.",
+            "Close Rate (Vol)": "Focus on deal progression and reducing stalled opportunities.",
+            "Won Opps":         "Prioritise closing open opportunities before quarter-end.",
+            "ADS":              "Negotiate larger deal sizes or bundle additional products.",
+            "Avg Opp Size":     "Qualify larger-ACV opportunities at the top of funnel.",
+            "Pipeline ($)":     "Accelerate pipeline creation to hit the dollar ramp.",
+            "Close Rate ($)":   "Improve dollar-weighted conversion — prioritise high-ACV deals.",
+        }
+        recommendation = rec_map.get(drag_kpi, f"Address {drag_kpi} to recover the largest portion of the gap.") if below_target else (
+            f"{primary_driver} is the biggest tailwind. Protect it through quarter-end."
+        )
 
         insights.append({
-            "type":            "impact_decomposition",
-            "severity":        "high",
-            "icon":            "\U0001f4b0",
-            "title":           f"Revenue Gap Driver: {worst_driver}",
+            "type":        "impact_decomposition",
+            "severity":    "high" if below_target else "positive",
+            "icon":        "\U0001f4b0",
+            "title":       f"{'Revenue Gap' if below_target else 'Revenue Beat'} Driver: {primary_driver}",
             "description": (
-                f"Revenue is ${abs(cwa_gap):,.0f} below target. "
-                f"{worst_driver} accounts for {driver_share:.0f}% of the shortfall."
+                f"Revenue is {gap_abs_str} {direction}. "
+                f"{primary_driver} accounts for {driver_pct:.0f}% of the variance."
             ),
-            "recommendation": (
-                f"Focus on improving {worst_driver} to recover the largest portion of the gap."
-            ),
-            "impact_dollars": cwa_gap,
-            "impacts": {k: round(v, 0) for k, v in impacts.items()},
+            "recommendation": recommendation,
+            "impact_dollars": round(cwa_gap, 0),
+            "impacts":        impacts,
+            # ── Two-funnel breakdown (matches KPI Trends — Overview Power BI layout) ──
+            # Opp Volume Funnel: Opened Opps × CR(Vol) = Won Opps → Won Opps × ADS = Won Amount
+            # Additivity: Opened Opps + Close Rate (Vol) = Won Opps; Won Opps + ADS = Won Amount
+            "funnel_opp_volume": {
+                "Opened Opps":      round(opened_opps_impact, 0),
+                "Close Rate (Vol)": round(cr_vol_impact,      0),
+                "Won Opps":         round(won_opps_impact,    0),   # = Opened Opps + CR(Vol)
+                "ADS":              round(ads_impact,         0),
+            },
+            # Dollar Funnel: Opened Opps × AOS = Pipeline → Pipeline × CR($) = Won Amount
+            # Additivity: (Opened Opps vol impact + AOS impact) ≈ Pipeline impact; Pipeline + CR($) = Won Amount
+            "funnel_dollar": {
+                "Avg Opp Size":    round(aos_impact,        0),
+                "Pipeline ($)":    round(pipeline_impact,   0),   # = Opened Opps (dollar basis) + AOS
+                "Close Rate ($)":  round(cr_dollar_impact,  0),
+            },
         })
 
         return insights

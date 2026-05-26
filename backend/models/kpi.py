@@ -72,9 +72,13 @@ class Forecast(BaseModel):
     metric: str
     historical: List[ForecastPoint]
     forecast: List[ForecastPoint]
-    accuracy: float = Field(ge=0, le=1)  # Model accuracy score
+    accuracy: float = Field(default=0.0, ge=0, le=1)  # Model accuracy score
     confidence_interval: float = 0.95
     generated_at: datetime = Field(default_factory=datetime.now)
+    # Optional fields populated when reading from pre-computed Delta table
+    model: Optional[str] = None
+    source: Optional[str] = None   # "delta_table" | "inline" | "demo"
+    mape: Optional[float] = None   # MAPE % from 8-week holdout evaluation
 
 
 class Recommendation(BaseModel):
