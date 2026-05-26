@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
 const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsightId, onInsightToggle }) => {
   const [aiInsight,  setAiInsight]  = useState(null);
@@ -220,7 +221,7 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
 
           {previous_value && (
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-              <span style={{ color: '#475569' }}>vs Previous</span>
+              <span style={{ color: '#475569' }}>vs Last Quarter</span>
               <span style={{ fontWeight: 600, color: trendColorDark }}>
                 {isPositive && '+'}{changeValue.toFixed(1)}%
               </span>
@@ -239,6 +240,24 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
                            : 'linear-gradient(90deg,#f59e0b,#fbbf24)',
                 transition: 'width 0.4s ease',
               }} />
+            </div>
+          )}
+
+          {/* Mini sparkline (weekly trend) */}
+          {Array.isArray(kpi.trend_data) && kpi.trend_data.length >= 3 && (
+            <div style={{ height: 28, marginTop: 2 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={kpi.trend_data.map((v, i) => ({ i, v }))}
+                  margin={{ top: 2, bottom: 2, left: 0, right: 0 }}
+                >
+                  <Line
+                    type="monotone" dataKey="v" dot={false} strokeWidth={1.5}
+                    stroke={exceeding ? '#10b981' : atRisk ? '#ef4444' : '#3b82f6'}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           )}
 

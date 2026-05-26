@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { X, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, ChevronDown, SlidersHorizontal, Bookmark, Save, Trash2, Search } from 'lucide-react';
 import { useFilters, DEFAULT_FILTERS } from '../contexts/FilterContext';
 import { useTheme } from '../hooks/useTheme';
 
@@ -82,6 +82,48 @@ export default function FilterPanel({ onFilterChange }) {
   const isDark = useTheme();
   const { filters, updateFilter, resetFilters } = useFilters();
   const [collapsed, setCollapsed] = useState(false);
+  const [presets, setPresets] = useState([]);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [showPresets, setShowPresets] = useState(false);
+  const [searchTerms, setSearchTerms] = useState({});  // per-key search
+
+  // Load presets from backend (falls back to localStorage)
+  useEffect(() => {
+    const local = JSON.parse(localStorage.getItem('atlas_filter_presets') || '[]');
+    setPresets(local);
+    fetch('/api/preferences/presets')
+      .then(r => r.json())
+      .then(d => { if (d.success && d.data?.length) setPresets(d.data); })
+      .catch(() => {});
+  }, []);
+
+  const savePreset = () => {
+    const name = newPresetName.trim();
+    if (!name) return;
+    const updated = [...presets.filter(p => p.name !== name),
+                     { name, filters: { ...filters }, created_at: new Date().toISOString() }];
+    setPresets(updated);
+    localStorage.setItem('atlas_filter_presets', JSON.stringify(updated));
+    fetch('/api/preferences/presets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, filters }),
+    }).catch(() => {});
+    setNewPresetName('');
+  };
+
+  const applyPreset = (preset) => {
+    Object.entries(preset.filters).forEach(([k, v]) => updateFilter(k, v));
+    if (onFilterChange) onFilterChange(preset.filters);
+    setShowPresets(false);
+  };
+
+  const deletePreset = (name, e) => {
+    e.stopPropagation();
+    const updated = presets.filter(p => p.name !== name);
+    setPresets(updated);
+    localStorage.setItem('atlas_filter_presets', JSON.stringify(updated));
+    fetch(`/api/preferences/presets/${encodeURIComponent(name)}`, { method: 'DELETE' }).catch(() => {});
+  };
 
   // ── Theme-aware color palette ───────────────────────────────────────────
   const C = isDark ? {
@@ -183,27 +225,107 @@ export default function FilterPanel({ onFilterChange }) {
           <span style={{ fontSize: 10, fontWeight: 700, color: C.filtersLabel, textTransform: 'uppercase', letterSpacing: 1.1 }}>
             Filters
           </span>
-          {hasActive && (
+          {/* Active filter count badge */}
+          {activeChips.length > 0 && (
             <span style={{
-              width: 5, height: 5, borderRadius: '50%',
-              background: '#3b82f6', boxShadow: '0 0 6px #3b82f6',
-              display: 'inline-block',
-            }} />
+              minWidth: 16, height: 16, borderRadius: 8,
+              background: '#3b82f6', color: '#fff',
+              fontSize: 9, fontWeight: 800,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              padding: '0 4px',
+            }}>
+              {activeChips.length}
+            </span>
           )}
         </div>
-        <ChevronDown
-          size={12}
-          color="#475569"
-          style={{ transform: collapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.2s' }}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {/* Presets toggle */}
+          <button
+            onClick={e => { e.stopPropagation(); setShowPresets(s => !s); }}
+            title="Filter presets"
+            style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              color: showPresets ? '#f59e0b' : '#475569',
+              display: 'flex', alignItems: 'center', padding: 2,
+            }}
+          >
+            <Bookmark size={11} />
+          </button>
+          <ChevronDown
+            size={12}
+            color="#475569"
+            style={{ transform: collapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 0.2s' }}
+          />
+        </div>
       </button>
 
       {/* ── Body ───────────────────────────────────────────────────────── */}
       {!collapsed && (
         <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 9 }}>
 
+          {/* ── Presets Panel ─────────────────────────────────────────── */}
+          {showPresets && (
+            <div style={{
+              background: isDark ? 'rgba(245,158,11,0.06)' : 'rgba(245,158,11,0.04)',
+              border: '1px solid rgba(245,158,11,0.2)',
+              borderRadius: 7, padding: '8px 10px',
+              display: 'flex', flexDirection: 'column', gap: 6,
+            }}>
+              <div style={{ fontSize: 8, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: 1 }}>
+                Filter Presets
+              </div>
+              {/* Saved presets list */}
+              {presets.length > 0 ? presets.map(p => (
+                <div key={p.name} style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '3px 6px', borderRadius: 5,
+                  background: 'rgba(245,158,11,0.08)',
+                  border: '1px solid rgba(245,158,11,0.15)',
+                  cursor: 'pointer',
+                }} onClick={() => applyPreset(p)}>
+                  <Bookmark size={9} color="#f59e0b" />
+                  <span style={{ flex: 1, fontSize: 10, color: '#f59e0b', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.name}
+                  </span>
+                  <button onClick={e => deletePreset(p.name, e)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 0 }}>
+                    <Trash2 size={9} />
+                  </button>
+                </div>
+              )) : (
+                <span style={{ fontSize: 10, color: '#64748b' }}>No saved presets. Set filters and save.</span>
+              )}
+              {/* Save current filters */}
+              <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                <input
+                  value={newPresetName}
+                  onChange={e => setNewPresetName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && savePreset()}
+                  placeholder="Preset name…"
+                  style={{
+                    flex: 1, fontSize: 10, padding: '3px 7px',
+                    background: C.dropdownBg, border: `1px solid ${C.dropdownBdr}`,
+                    borderRadius: 4, color: C.dropdownColor, outline: 'none', fontFamily: 'inherit',
+                  }}
+                />
+                <button onClick={savePreset} style={{
+                  padding: '3px 8px', borderRadius: 4,
+                  background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)',
+                  color: '#f59e0b', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit',
+                  display: 'flex', alignItems: 'center', gap: 3,
+                }}>
+                  <Save size={9} /> Save
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Filter dropdowns */}
-          {FILTER_CONFIGS.map(fc => (
+          {FILTER_CONFIGS.map(fc => {
+            const search = searchTerms[fc.key] || '';
+            const filteredOptions = fc.options.filter(o =>
+              o.label.toLowerCase().includes(search.toLowerCase())
+            );
+            return (
             <div key={fc.key}>
               <div style={{
                 fontSize: 9, fontWeight: 700, color: C.labelText,
@@ -214,13 +336,30 @@ export default function FilterPanel({ onFilterChange }) {
               }}>
                 {fc.label}
               </div>
+              {/* Search box for longer lists */}
+              {fc.options.length > 4 && (
+                <div style={{ position: 'relative', marginBottom: 3 }}>
+                  <Search size={9} style={{ position: 'absolute', left: 6, top: '50%', transform: 'translateY(-50%)', color: '#475569', pointerEvents: 'none' }} />
+                  <input
+                    value={search}
+                    onChange={e => setSearchTerms(s => ({ ...s, [fc.key]: e.target.value }))}
+                    placeholder={`Search ${fc.label}…`}
+                    style={{
+                      width: '100%', fontSize: 9, padding: '2px 6px 2px 20px',
+                      background: C.dropdownBg, border: `1px solid ${C.dropdownBdr}`,
+                      borderRadius: 4, color: C.dropdownColor, outline: 'none',
+                      boxSizing: 'border-box', fontFamily: 'inherit',
+                    }}
+                  />
+                </div>
+              )}
               <div style={{ position: 'relative' }}>
                 <select
                   value={filters[fc.key]}
                   onChange={e => handleChange(fc.key, e.target.value)}
                   style={dropdownStyle}
                 >
-                  {fc.options.map(o => (
+                  {filteredOptions.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
@@ -230,7 +369,8 @@ export default function FilterPanel({ onFilterChange }) {
                 />
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {/* ── Divider ──────────────────────────────────────────────── */}
           <div style={{ borderTop: `1px solid ${C.divider}`, paddingTop: 8 }}>

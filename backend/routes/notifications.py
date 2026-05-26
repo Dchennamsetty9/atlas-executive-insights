@@ -38,7 +38,7 @@ async def list_notifications(
     notifs = notification_service.list_notifications(
         user_id=user_id, unread_only=unread_only, limit=limit
     )
-    return {"success": True, "data": notifs}
+    return {"notifications": notifs}
 
 
 @router.get("/count")
@@ -47,7 +47,7 @@ async def unread_count(
 ):
     user_id = _user(x_forwarded_access_token)
     count = notification_service.unread_count(user_id=user_id)
-    return {"success": True, "data": {"count": count}}
+    return {"unread_count": count}
 
 
 @router.post("/read/{notification_id}")

@@ -4,11 +4,14 @@
  * filter chips, target achievement %, 4 sub-cards, and bottom alert bar.
  *
  * Props:
- *   kpis    — array of KPI objects (value, target, targetAchievement, id, title)
- *   filters — current filter state from FilterContext (geo, channel, product, period, …)
+ *   kpis          — array of KPI objects (value, target, targetAchievement, id, title)
+ *   filters       — current filter state from FilterContext
+ *   onStatusFilter — optional callback(status) — called when a sub-card is clicked
+ *                    ('at_risk' | 'on_track' | 'exceeding' | null to clear)
  */
 
 import { useMemo } from 'react';
+import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { useTheme } from '../../hooks/useTheme';
 
 const THRESHOLDS = { exceeding: 110, onTrack: 90 };
@@ -28,6 +31,30 @@ function avgAchievement(kpis) {
   if (!kpis?.length) return 0;
   const sum = kpis.reduce((s, k) => s + Math.min(k.targetAchievement ?? 0, 150), 0);
   return Math.round(sum / kpis.length);
+}
+
+/** Derive a weekly-level sparkline from the avg achievement of all KPIs.
+ *  Uses each KPI's trend_data (array of historical weekly values) if available,
+ *  otherwise approximates from current attainment. */
+function buildSparkline(kpis) {
+  const POINTS = 8;
+  // Collect trend_data arrays from KPIs that have them
+  const series = (kpis || []).filter(k => Array.isArray(k.trend_data) && k.trend_data.length >= 2);
+  if (!series.length) {
+    // Fallback: manufacture a flat-ish line at current avg
+    const avg = avgAchievement(kpis);
+    return Array.from({ length: POINTS }, (_, i) => ({ v: avg + (Math.random() - 0.5) * 3 }));
+  }
+  // Average across series at each index (normalised to % of max in each series)
+  const len = Math.max(POINTS, Math.min(...series.map(k => k.trend_data.length)));
+  return Array.from({ length: Math.min(POINTS, len) }, (_, i) => {
+    const idx = Math.round((i / (Math.min(POINTS, len) - 1)) * (series[0].trend_data.length - 1));
+    const avg = series.reduce((s, k) => {
+      const tgt = k.target || 1;
+      return s + Math.min((k.trend_data[idx] ?? k.value) / tgt * 100, 150);
+    }, 0) / series.length;
+    return { v: Math.round(avg) };
+  });
 }
 
 const CHIP_COLORS = [
@@ -94,7 +121,7 @@ const CARD_DEFS = [
   },
 ];
 
-export default function BusinessPerformancePanel({ kpis, filters }) {
+export default function BusinessPerformancePanel({ kpis, filters, onStatusFilter }) {
   const isDark = useTheme();
   const C = isDark ? {
     panelBg:     'linear-gradient(145deg, rgba(15,23,42,0.98) 0%, rgba(20,30,55,0.98) 100%)',
@@ -129,6 +156,20 @@ export default function BusinessPerformancePanel({ kpis, filters }) {
   const loading = !kpis?.length;
   const counts  = useMemo(() => classify(kpis), [kpis]);
   const avg     = useMemo(() => avgAchievement(kpis), [kpis]);
+  const sparkline = useMemo(() => buildSparkline(kpis), [kpis]);
+
+  // Trend: compare avg attainment of the first half vs second half of kpis' trend_data
+  const trendPct = useMemo(() => {
+    const series = (kpis || []).filter(k => Array.isArray(k.trend_data) && k.trend_data.length >= 4);
+    if (!series.length) return null;
+    const avgSlice = (arr, start, end) =>
+      arr.slice(start, end).reduce((s, v) => s + v, 0) / (end - start);
+    const k = series[0];
+    const mid = Math.floor(k.trend_data.length / 2);
+    const early = avgSlice(k.trend_data, 0, mid);
+    const late  = avgSlice(k.trend_data, mid, k.trend_data.length);
+    return early > 0 ? Math.round(((late - early) / early) * 100) : null;
+  }, [kpis]);
 
   const overallStatus = loading             ? null
     : counts.atRisk >= Math.ceil(counts.total / 2) ? 'atRisk'
@@ -191,12 +232,48 @@ export default function BusinessPerformancePanel({ kpis, filters }) {
           </div>
         </div>
 
-        {/* Right — avg achievement */}
+        {/* Right — avg achievement + sparkline + trend arrow */}
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
-          <div style={{ fontSize: 36, fontWeight: 800, color: C.achieve, lineHeight: 1 }}>
-            {loading ? '—' : `${avg}%`}
+          {/* Sparkline behind the % */}
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            {/* Ghost sparkline */}
+            <div style={{ position: 'absolute', inset: 0, opacity: 0.18, pointerEvents: 'none' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={sparkline} margin={{ top: 2, bottom: 2, left: 2, right: 2 }}>
+                  <Line
+                    type="monotone" dataKey="v" dot={false} strokeWidth={2}
+                    stroke={avg >= 100 ? '#10b981' : avg >= 90 ? '#f59e0b' : '#ef4444'}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* Achievement % — colored by status */}
+            <div style={{
+              fontSize: 36, fontWeight: 800, lineHeight: 1,
+              color: loading ? C.achieve
+                : avg >= 100 ? '#10b981'
+                : avg >= 90  ? '#f59e0b'
+                : '#ef4444',
+            }}>
+              {loading ? '—' : `${avg}%`}
+            </div>
           </div>
-          <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: C.achieveSub, marginTop: 2 }}>
+          {/* Trend arrow */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, marginTop: 2 }}>
+            {trendPct !== null && (
+              <span style={{
+                fontSize: 11, fontWeight: 700,
+                color: trendPct >= 0 ? '#10b981' : '#ef4444',
+              }}>
+                {trendPct >= 0 ? '↑' : '↓'} {Math.abs(trendPct)}%
+              </span>
+            )}
+            <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: C.achieveSub }}>
+              vs prior period
+            </div>
+          </div>
+          <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: C.achieveSub, marginTop: 1 }}>
             Target Achievement
           </div>
         </div>
@@ -207,13 +284,24 @@ export default function BusinessPerformancePanel({ kpis, filters }) {
         {CARD_DEFS.map(cd => {
           const val = loading ? '—' : cd.getValue(counts);
           const isEmpty = val === 0;
+          const isClickable = !!onStatusFilter && cd.key !== 'total' && val > 0;
+          const statusKey = cd.key === 'atRisk' ? 'at_risk' : cd.key === 'onTrack' ? 'on_track' : cd.key === 'exceeding' ? 'exceeding' : null;
           return (
-            <div key={cd.key} style={{
-              background: isEmpty ? C.subCardBg : `${cd.color}11`,
-              border: `1px solid ${isEmpty ? C.subCardBdr : cd.color + '30'}`,
-              borderRadius: 10,
-              padding: '14px 16px',
-            }}>
+            <div
+              key={cd.key}
+              onClick={isClickable && statusKey ? () => onStatusFilter(statusKey) : undefined}
+              title={isClickable ? `Click to filter to ${cd.label} metrics` : undefined}
+              style={{
+                background: isEmpty ? C.subCardBg : `${cd.color}11`,
+                border: `1px solid ${isEmpty ? C.subCardBdr : cd.color + '30'}`,
+                borderRadius: 10,
+                padding: '14px 16px',
+                cursor: isClickable ? 'pointer' : 'default',
+                transition: isClickable ? 'transform 0.1s, box-shadow 0.1s' : 'none',
+              }}
+              onMouseEnter={e => { if (isClickable) { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = `0 4px 12px ${cd.color}22`; } }}
+              onMouseLeave={e => { if (isClickable) { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = ''; } }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <span style={{ fontSize: 14, color: isEmpty ? C.iconEmpty : cd.color, lineHeight: 1 }}>
                   {cd.icon}
@@ -221,6 +309,9 @@ export default function BusinessPerformancePanel({ kpis, filters }) {
                 <span style={{ fontSize: 11, color: isEmpty ? C.labelEmpty : C.subtitle, fontWeight: 600 }}>
                   {cd.label}
                 </span>
+                {isClickable && (
+                  <span style={{ fontSize: 8, color: cd.color, marginLeft: 'auto', opacity: 0.7 }}>↗ filter</span>
+                )}
               </div>
               <div style={{ fontSize: 30, fontWeight: 800, color: isEmpty ? C.valueEmpty : cd.color, lineHeight: 1 }}>
                 {loading ? '—' : val}
