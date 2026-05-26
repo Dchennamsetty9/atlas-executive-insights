@@ -14,6 +14,32 @@ const fmtM = (v) => {
   return `$${Math.round(v)}`;
 };
 
+/** Deal velocity: 'hot' | 'progressing' | 'stalled' | 'stuck'
+ *  Based on days_in_stage vs. stage benchmarks. */
+function velocityScore(deal) {
+  const d = deal.days_in_stage ?? 0;
+  const cat = deal.stage_category ?? 'mid';
+  const benchmarks = { early: 14, mid: 21, late: 14 };
+  const bench = benchmarks[cat] ?? 21;
+  if (d <= bench * 0.5) return { label: '🔥 Hot',        color: '#10b981' };
+  if (d <= bench)       return { label: '↗ Progressing', color: '#3b82f6' };
+  if (d <= bench * 2)   return { label: '⚡ Stalled',    color: '#f59e0b' };
+  return                       { label: '🔴 Stuck',      color: '#ef4444' };
+}
+
+/** Derive a "next action needed" suggestion based on stage and days in stage. */
+function nextAction(deal) {
+  const d = deal.days_in_stage ?? 0;
+  const stage = (deal.stage ?? '').toLowerCase();
+  if (d > 30) return 'Escalate to manager';
+  if (stage.includes('negotiat')) return 'Send final proposal';
+  if (stage.includes('discover')) return 'Schedule demo';
+  if (stage.includes('qualify'))  return 'Confirm champion';
+  if (stage.includes('propos'))   return 'Follow up on proposal';
+  if (stage.includes('close'))    return 'Confirm PO / contract';
+  return 'Check in with prospect';
+}
+
 const fmtDate = (d) => {
   if (!d) return '—';
   const dt = new Date(d);
@@ -35,6 +61,8 @@ const COLS = [
   { key: 'channel',         label: 'Channel',     style: { width: 80 },    align: 'center', sortable: false },
   { key: 'owner',           label: 'Owner',       style: { minWidth: 90 }, align: 'left',  sortable: false },
   { key: 'days_in_stage',   label: 'Days in Stage', style: { width: 90 }, align: 'right', sortable: true },
+  { key: 'velocity',        label: 'Velocity',    style: { width: 80 },    align: 'center', sortable: false },
+  { key: 'next_action',     label: 'Next Action', style: { minWidth: 120 }, align: 'left', sortable: false },
 ];
 
 const LargestDealsTable = ({ limit = 20 }) => {
@@ -136,6 +164,8 @@ const LargestDealsTable = ({ limit = 20 }) => {
                 const cat   = deal.stage_category ?? 'mid';
                 const clr   = STAGE_COLORS[cat] ?? STAGE_COLORS.mid;
                 const rowBg = i % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'transparent';
+                const vel   = velocityScore(deal);
+                const next  = nextAction(deal);
                 return (
                   <tr key={deal.opportunity_id ?? i} style={{
                     background: rowBg,
@@ -155,6 +185,14 @@ const LargestDealsTable = ({ limit = 20 }) => {
                     <td style={{ padding: '5px 8px', fontSize: 10, color: '#94a3b8', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{deal.owner}</td>
                     <td style={{ padding: '5px 8px', textAlign: 'right', fontSize: 10, color: deal.days_in_stage > 30 ? '#f59e0b' : '#64748b', fontWeight: deal.days_in_stage > 30 ? 700 : 400 }}>
                       {deal.days_in_stage}d
+                    </td>
+                    {/* Velocity score */}
+                    <td style={{ padding: '5px 8px', textAlign: 'center', fontSize: 10, color: vel.color, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      {vel.label}
+                    </td>
+                    {/* Next action */}
+                    <td style={{ padding: '5px 8px', fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                      {next}
                     </td>
                   </tr>
                 );

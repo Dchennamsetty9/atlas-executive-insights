@@ -5,9 +5,10 @@
  *   Header: metric selector · model selector | Upside $ · Downside $
  *   Trend card: trend badge · risk badge · confidence · best/worst case
  *   Description paragraph
- *   2×2 grid: Key Drivers · Executive Actions · Downside Risks · Upside Opportunities
+ *   2×2 grid: Key Drivers · Executive Actions (checkable) · Downside Risks · Upside Opportunities
  *
  * Calls GET /api/forecast/intelligence?metric=&model=
+ * Executive actions are persisted to /api/actions (POST) and toggled (PATCH).
  * Respects data-theme (dark / light) via CSS variables.
  */
 
@@ -97,6 +98,122 @@ const NumberedItem = ({ n, children }) => (
     <span style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>{children}</span>
   </div>
 );
+
+// ── Checkable Executive Action ─────────────────────────────────────────────────
+
+const CheckableAction = ({ n, text, source = 'forecast' }) => {
+  const [done,      setDone]      = useState(false);
+  const [owner,     setOwner]     = useState('');
+  const [editing,   setEditing]   = useState(false);
+  const [actionId,  setActionId]  = useState(null);
+
+  // Persist to backend on first render
+  useEffect(() => {
+    fetch('/api/actions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, source, priority: n === 1 ? 'high' : 'medium' }),
+    })
+      .then(r => r.json())
+      .then(d => { if (d.success) setActionId(d.data?.action_id); })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggle = () => {
+    const next = !done;
+    setDone(next);
+    if (actionId) {
+      fetch(`/api/actions/${actionId}/status`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next ? 'done' : 'pending', owner: owner || null }),
+      }).catch(() => {});
+    }
+  };
+
+  const assignOwner = (e) => {
+    const val = e.target.value.trim();
+    setOwner(val);
+    setEditing(false);
+    if (actionId && val) {
+      fetch(`/api/actions/${actionId}/status`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: done ? 'done' : 'pending', owner: val }),
+      }).catch(() => {});
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex', gap: 8, alignItems: 'flex-start',
+      padding: '6px 8px', borderRadius: 6,
+      background: done ? 'rgba(16,185,129,0.06)' : 'transparent',
+      border: done ? '1px solid rgba(16,185,129,0.15)' : '1px solid transparent',
+      transition: 'all 0.2s',
+    }}>
+      {/* Checkbox */}
+      <button
+        onClick={toggle}
+        title={done ? 'Mark as pending' : 'Mark as done'}
+        style={{
+          flexShrink: 0, width: 18, height: 18, borderRadius: 4,
+          border: `2px solid ${done ? '#10b981' : '#475569'}`,
+          background: done ? '#10b981' : 'transparent',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 10, color: '#fff', marginTop: 1,
+        }}
+      >
+        {done && '✓'}
+      </button>
+
+      <div style={{ flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+          {/* Number badge */}
+          <span style={{
+            minWidth: 18, height: 18, borderRadius: 3,
+            background: done ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)',
+            color: done ? '#10b981' : '#3b82f6',
+            fontSize: 10, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>{n}</span>
+          <span style={{
+            fontSize: 12, color: done ? '#64748b' : 'var(--text-secondary)',
+            lineHeight: 1.5, textDecoration: done ? 'line-through' : 'none',
+            flex: 1,
+          }}>{text}</span>
+        </div>
+
+        {/* Owner row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, marginLeft: 24 }}>
+          {editing ? (
+            <input
+              autoFocus
+              defaultValue={owner}
+              onBlur={assignOwner}
+              onKeyDown={e => e.key === 'Enter' && assignOwner(e)}
+              placeholder="Assign to…"
+              style={{
+                fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                background: 'var(--bg-glass)', border: '1px solid var(--border-glass)',
+                color: 'var(--text-primary)', outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+          ) : (
+            <button
+              onClick={() => setEditing(true)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 10, color: owner ? '#94a3b8' : '#475569',
+                fontStyle: owner ? 'normal' : 'italic', padding: 0,
+              }}
+            >
+              {owner ? `→ ${owner}` : 'Assign owner…'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const SkeletonRow = () => (
   <div style={{ height: 14, borderRadius: 6, background: 'var(--bg-glass)', animation: 'pulse 1.5s ease-in-out infinite', marginBottom: 8 }} />
@@ -278,7 +395,12 @@ const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp 
             background:   'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)',
             borderRadius: 8, padding: '12px 14px',
           }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: '#10b981', letterSpacing: '0.06em', marginBottom: 4 }}>BEST CASE (90d)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: '#10b981', letterSpacing: '0.06em' }}>BEST CASE (90d)</div>
+              <span style={{ fontSize: 10, color: '#64748b', background: 'rgba(16,185,129,0.1)', padding: '1px 6px', borderRadius: 8 }}>
+                20% probability
+              </span>
+            </div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#10b981' }}>
               {loading ? '—' : fmtVal(data?.forecast_90d?.best_case)}
             </div>
@@ -287,7 +409,12 @@ const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp 
             background:   'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
             borderRadius: 8, padding: '12px 14px',
           }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', letterSpacing: '0.06em', marginBottom: 4 }}>WORST CASE (90d)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', letterSpacing: '0.06em' }}>WORST CASE (90d)</div>
+              <span style={{ fontSize: 10, color: '#64748b', background: 'rgba(239,68,68,0.1)', padding: '1px 6px', borderRadius: 8 }}>
+                15% probability
+              </span>
+            </div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#ef4444' }}>
               {loading ? '—' : fmtVal(data?.forecast_90d?.worst_case)}
             </div>
@@ -318,11 +445,13 @@ const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp 
           }
         </SectionCard>
 
-        {/* Executive Actions */}
+        {/* Executive Actions — checkable + owner assignment */}
         <SectionCard title="Executive Actions" icon="⚙️" accentColor="#3b82f6">
           {loading
             ? [1,2,3].map(i => <SkeletonRow key={i} />)
-            : (data?.executive_actions || []).map((a, i) => <NumberedItem key={i} n={i + 1}>{a}</NumberedItem>)
+            : (data?.executive_actions || []).map((a, i) => (
+                <CheckableAction key={`${metric}-${model}-${i}`} n={i + 1} text={a} source="forecast" />
+              ))
           }
         </SectionCard>
 

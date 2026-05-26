@@ -1,8 +1,8 @@
-/**
- * InsightPanel — AI-generated hidden insight cards
+﻿/**
+ * InsightPanel â€” AI-generated hidden insight cards
  * Fetches /api/insights/hidden-patterns and renders severity-coloured
  * glass cards with icon, title, description, and recommendation.
- * Auto-refreshes whenever the KPI data changes (kpis prop update).
+ * Features: dismissability, "Why am I seeing this?", owner assignment.
  */
 
 import { useState, useEffect, memo } from 'react';
@@ -16,13 +16,30 @@ const SEVERITY_STYLE = {
 
 const DEFAULT_STYLE = { border: '#3b82f6', glow: 'rgba(59,130,246,0.10)', dot: '#3b82f6' };
 
-const InsightCard = memo(({ insight, index }) => {
+const InsightCard = memo(({ insight, index, onDismiss }) => {
   const sty = SEVERITY_STYLE[insight.severity] ?? DEFAULT_STYLE;
+  const [showWhy, setShowWhy] = useState(false);
+  const [owner, setOwner]     = useState(insight.owner || '');
+  const [editOwner, setEditOwner] = useState(false);
+
+  const saveOwner = (val) => {
+    const trimmed = val.trim();
+    setOwner(trimmed);
+    setEditOwner(false);
+    // Persist to backend if insight has an id
+    if (insight.id && trimmed) {
+      fetch(`/api/preferences/insight-owner`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: { insight_id: insight.id, owner: trimmed } }),
+      }).catch(() => {});
+    }
+  };
 
   return (
     <motion.div
       initial={{ opacity: 0, x: -16 }}
       animate={{ opacity: 1, x: 0  }}
+      exit={{ opacity: 0, x: 16, scale: 0.95 }}
       transition={{ delay: index * 0.07, type: 'spring', stiffness: 260, damping: 24 }}
       style={{
         background: `linear-gradient(135deg, ${sty.glow} 0%, rgba(13,20,40,0.95) 100%)`,
@@ -33,11 +50,29 @@ const InsightCard = memo(({ insight, index }) => {
         display: 'flex',
         gap: 14,
         alignItems: 'flex-start',
+        position: 'relative',
       }}
     >
+      {/* Dismiss button */}
+      <button
+        onClick={() => onDismiss(insight.id ?? index)}
+        title="Dismiss this insight"
+        style={{
+          position: 'absolute', top: 8, right: 8,
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: '#334155', fontSize: 12, lineHeight: 1,
+          padding: '2px 4px', borderRadius: 4,
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = '#ef4444'; }}
+        onMouseLeave={e => { e.currentTarget.style.color = '#334155'; }}
+      >
+        âœ•
+      </button>
+
       {/* Icon */}
       <span style={{ fontSize: 22, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>
-        {insight.icon || '📊'}
+        {insight.icon || 'ðŸ“Š'}
       </span>
 
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -61,7 +96,7 @@ const InsightCard = memo(({ insight, index }) => {
         {/* Recommendation */}
         {insight.recommendation && (
           <p style={{
-            margin: 0, fontSize: 11, color: '#64748b',
+            margin: '0 0 8px', fontSize: 11, color: '#64748b',
             borderTop: '1px solid rgba(255,255,255,0.05)',
             paddingTop: 6, lineHeight: 1.5,
           }}>
@@ -69,6 +104,76 @@ const InsightCard = memo(({ insight, index }) => {
             {insight.recommendation}
           </p>
         )}
+
+        {/* Footer row: owner + "Why am I seeing this?" */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/* Owner */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+            <span style={{ color: '#475569' }}>Owner:</span>
+            {editOwner ? (
+              <input
+                autoFocus
+                defaultValue={owner}
+                onBlur={e => saveOwner(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && saveOwner(e.target.value)}
+                style={{
+                  fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+                  color: '#f1f5f9', outline: 'none', fontFamily: 'inherit', width: 100,
+                }}
+              />
+            ) : (
+              <button
+                onClick={() => setEditOwner(true)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 10, color: owner ? '#94a3b8' : '#475569',
+                  fontStyle: owner ? 'normal' : 'italic', padding: 0,
+                }}
+              >
+                {owner || 'Assignâ€¦'}
+              </button>
+            )}
+          </div>
+
+          {/* "Why am I seeing this?" toggle */}
+          <button
+            onClick={() => setShowWhy(s => !s)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 10, color: '#3b82f6', padding: 0,
+              textDecoration: 'underline', textDecorationStyle: 'dotted',
+            }}
+          >
+            {showWhy ? 'Hide explanation' : 'Why am I seeing this?'}
+          </button>
+        </div>
+
+        {/* Why explanation */}
+        <AnimatePresence initial={false}>
+          {showWhy && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ overflow: 'hidden' }}
+            >
+              <p style={{
+                margin: '8px 0 0', fontSize: 11, color: '#64748b',
+                background: 'rgba(59,130,246,0.05)',
+                border: '1px solid rgba(59,130,246,0.1)',
+                borderRadius: 6, padding: '6px 10px', lineHeight: 1.5,
+              }}>
+                {insight.why_text ||
+                  `This insight was surfaced because ${insight.metric ? `${insight.metric} ` : ''}${
+                    insight.description?.toLowerCase().includes('below') ? 'is below historical norms' :
+                    insight.description?.toLowerCase().includes('above') ? 'is significantly above target' :
+                    'shows an unusual pattern compared to recent periods'}.`}
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </motion.div>
   );
@@ -78,6 +183,10 @@ InsightCard.displayName = 'InsightCard';
 
 const InsightPanel = ({ kpis = [], filters = {} }) => {
   const [insights,  setInsights]  = useState([]);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('atlas_dismissed_insights') || '[]')); }
+    catch { return new Set(); }
+  });
   const [loading,   setLoading]   = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -93,11 +202,20 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
       .then(d => setInsights(d.insights || []))
       .catch(() => setInsights([]))
       .finally(() => setLoading(false));
-  // Re-fetch when filters or kpi data changes (kpis.length as proxy)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.product, filters.geo, filters.channel, kpis.length]);
 
-  const highCount = insights.filter(i => i.severity === 'high').length;
+  const handleDismiss = (id) => {
+    setDismissed(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      localStorage.setItem('atlas_dismissed_insights', JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const visible = insights.filter(i => !dismissed.has(i.id ?? insights.indexOf(i)));
+  const highCount = visible.filter(i => i.severity === 'high').length;
 
   return (
     <div style={{
@@ -115,13 +233,13 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
           cursor: 'pointer', userSelect: 'none', marginBottom: collapsed ? 0 : 14,
         }}
       >
-        <span style={{ fontSize: 16 }}>🔬</span>
+        <span style={{ fontSize: 16 }}>ðŸ”¬</span>
         <span style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9', flex: 1 }}>
           AI Hidden Insights
         </span>
 
         {loading && (
-          <span style={{ fontSize: 11, color: '#475569' }}>Analyzing…</span>
+          <span style={{ fontSize: 11, color: '#475569' }}>Analyzingâ€¦</span>
         )}
 
         {!loading && highCount > 0 && (
@@ -135,11 +253,20 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
           </span>
         )}
 
-        {!loading && insights.length === 0 && (
+        {!loading && dismissed.size > 0 && (
+          <button
+            onClick={e => { e.stopPropagation(); setDismissed(new Set()); localStorage.removeItem('atlas_dismissed_insights'); }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, color: '#475569', textDecoration: 'underline' }}
+          >
+            Restore {dismissed.size} dismissed
+          </button>
+        )}
+
+        {!loading && visible.length === 0 && !dismissed.size && (
           <span style={{ fontSize: 11, color: '#475569' }}>No patterns detected</span>
         )}
 
-        <span style={{ fontSize: 12, color: '#475569' }}>{collapsed ? '▼' : '▲'}</span>
+        <span style={{ fontSize: 12, color: '#475569' }}>{collapsed ? 'â–¼' : 'â–²'}</span>
       </div>
 
       {/* Cards */}
@@ -160,16 +287,18 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
                   animate={{ opacity: [0.3, 1, 0.3] }}
                   transition={{ duration: 1.2, repeat: Infinity }}
                 />
-                Scanning KPI data for hidden patterns…
+                Scanning KPI data for hidden patternsâ€¦
               </div>
             ) : (
-              <div style={{ display: 'grid', gap: 10,
-                gridTemplateColumns: insights.length > 1 ? 'repeat(auto-fill, minmax(340px, 1fr))' : '1fr',
-              }}>
-                {insights.map((ins, i) => (
-                  <InsightCard key={i} insight={ins} index={i} />
-                ))}
-              </div>
+              <AnimatePresence>
+                <div style={{ display: 'grid', gap: 10,
+                  gridTemplateColumns: visible.length > 1 ? 'repeat(auto-fill, minmax(340px, 1fr))' : '1fr',
+                }}>
+                  {visible.map((ins, i) => (
+                    <InsightCard key={ins.id ?? i} insight={ins} index={i} onDismiss={handleDismiss} />
+                  ))}
+                </div>
+              </AnimatePresence>
             )}
           </motion.div>
         )}

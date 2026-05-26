@@ -122,7 +122,7 @@ const SuggestionChip = memo(({ text, onClick }) => (
 SuggestionChip.displayName = 'SuggestionChip';
 
 // ── Main panel ───────────────────────────────────────────────────────────────
-const AIChatPanel = ({ onAnalyzingChange }) => {
+const AIChatPanel = ({ onAnalyzingChange, context }) => {
   const [isOpen,           setIsOpen]           = useState(false);
   const [question,         setQuestion]         = useState('');
   const [messages,         setMessages]         = useState([]);
@@ -148,25 +148,40 @@ const AIChatPanel = ({ onAnalyzingChange }) => {
     ].some(kw => t.includes(kw));
   }, []);
 
-  // Load suggestions on open
+  // Context-aware suggestion sets per active tab/section
+  const CONTEXT_SUGGESTIONS = {
+    kpi:       ['Which KPIs are at risk this quarter?', 'Where are we vs. quota?', 'What is driving the close rate drop?'],
+    pipeline:  ['What is the current pipeline coverage?', 'Show pipeline by segment', 'How has pipeline changed this month?'],
+    forecast:  ['What is the forecast confidence?', 'What scenarios are most likely?', 'What drove the forecast revision?'],
+    deals:     ['Which deals are most at risk?', 'Show me stalled deals over 30 days', 'What is in-quarter pipeline?'],
+    analytics: ['What is MQL to SQL conversion?', 'Show ARR by geo', 'Which deal band closes fastest?'],
+    default:   [
+      'What is the current pipeline coverage?',
+      'Which KPIs are at risk this quarter?',
+      'How is close rate trending?',
+      'What drove the change in won pipeline?',
+      'Where are we vs. quota?',
+    ],
+  };
+
+  const getSuggestions = useCallback((contextKey) => {
+    return CONTEXT_SUGGESTIONS[contextKey] || CONTEXT_SUGGESTIONS.default;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleOpen = useCallback(async () => {
     setIsOpen(true);
-    if (suggestions.length === 0) {
-      try {
-        const res  = await fetch('/api/genie/suggested-questions');
-        const data = await res.json();
-        setSuggestions(data.questions?.slice(0, 5) || []);
-      } catch {
-        setSuggestions([
-          'What is the current pipeline coverage?',
-          'Which KPIs are at risk this quarter?',
-          'How is close rate trending?',
-          'What drove the change in won pipeline?',
-          'Where are we vs. quota?',
-        ]);
-      }
-    }
-  }, [suggestions.length]);
+    const ctxKey = context?.activeTab ?? context?.section ?? 'default';
+    const contextual = getSuggestions(ctxKey);
+    setSuggestions(contextual);
+    // Also try personalised suggestions from the backend
+    try {
+      const params = ctxKey !== 'default' ? `?context=${ctxKey}` : '';
+      const res  = await fetch(`/api/genie/suggested-questions${params}`);
+      const data = await res.json();
+      if (data.questions?.length) setSuggestions(data.questions.slice(0, 5));
+    } catch { /* keep context-aware fallback */ }
+  }, [context, getSuggestions]);
 
   const askQuestion = useCallback(async (text) => {
     if (!text?.trim()) return;
@@ -320,9 +335,25 @@ const AIChatPanel = ({ onAnalyzingChange }) => {
             <div style={{ fontSize: 11, color: '#64748b' }}>Genie · OpenAI · Atlas Intelligence</div>
           </div>
         </div>
-        <button
-          onClick={() => setIsOpen(false)}
-          style={{
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {messages.length > 0 && (
+            <button
+              onClick={() => { setMessages([]); setGenieConvId(null); }}
+              title="New conversation"
+              style={{
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 8, color: '#64748b',
+                fontSize: 10, padding: '3px 8px',
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              New chat
+            </button>
+          )}
+          <button
+            onClick={() => setIsOpen(false)}
+            style={{
             background: 'rgba(255,255,255,0.06)',
             border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: 8,
@@ -333,6 +364,7 @@ const AIChatPanel = ({ onAnalyzingChange }) => {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >×</button>
+        </div>
       </div>
 
       {/* Messages area */}
@@ -344,7 +376,9 @@ const AIChatPanel = ({ onAnalyzingChange }) => {
             style={{ marginBottom: 16 }}
           >
             <p style={{ fontSize: 12, color: '#475569', marginBottom: 12 }}>
-              Ask anything about your KPIs, pipeline, or forecasts:
+              {context?.activeTab
+                ? `Suggested questions for ${context.activeTab}:`
+                : 'Ask anything about your KPIs, pipeline, or forecasts:'}
             </p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {suggestions.map((s, i) => (

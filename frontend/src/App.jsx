@@ -17,6 +17,7 @@ import InsightBanner from './components/ai/InsightBanner';
 import { useUISound } from './hooks/useUISound';
 import { apiService } from './services/api';
 import { FilterProvider, useFilters } from './contexts/FilterContext';
+import NotificationBell from './components/NotificationBell';
 import './styles/futuristic-theme.css';
 import './App.css'
 
@@ -150,12 +151,21 @@ function AppInner() {
           {/* Right controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
 
-            {/* Last refreshed */}
+            {/* Last refreshed — prominent data freshness indicator */}
             {lastRefreshed && (
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                {lastRefreshed.toLocaleTimeString()}
+              <span style={{
+                fontSize: 10, color: '#64748b',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.07)',
+                borderRadius: 6, padding: '3px 8px',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                Data as of {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
             )}
+
+            {/* Notification bell */}
+            <NotificationBell />
 
             {/* Refresh button */}
             <button
