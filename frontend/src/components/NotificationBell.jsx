@@ -5,7 +5,6 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-
 const LEVEL_COLORS = {
   critical: '#ef4444',
   warning:  '#f59e0b',
@@ -25,6 +24,10 @@ const NotificationBell = () => {
   const [open,          setOpen]          = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [loading,       setLoading]       = useState(false);
+  const [testOpen,      setTestOpen]      = useState(false);
+  const [testEmail,     setTestEmail]     = useState('');
+  const [testSending,   setTestSending]   = useState(false);
+  const [testSent,      setTestSent]      = useState(false);
   const dropdownRef = useRef(null);
 
   // Poll unread count every 60s
@@ -83,6 +86,26 @@ const NotificationBell = () => {
     try { await fetch('/api/notifications/read-all', { method: 'POST' }); } catch { /* ignore */ }
     setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
     setCount(0);
+  };
+
+  const sendTest = async () => {
+    setTestSending(true);
+    try {
+      await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message:  'This is a test alert from Atlas Executive Insights.',
+          level:    'warning',
+          email_to: testEmail.trim() || null,
+        }),
+      });
+      setTestSent(true);
+      setTestOpen(false);
+      setTestEmail('');
+      setTimeout(() => setTestSent(false), 3000);
+    } catch { /* ignore */ }
+    finally { setTestSending(false); }
   };
 
   return (
@@ -205,6 +228,75 @@ const NotificationBell = () => {
                     )}
                   </div>
                 ))
+              )}
+            </div>
+
+            {/* Footer — test alerts */}
+            <div style={{
+              borderTop: '1px solid rgba(255,255,255,0.07)',
+              padding: '8px 14px',
+            }}>
+              {testSent ? (
+                <p style={{ margin: 0, fontSize: 10, color: '#10b981', fontWeight: 600, textAlign: 'center' }}>
+                  &#10003; Test alert sent!
+                </p>
+              ) : testOpen ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <p style={{ margin: 0, fontSize: 10, color: '#94a3b8' }}>
+                    Sends to <strong style={{ color: '#818cf8' }}>Slack</strong> (if configured)
+                    {' '}+ optional email:
+                  </p>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      type="email"
+                      autoFocus
+                      placeholder="email@goto.com (optional)"
+                      value={testEmail}
+                      onChange={e => setTestEmail(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && sendTest()}
+                      style={{
+                        flex: 1, fontSize: 10, padding: '4px 8px', borderRadius: 5,
+                        background: 'rgba(255,255,255,0.06)',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        color: '#f1f5f9', outline: 'none', fontFamily: 'inherit',
+                      }}
+                    />
+                    <button
+                      onClick={sendTest}
+                      disabled={testSending}
+                      style={{
+                        fontSize: 10, padding: '4px 10px', borderRadius: 5,
+                        background: testSending ? 'rgba(99,102,241,0.3)' : 'rgba(99,102,241,0.8)',
+                        border: 'none', color: '#fff',
+                        cursor: testSending ? 'default' : 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {testSending ? 'Sending\u2026' : 'Send'}
+                    </button>
+                    <button
+                      onClick={() => { setTestOpen(false); setTestEmail(''); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#475569' }}
+                    >
+                      {'\u2715'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setTestOpen(true)}
+                  style={{
+                    width: '100%', background: 'none',
+                    border: '1px dashed rgba(99,102,241,0.3)',
+                    borderRadius: 6, cursor: 'pointer',
+                    fontSize: 10, color: '#818cf8', padding: '5px 0',
+                    transition: 'border-color 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.6)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
+                >
+                  &#128276; Test alert channels
+                </button>
               )}
             </div>
           </motion.div>

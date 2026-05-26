@@ -21,6 +21,8 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 requests==2.31.0
 httpx==0.26.0
+boto3>=1.34.0
+aiosmtplib>=3.0.0
 
 # Data visualization (for backend analysis)
 matplotlib==3.8.2

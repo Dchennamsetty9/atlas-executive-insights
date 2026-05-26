@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sys
+import asyncio
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,9 @@ from routes.deals import router as deals_router
 from routes.forecast import router as forecast_router
 from routes.performance_hub import router as performance_hub_router
 from routes.ai import router as ai_router
+from routes.preferences import router as preferences_router
+from routes.actions import router as actions_router
+from routes.notifications import router as notifications_router
 from models.kpi import KPICard, ChartData, Insight, Forecast
 
 logging.basicConfig(
@@ -103,6 +107,9 @@ app.include_router(deals_router)
 app.include_router(forecast_router)
 app.include_router(performance_hub_router)
 app.include_router(ai_router)
+app.include_router(preferences_router)
+app.include_router(actions_router)
+app.include_router(notifications_router)
 
 
 @app.get("/api/health")
@@ -336,6 +343,20 @@ async def get_kpis(
         # Store in cache for next request
         data_cache.set(cache_key, kpis)
 
+        # Fire threshold alerts in the background (non-blocking — never delays the KPI response)
+        from services.notification_service import notification_service as _ns
+        kpis_for_check = [
+            {
+                "id":                k.get("id", ""),
+                "title":             k.get("title", "KPI"),
+                "value":             float(k.get("value", 0) or 0),
+                "target":            float(k.get("target", 0) or 0),
+                "targetAchievement": float(k.get("targetAchievement", 100) or 100),
+            }
+            for k in (kpis if isinstance(kpis, list) else [])
+        ]
+        asyncio.create_task(_ns.check_thresholds(kpis_for_check))
+
         print(f"Calculated {len(kpis)} KPIs")
         
         return kpis
@@ -433,27 +454,66 @@ async def get_recommendations():
 
 
 @app.get("/api/arr/forecast", response_model=Forecast)
-async def get_arr_forecast(periods: int = 90):
+async def get_arr_forecast(
+    periods: int = 90,
+    geo: str = "Total",
+    product_group: str = "Total",
+):
     """
-    Get ARR (Annual Recurring Revenue) forecast
-    
+    Get ARR (Annual Recurring Revenue) forecast.
+
+    Tries the pre-computed Prophet results from the Databricks notebook first
+    (datagroup_mdl.mdl_sales_analytics.arr_forecast_prophet).  Falls back to
+    running Prophet inline via ForecastingService when the table is unavailable.
+
     Args:
-        periods: Number of days to forecast ahead (default: 90)
-        
-    Returns:
-        Forecast with historical ARR data and future predictions
+        periods: Forecast horizon in days/weeks (default 90, used for inline fallback)
+        geo: Geo segment to return — "Total" (default) or APAC/EMEA/LATAM/NA
+        product_group: Product segment — "Total" (default), ITSG, or UCC
     """
     try:
-        # Fetch ARR historical data from partner_ending_arr table
-        historical_data = await data_fetcher.fetch_historical_data('arr')
-        
+        # ── Attempt 1: pre-computed Delta table ──────────────────────────────
+        df_precomputed = await data_fetcher.fetch_arr_forecast_results(
+            geo=geo, product_group=product_group
+        )
+
+        if not df_precomputed.empty:
+            historical = df_precomputed[df_precomputed["is_historical"] == True]
+            future     = df_precomputed[df_precomputed["is_historical"] == False]
+
+            forecast_points = [
+                {
+                    "date"       : str(row["forecast_date"].date()),
+                    "value"      : row["most_likely"],
+                    "lower_bound": row["worst_case"],
+                    "upper_bound": row["best_case"],
+                }
+                for _, row in future.iterrows()
+            ]
+            historical_points = [
+                {"date": str(row["forecast_date"].date()), "value": row["actual"] or row["most_likely"]}
+                for _, row in historical.iterrows()
+            ]
+            return Forecast(
+                metric      ="arr",
+                model       ="prophet",
+                source      ="delta_table",
+                mape        =float(df_precomputed["model_mape"].iloc[0]) if "model_mape" in df_precomputed.columns else None,
+                historical  =historical_points,
+                forecast    =forecast_points,
+            )
+
+        # ── Attempt 2: run Prophet inline (live or mock data) ────────────────
+        historical_data = await data_fetcher.fetch_historical_data("arr")
+
         if historical_data.empty:
             raise HTTPException(status_code=404, detail="No ARR historical data available")
-        
-        # Generate forecast
-        forecast = forecasting_service.forecast('arr', historical_data, periods)
-        
+
+        forecast = forecasting_service.forecast("arr", historical_data, periods)
         return forecast
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error forecasting ARR: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate ARR forecast. Please try again.")

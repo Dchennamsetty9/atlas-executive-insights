@@ -18,21 +18,49 @@ const DEFAULT_STYLE = { border: '#3b82f6', glow: 'rgba(59,130,246,0.10)', dot: '
 
 const InsightCard = memo(({ insight, index, onDismiss }) => {
   const sty = SEVERITY_STYLE[insight.severity] ?? DEFAULT_STYLE;
-  const [showWhy, setShowWhy] = useState(false);
-  const [owner, setOwner]     = useState(insight.owner || '');
-  const [editOwner, setEditOwner] = useState(false);
+  const [showWhy,    setShowWhy]    = useState(false);
+  const [owner,      setOwner]      = useState(insight.owner || '');
+  const [editOwner,  setEditOwner]  = useState(false);
+  const [sharing,    setSharing]    = useState(false);
+  const [shareEmail, setShareEmail] = useState('');
+  const [shareSent,  setShareSent]  = useState(false);
+  const [sending,    setSending]    = useState(false);
 
   const saveOwner = (val) => {
     const trimmed = val.trim();
     setOwner(trimmed);
     setEditOwner(false);
-    // Persist to backend if insight has an id
     if (insight.id && trimmed) {
       fetch(`/api/preferences/insight-owner`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: { insight_id: insight.id, owner: trimmed } }),
       }).catch(() => {});
     }
+  };
+
+  const sendShare = async () => {
+    setSending(true);
+    const msg = [
+      insight.title,
+      insight.description,
+      insight.recommendation ? `Recommendation: ${insight.recommendation}` : '',
+    ].filter(Boolean).join('\n\n');
+    try {
+      await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message:  msg,
+          level:    insight.severity || 'warning',
+          email_to: shareEmail.trim() || null,
+        }),
+      });
+      setShareSent(true);
+      setSharing(false);
+      setShareEmail('');
+      setTimeout(() => setShareSent(false), 3000);
+    } catch { /* ignore */ }
+    finally { setSending(false); }
   };
 
   return (
@@ -147,7 +175,84 @@ const InsightCard = memo(({ insight, index, onDismiss }) => {
           >
             {showWhy ? 'Hide explanation' : 'Why am I seeing this?'}
           </button>
+
+          {/* Share button */}
+          {shareSent ? (
+            <span style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>&#10003; Sent!</span>
+          ) : (
+            <button
+              onClick={() => setSharing(s => !s)}
+              title="Send to Slack / Email"
+              style={{
+                background: sharing ? 'rgba(99,102,241,0.15)' : 'none',
+                border: sharing ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
+                borderRadius: 5, cursor: 'pointer',
+                fontSize: 10, color: '#818cf8', padding: '1px 6px',
+                transition: 'all 0.15s',
+              }}
+            >
+              &#128226; Share
+            </button>
+          )}
         </div>
+
+        {/* Share inline form */}
+        <AnimatePresence initial={false}>
+          {sharing && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              style={{ overflow: 'hidden' }}
+            >
+              <div style={{
+                marginTop: 8, padding: '8px 10px',
+                background: 'rgba(99,102,241,0.06)',
+                border: '1px solid rgba(99,102,241,0.15)',
+                borderRadius: 7,
+                display: 'flex', flexDirection: 'column', gap: 6,
+              }}>
+                <p style={{ margin: 0, fontSize: 10, color: '#94a3b8' }}>
+                  Sends to <strong style={{ color: '#818cf8' }}>Slack</strong> (if webhook configured)
+                  {' '}+ optional email below.
+                </p>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="email"
+                    placeholder="email@goto.com (optional)"
+                    value={shareEmail}
+                    onChange={e => setShareEmail(e.target.value)}
+                    style={{
+                      flex: 1, fontSize: 10, padding: '3px 8px', borderRadius: 5,
+                      background: 'rgba(255,255,255,0.06)',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      color: '#f1f5f9', outline: 'none', fontFamily: 'inherit',
+                    }}
+                  />
+                  <button
+                    onClick={sendShare}
+                    disabled={sending}
+                    style={{
+                      fontSize: 10, padding: '3px 10px', borderRadius: 5,
+                      background: sending ? 'rgba(99,102,241,0.3)' : 'rgba(99,102,241,0.8)',
+                      border: 'none', color: '#fff', cursor: sending ? 'default' : 'pointer',
+                      fontWeight: 600, transition: 'background 0.15s',
+                    }}
+                  >
+                    {sending ? 'Sending\u2026' : 'Send'}
+                  </button>
+                  <button
+                    onClick={() => setSharing(false)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: '#475569' }}
+                  >
+                    {'\u2715'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Why explanation */}
         <AnimatePresence initial={false}>
