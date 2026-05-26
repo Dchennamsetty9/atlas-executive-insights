@@ -5,12 +5,9 @@ FastAPI application serving KPI data, forecasts, and AI insights
 
 import logging
 import os
-import signal
-import sys
 import asyncio
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime, timedelta
@@ -20,96 +17,19 @@ import uvicorn
 
 import pandas as pd
 from config.settings import settings
-from services.data_fetcher import DataFetcher  # Direct Databricks connection (live queries)
-from services.gaim_data_service import GAIMDataService  # GAIM-specific KPI queries with exact formulas
-from services.databricks_connection import set_request_token  # Per-request token forwarding
+from bootstrap import (
+    app,
+    data_fetcher,
+    gaim_service,
+    forecasting_service,
+    insights_engine,
+    metrics_calculator,
+    genie_service,
+)
 from services.data_cache import data_cache             # In-memory TTL cache (15-min refresh)
-from services.forecasting import ForecastingService
-from services.insights_engine import InsightsEngine
-from services.metrics import MetricsCalculator
-from services.genie_service import GenieService  # AI-powered insights from Genie
-from routes.genie import router as genie_router
-from routes.insights import router as insights_router
-from routes.mql import router as mql_router
-from routes.pipeline_segments import router as pipeline_segments_router
-from routes.deal_bands import router as deal_bands_router
-from routes.coverage import router as coverage_router
-from routes.deals import router as deals_router
-from routes.forecast import router as forecast_router
-from routes.performance_hub import router as performance_hub_router
-from routes.ai import router as ai_router
-from routes.preferences import router as preferences_router
-from routes.actions import router as actions_router
-from routes.notifications import router as notifications_router
 from models.kpi import KPICard, ChartData, Insight, Forecast
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
-
-app = FastAPI(
-    title="Atlas Executive Insights API",
-    description="AI-powered executive analytics backend - LIVE Databricks",
-    version="0.3.0"
-)
-
-# ── Graceful shutdown (Databricks Apps sends SIGTERM before SIGKILL) ──────────
-def _sigterm_handler(signum, frame):
-    logger.info("SIGTERM received — shutting down gracefully.")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, _sigterm_handler)
-
-# CORS configuration for React frontend and Databricks Apps
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.middleware("http")
-async def inject_forwarded_token(request: Request, call_next):
-    """
-    Capture the user's OAuth token forwarded by Databricks Apps and store it
-    in a ContextVar so all downstream Databricks SQL calls within this request
-    run as the user (user identity passthrough).
-
-    Databricks Apps forwards the token in the x-forwarded-access-token header.
-    When that header is absent (local dev, health checks) the ContextVar stays
-    empty and _resolve_token() falls back to DATABRICKS_TOKEN / .env.
-    """
-    token = request.headers.get("x-forwarded-access-token", "")
-    if token:
-        set_request_token(token)
-    return await call_next(request)
-
-# Initialize services with DIRECT Databricks connection
-data_fetcher = DataFetcher()
-gaim_service = GAIMDataService()  # Primary KPI service — exact GAIM formulas + real targets
-forecasting_service = ForecastingService()
-insights_engine = InsightsEngine()
-metrics_calculator = MetricsCalculator()
-genie_service = GenieService()  # AI-powered insights
-
-# Mount routers
-app.include_router(genie_router)
-app.include_router(insights_router)
-app.include_router(mql_router)
-app.include_router(pipeline_segments_router)
-app.include_router(deal_bands_router)
-app.include_router(coverage_router)
-app.include_router(deals_router)
-app.include_router(forecast_router)
-app.include_router(performance_hub_router)
-app.include_router(ai_router)
-app.include_router(preferences_router)
-app.include_router(actions_router)
-app.include_router(notifications_router)
 
 
 @app.get("/api/health")

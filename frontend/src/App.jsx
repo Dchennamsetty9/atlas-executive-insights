@@ -15,7 +15,7 @@ import BusinessPerformancePanel from './components/dashboard/BusinessPerformance
 import AnalyticsTabs from './components/dashboard/AnalyticsTabs';
 import InsightBanner from './components/ai/InsightBanner';
 import { useUISound } from './hooks/useUISound';
-import { apiService } from './services/api';
+import { useDashboardData } from './hooks/useDashboardData';
 import { FilterProvider, useFilters } from './contexts/FilterContext';
 import NotificationBell from './components/NotificationBell';
 import './styles/futuristic-theme.css';
@@ -23,68 +23,23 @@ import './App.css'
 
 function AppInner() {
   const { filters, setFilters } = useFilters();
-  const [backendStatus, setBackendStatus]   = useState('checking');
-  const [lastRefreshed, setLastRefreshed]   = useState(null);
-  const [kpis,          setKpis]            = useState([]);
-  const [kpiInsights,   setKpiInsights]     = useState({});
-  const [isLoadingKpis, setIsLoadingKpis]   = useState(false);
-  const [kpiError,      setKpiError]        = useState(null);
   const [isAnalyzing,   setIsAnalyzing]     = useState(false);
   const [selectedKpi,   setSelectedKpi]     = useState(null);
   const [activeInsightId, setActiveInsightId] = useState(null);
   const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
   const { enabled: soundEnabled, toggle: toggleSound, play } = useUISound();
+  const {
+    backendStatus,
+    lastRefreshed,
+    kpis,
+    kpiInsights,
+    isLoadingKpis,
+    kpiError,
+    loadKpis,
+    handleRefreshNow,
+  } = useDashboardData(filters, play);
 
   useEffect(() => { localStorage.setItem('atlas-theme', theme); }, [theme]);
-  
-  useEffect(() => {
-    checkBackendHealth();
-    loadKpis();
-
-    const interval = setInterval(async () => {
-      try { await apiService.post('/api/cache/refresh', {}); } catch (_) {}
-      loadKpis();
-    }, 15 * 60 * 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    if (kpis.length > 0) loadKpiInsights();
-  }, [kpis]);
-
-  const checkBackendHealth = async () => {
-    try {
-      await apiService.healthCheck();
-      setBackendStatus('connected');
-    } catch {
-      setBackendStatus('disconnected');
-    }
-  };
-
-  const loadKpis = useCallback(async (customFilters = null) => {
-    const appliedFilters = customFilters || filters;
-    try {
-      setIsLoadingKpis(true);
-      setKpiError(null);
-      const kpiData = await apiService.getKPIs(null, null, appliedFilters);
-      setKpis(kpiData);
-      setLastRefreshed(new Date());
-      play('load');
-    } catch (error) {
-      console.error('Failed to load KPIs:', error);
-      const isTimeout = error?.code === 'ECONNABORTED' || error?.message?.includes('timeout');
-      setKpiError(isTimeout ? 'timeout' : 'error');
-    } finally {
-      setIsLoadingKpis(false);
-    }
-  }, [filters, play]);
-
-  const handleRefreshNow = async () => {
-    play('click');
-    try { await apiService.post('/api/cache/refresh', {}); } catch (_) {}
-    loadKpis();
-  };
 
   const handleFilterChange = async (newFilters) => {
     setFilters(newFilters);
@@ -95,17 +50,6 @@ function AppInner() {
   const handleInsightToggle = useCallback((kpiId) => {
     setActiveInsightId(prev => prev === kpiId ? null : kpiId);
   }, []);
-
-  const loadKpiInsights = async () => {
-    const insightsMap = {};
-    for (const kpi of kpis) {
-      try {
-        const insights = await apiService.get(`/api/insights/kpi/${kpi.id}`);
-        insightsMap[kpi.id] = insights;
-      } catch { /* non-critical */ }
-    }
-    setKpiInsights(insightsMap);
-  };
 
   const handleKpiCardClick = (kpi) => {
     play('open');
