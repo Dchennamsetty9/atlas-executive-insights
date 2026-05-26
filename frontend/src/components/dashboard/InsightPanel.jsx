@@ -67,12 +67,12 @@ const InsightCard = memo(({ insight, index, onDismiss }) => {
         onMouseEnter={e => { e.currentTarget.style.color = '#ef4444'; }}
         onMouseLeave={e => { e.currentTarget.style.color = '#334155'; }}
       >
-        âœ•
+        {'\u2715'}
       </button>
 
       {/* Icon */}
       <span style={{ fontSize: 22, lineHeight: 1, flexShrink: 0, marginTop: 1 }}>
-        {insight.icon || 'ðŸ“Š'}
+        {insight.icon || '📊'}
       </span>
 
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -131,7 +131,7 @@ const InsightCard = memo(({ insight, index, onDismiss }) => {
                   fontStyle: owner ? 'normal' : 'italic', padding: 0,
                 }}
               >
-                {owner || 'Assignâ€¦'}
+                {owner || 'Assign\u2026'}
               </button>
             )}
           </div>
@@ -233,13 +233,13 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
           cursor: 'pointer', userSelect: 'none', marginBottom: collapsed ? 0 : 14,
         }}
       >
-        <span style={{ fontSize: 16 }}>ðŸ”¬</span>
+        <span style={{ fontSize: 16 }}>🔬</span>
         <span style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9', flex: 1 }}>
           AI Hidden Insights
         </span>
 
         {loading && (
-          <span style={{ fontSize: 11, color: '#475569' }}>Analyzingâ€¦</span>
+          <span style={{ fontSize: 11, color: '#475569' }}>Analyzing&hellip;</span>
         )}
 
         {!loading && highCount > 0 && (
@@ -266,7 +266,7 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
           <span style={{ fontSize: 11, color: '#475569' }}>No patterns detected</span>
         )}
 
-        <span style={{ fontSize: 12, color: '#475569' }}>{collapsed ? 'â–¼' : 'â–²'}</span>
+        <span style={{ fontSize: 12, color: '#475569' }}>{collapsed ? '\u25BC' : '\u25B2'}</span>
       </div>
 
       {/* Cards */}
@@ -287,7 +287,7 @@ const InsightPanel = ({ kpis = [], filters = {} }) => {
                   animate={{ opacity: [0.3, 1, 0.3] }}
                   transition={{ duration: 1.2, repeat: Infinity }}
                 />
-                Scanning KPI data for hidden patternsâ€¦
+                Scanning KPI data for hidden patterns&hellip;
               </div>
             ) : (
               <AnimatePresence>
