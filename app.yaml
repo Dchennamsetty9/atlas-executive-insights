@@ -1,9 +1,9 @@
 # Databricks Apps Configuration
 # Deploy this app to your Databricks workspace
 
-name: atlas-executive-insights
+name: gaim-executive-app
 version: 1.0.0
-description: AI-Powered Executive Analytics Dashboard
+description: GAIM Executive App - AI-Powered Executive Analytics Dashboard
 
 # Application entry point — reads DATABRICKS_APP_PORT at runtime (Databricks Apps requirement)
 command:

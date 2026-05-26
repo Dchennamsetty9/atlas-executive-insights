@@ -1,6 +1,6 @@
-# Atlas Executive Insights
+# GAIM Executive App
 
-AI-powered executive analytics dashboard combining Power BI KPIs with forecasting and automated insights.
+AI-powered executive analytics dashboard combining GAIM KPIs with forecasting and automated insights.
 
 ## 🎯 Overview
 
@@ -13,11 +13,12 @@ This tool provides:
 ## 🏗️ Architecture
 
 ```
-atlas-executive-insights/
+gaim-executive-app/
+├── app.yaml              # Databricks App entry config
 ├── backend/              # FastAPI Python backend
 ├── frontend/             # React web application
-├── forecasting/          # ML models and forecasting logic
-├── shared/               # Shared configs and utilities
+├── notebooks/            # Databricks scheduled precompute jobs
+├── schemas/              # Unity Catalog DDL and grants
 └── docs/                 # Documentation
 ```
 

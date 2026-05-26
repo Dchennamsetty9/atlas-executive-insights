@@ -1,0 +1,221 @@
+# Databricks Asset Bundle — gaim-executive-app
+# Manages the ARR Forecast Prophet notebook job and the Databricks App deployment.
+#
+# Prerequisites:
+#   databricks CLI v0.200+ installed and configured
+#     databricks configure --host https://goto-eureka-mdl-1.cloud.databricks.com
+#
+# Deploy & create job:
+#   databricks bundle deploy --target prod
+#
+# Trigger a manual forecast run:
+#   databricks bundle run arr_forecast_prophet --target prod
+
+bundle:
+  name: gaim-executive-app
+
+workspace:
+  host: https://goto-data-dock.cloud.databricks.com
+
+resources:
+  jobs:
+    arr_forecast_prophet:
+      name: "ARR Forecast Prophet — Weekly"
+      description: >
+        Trains Prophet models for all Geo x Product segments using
+        federated.sales.metis_won_opps_fact and writes forecast results to
+        datagroup_mdl.mdl_sales_analytics.arr_forecast_prophet.
+        The gaim-executive-app FastAPI reads from that table.
+
+      # ── Schedule: every Monday at 6:00 AM UTC ─────────────────────────────
+      schedule:
+        quartz_cron_expression: "0 0 6 ? * MON"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+
+      # ── Job cluster: ML runtime has Prophet compatible deps ────────────────
+      job_clusters:
+        - job_cluster_key: arr_forecast_cluster
+          new_cluster:
+            spark_version: "15.4.x-cpu-ml-scala2.12"
+            node_type_id: m5d.large
+            num_workers: 1
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: run_arr_forecast_prophet
+          job_cluster_key: arr_forecast_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/ARR Forecast Prophet
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: prophet==1.1.5
+
+      # ── Notify on failure ─────────────────────────────────────────────────
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
+    # ── Job 1: Metrics Refresh (every 4 hours) ──────────────────────────────
+    atlas_job1_metrics_refresh:
+      name: "Atlas | Job1 — Metrics Refresh (4h)"
+      description: >
+        Reads from gaim_pipeline_daily_snapshot + federated.sales.* + metis_targets_summary.
+        Computes all 9 KPIs vs paced targets, writes to atlas.metrics_summary,
+        atlas.metrics_history, and atlas.revenue_gap_decomposition.
+
+      schedule:
+        quartz_cron_expression: "0 0 0/4 * * ?"   # every 4h on the hour
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: atlas_shared_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.large
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+
+      tasks:
+        - task_key: metrics_refresh
+          job_cluster_key: atlas_shared_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/atlas-jobs/job1_metrics_refresh
+            source: WORKSPACE
+
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
+    # ── Job 2: AI Insights Generation (every 6 hours) ───────────────────────
+    atlas_job2_insights_generation:
+      name: "Atlas | Job2 — AI Insights Generation (6h)"
+      description: >
+        Reads KPI data, runs rule engine for threshold detection, then calls
+        Databricks Foundation Model API (databricks-claude-sonnet-4-6) to
+        generate natural-language insights. Writes to atlas.insights_cache.
+        Extended TTL of 6h keeps the app responsive even if this job is delayed.
+
+      schedule:
+        quartz_cron_expression: "0 30 1/6 * * ?"  # every 6h at :30 (offset from Job 1)
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: atlas_shared_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.large
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+
+      tasks:
+        - task_key: insights_generation
+          job_cluster_key: atlas_shared_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/atlas-jobs/job2_insights_generation
+            source: WORKSPACE
+
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
+    # ── Job 3: Forecast Scoring (nightly) ────────────────────────────────────
+    atlas_job3_forecast_scoring:
+      name: "Atlas | Job3 — Forecast Scoring (nightly)"
+      description: >
+        Runs Holt-Winters, ARIMA, Triple Smoothing, and Linear+Seasonal models
+        for 4 core metrics across 30/60/90 day horizons. Computes confidence
+        intervals and selects best model by MAPE on held-out last 30 days.
+        Writes to atlas.forecast_results. Uses databricks-claude-sonnet-4-6
+        to generate 4-box intelligence text (drivers / actions / risks / opps).
+
+      schedule:
+        quartz_cron_expression: "0 0 3 * * ?"     # 3 AM Eastern daily
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: atlas_ml_cluster
+          new_cluster:
+            spark_version: "15.4.x-cpu-ml-scala2.12"   # ML runtime for scipy/numpy
+            node_type_id: m5d.large
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+
+      tasks:
+        - task_key: forecast_scoring
+          job_cluster_key: atlas_ml_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/atlas-jobs/job3_forecast_scoring
+            source: WORKSPACE
+
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
+    # ── Job 4: Alert Dispatcher (every 4 hours) ──────────────────────────────
+    atlas_job4_alert_dispatcher:
+      name: "Atlas | Job4 — Alert Dispatcher (4h)"
+      description: >
+        Reads atlas.metrics_summary against atlas.alert_rules. For each rule breach,
+        checks cooldown window to suppress duplicates, then fires Slack webhook
+        and/or AWS SES email. Writes dispatched alerts to atlas.alerts_queue.
+        Also writes to atlas_notifications for in-app display.
+        Runs 30 min after Job 1 so it always works on fresh metric data.
+
+      schedule:
+        quartz_cron_expression: "0 30 0/4 * * ?"  # every 4h at :30 (after Job 1)
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: atlas_shared_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.large
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: alert_dispatcher
+          job_cluster_key: atlas_shared_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/atlas-jobs/job4_alert_dispatcher
+            source: WORKSPACE
+
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Users/gaim-team/.bundle/${bundle.name}/prod

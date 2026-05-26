@@ -5,15 +5,20 @@ python-multipart==0.0.6
 
 # Database drivers
 databricks-sql-connector==3.0.0
-databricks-sdk>=0.20.0
+databricks-sdk==0.20.0
 sqlalchemy==2.0.25
 
-# ML and Data
+# ML and Forecasting
+prophet==1.1.5
 scikit-learn==1.4.0
 pandas==2.2.0
 numpy==1.26.3
+statsmodels>=0.14.0
+pmdarima>=2.0.0
 
-apscheduler>=3.10.0
+# Azure OpenAI
+openai==1.10.0
+azure-identity==1.15.0
 
 # Utilities
 python-dotenv==1.0.1
@@ -21,8 +26,8 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 requests==2.31.0
 httpx==0.26.0
-boto3>=1.34.0
-aiosmtplib>=3.0.0
+boto3>=1.34.0          # AWS SES email notifications
+aiosmtplib>=3.0.0      # SMTP email fallback
 
 # Data visualization (for backend analysis)
 matplotlib==3.8.2
