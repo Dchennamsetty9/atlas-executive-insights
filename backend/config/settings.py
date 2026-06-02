@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # Databricks (recommended - same source as Performance Hub)
     # When deployed to Databricks Apps, these are auto-provided
     databricks_server_hostname: str = os.getenv("DATABRICKS_SERVER_HOSTNAME", os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com"))
-    databricks_http_path: str = "/sql/1.0/warehouses/c24ee33594e13e93"
+    databricks_http_path: str = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH", os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93"))
     databricks_access_token: str = os.getenv("DATABRICKS_TOKEN", "")
     databricks_catalog: str = "datagroup_mdl"
     databricks_schema: str = "mdl_sales_analytics"

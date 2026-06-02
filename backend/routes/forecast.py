@@ -10,7 +10,7 @@ Endpoints:
 import asyncio
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 from fastapi import APIRouter
@@ -21,11 +21,20 @@ router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 
 CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 SCHEMA  = os.getenv("DATABRICKS_SCHEMA",  "mdl_sales_analytics")
-TABLE   = f"`{CATALOG}`.`{SCHEMA}`.`gaim_pipeline_daily_snapshot`"
 
-_on_databricks = bool(os.getenv("DATABRICKS_HOST"))
-_force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
-_AVAILABLE     = token_available() and (_on_databricks or _force_live)
+FORECAST_OUTPUT_TABLE = os.getenv("FORECAST_OUTPUT_TABLE", "arr_forecast_output")
+FORECAST_INSIGHTS_TABLE = os.getenv("FORECAST_INSIGHTS_TABLE", "arr_forecast_insights")
+FORECAST_LEADERBOARD_TABLE = os.getenv("FORECAST_LEADERBOARD_TABLE", "arr_model_leaderboard")
+
+
+def _table_fqn(table_name: str) -> str:
+    return f"{CATALOG}.{SCHEMA}.{table_name}"
+
+def _live_mode_available() -> bool:
+    """Evaluate Databricks availability at request time (supports forwarded user tokens)."""
+    _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
+    _force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
+    return token_available() and (_on_databricks or _force_live)
 
 SUPPORTED_MODELS = {
     "prophet":           {"name": "Prophet",                    "description": "Facebook Prophet — handles seasonality and holidays well"},
@@ -56,24 +65,350 @@ def _demo_historical(metric: str, days: int = 180):
     return rows
 
 
-def _query_historical(metric: str) -> list:
-    col_map = {
-        "won_pipeline":     "SUM(CASE WHEN deal_status = 'Won' THEN amount_towards_plan ELSE 0 END)",
-        "active_pipeline":  "SUM(CASE WHEN deal_status = 'Open' THEN amount_towards_plan ELSE 0 END)",
-        "win_rate":         "SUM(CASE WHEN deal_status = 'Won' THEN 1 ELSE 0 END) * 100.0 / NULLIF(SUM(CASE WHEN deal_status IN ('Won','Lost') THEN 1 ELSE 0 END), 0)",
-        "created_pipeline": "SUM(amount_towards_plan)",
-    }
-    agg = col_map.get(metric, col_map["won_pipeline"])
-    six_quarters_ago = (datetime.now() - timedelta(days=540)).strftime("%Y-%m-%d")
-    sql = f"""
-        SELECT snapshot_date AS date, ROUND({agg}, 2) AS value
-        FROM {TABLE}
-        WHERE snapshot_date >= '{six_quarters_ago}'
-        GROUP BY snapshot_date
-        ORDER BY snapshot_date
+def _metric_series_sql(metric: str, start_date: str) -> str:
+    """Return a SQL subquery with columns (ds, y) for the selected metric."""
+    if metric == "won_pipeline":
+        return f"""
+            SELECT close_date AS ds,
+                   ROUND(SUM(amount_towards_plan), 2) AS y
+            FROM federated.sales.metis_won_opps_fact
+            WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
+              AND close_date >= DATE('{start_date}')
+            GROUP BY close_date
+            ORDER BY close_date
+        """
+
+    if metric == "created_pipeline":
+        return f"""
+            SELECT pipeline_entered_date AS ds,
+                   ROUND(SUM(amount_towards_plan), 2) AS y
+            FROM federated.sales.metis_opened_opps_fact
+            WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
+              AND pipeline_entered_date >= DATE('{start_date}')
+            GROUP BY pipeline_entered_date
+            ORDER BY pipeline_entered_date
+        """
+
+    if metric == "active_pipeline":
+        return f"""
+            WITH opened AS (
+                SELECT pipeline_entered_date AS ds,
+                       SUM(amount_towards_plan) AS opened_amt
+                FROM federated.sales.metis_opened_opps_fact
+                WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
+                  AND pipeline_entered_date >= DATE('{start_date}')
+                GROUP BY pipeline_entered_date
+            ),
+            won AS (
+                SELECT close_date AS ds,
+                       SUM(amount_towards_plan) AS won_amt
+                FROM federated.sales.metis_won_opps_fact
+                WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
+                  AND close_date >= DATE('{start_date}')
+                GROUP BY close_date
+            ),
+            daily AS (
+                SELECT COALESCE(o.ds, w.ds) AS ds,
+                       COALESCE(o.opened_amt, 0) AS opened_amt,
+                       COALESCE(w.won_amt, 0) AS won_amt
+                FROM opened o
+                FULL OUTER JOIN won w ON o.ds = w.ds
+            )
+            SELECT ds,
+                   ROUND(GREATEST(0,
+                       SUM(opened_amt - won_amt)
+                       OVER (ORDER BY ds ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+                   ), 2) AS y
+            FROM daily
+            ORDER BY ds
+        """
+
+    # win_rate proxy from cumulative won_count / cumulative opened_count
+    return f"""
+        WITH opened AS (
+            SELECT pipeline_entered_date AS ds,
+                   COUNT(DISTINCT salesforce_opportunity_id) AS opened_cnt
+            FROM federated.sales.metis_opened_opps_fact
+            WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
+              AND pipeline_entered_date >= DATE('{start_date}')
+            GROUP BY pipeline_entered_date
+        ),
+        won AS (
+            SELECT close_date AS ds,
+                   COUNT(DISTINCT salesforce_opportunity_id) AS won_cnt
+            FROM federated.sales.metis_won_opps_fact
+            WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
+              AND close_date >= DATE('{start_date}')
+            GROUP BY close_date
+        ),
+        daily AS (
+            SELECT COALESCE(o.ds, w.ds) AS ds,
+                   COALESCE(o.opened_cnt, 0) AS opened_cnt,
+                   COALESCE(w.won_cnt, 0) AS won_cnt
+            FROM opened o
+            FULL OUTER JOIN won w ON o.ds = w.ds
+        ),
+        cum AS (
+            SELECT ds,
+                   SUM(won_cnt) OVER (ORDER BY ds ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS c_won,
+                   SUM(opened_cnt) OVER (ORDER BY ds ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS c_opened
+            FROM daily
+        )
+        SELECT ds,
+               ROUND(CASE WHEN c_opened > 0 THEN c_won * 100.0 / c_opened ELSE 0 END, 2) AS y
+        FROM cum
+        ORDER BY ds
     """
+
+
+def _query_historical(metric: str) -> list:
+    six_quarters_ago = (datetime.now() - timedelta(days=540)).strftime("%Y-%m-%d")
+    sql = _metric_series_sql(metric, six_quarters_ago)
     rows = execute_query(sql)
-    return [{"date": str(r["date"]), "value": float(r.get("value") or 0)} for r in rows]
+    return [{"date": str(r.get("ds") or r.get("date") or "")[:10], "value": float(r.get("y") or r.get("value") or 0)} for r in rows]
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_column(row: dict, candidates: list[str]) -> Optional[str]:
+    lowered = {str(k).lower(): k for k in row.keys()}
+    for candidate in candidates:
+        key = lowered.get(candidate)
+        if key:
+            return key
+    return None
+
+
+def _parse_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def _load_table_rows(table_name: str, limit: int = 5000) -> list[dict]:
+    sql = f"SELECT * FROM {_table_fqn(table_name)} LIMIT {limit}"
+    return execute_query(sql)
+
+
+def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optional[dict]:
+    """
+    Load forecast output from Delta table contract first.
+    Falls back to None if the table is unavailable or schema is incompatible.
+    """
+    try:
+        rows = _load_table_rows(FORECAST_OUTPUT_TABLE)
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    sample = rows[0]
+    metric_col = _pick_column(sample, ["metric", "metric_name"])
+    model_col = _pick_column(sample, ["model", "model_name"])
+    run_col = _pick_column(sample, ["run_date", "created_at", "generated_at", "execution_date"])
+    date_col = _pick_column(sample, ["ds", "date", "forecast_date", "target_date"])
+    forecast_col = _pick_column(sample, ["forecast_value", "yhat", "prediction", "predicted_value", "value"])
+    lower_col = _pick_column(sample, ["lower_bound", "yhat_lower", "lower_ci", "lower"])
+    upper_col = _pick_column(sample, ["upper_bound", "yhat_upper", "upper_ci", "upper"])
+    actual_col = _pick_column(sample, ["actual_value", "actual", "observed", "y"])
+    is_forecast_col = _pick_column(sample, ["is_forecast", "future_flag", "is_future"])
+
+    if not date_col or not forecast_col:
+        return None
+
+    filtered = rows
+    if metric_col:
+        filtered = [r for r in filtered if str(r.get(metric_col, "")).lower() == metric.lower()]
+    if model_col and model and model not in {"", "auto"}:
+        filtered = [r for r in filtered if str(r.get(model_col, "")).lower() == model.lower()]
+    if run_col and filtered:
+        latest_run = max(str(r.get(run_col) or "") for r in filtered)
+        filtered = [r for r in filtered if str(r.get(run_col) or "") == latest_run]
+
+    if not filtered:
+        return None
+
+    filtered.sort(key=lambda r: str(r.get(date_col) or ""))
+
+    history = []
+    forecast = []
+    for row in filtered:
+        date_str = str(row.get(date_col) or "")[:10]
+        if not date_str:
+            continue
+
+        f_val = _to_float(row.get(forecast_col), 0.0)
+        l_val = _to_float(row.get(lower_col), f_val) if lower_col else f_val
+        u_val = _to_float(row.get(upper_col), f_val) if upper_col else f_val
+        a_val = _to_float(row.get(actual_col), f_val) if actual_col else f_val
+
+        flag = _parse_bool(row.get(is_forecast_col)) if is_forecast_col else None
+        if flag is True:
+            forecast.append({"date": date_str, "value": round(max(0.0, f_val), 2), "lower": round(max(0.0, l_val), 2), "upper": round(max(0.0, u_val), 2)})
+        elif flag is False:
+            history.append({"date": date_str, "value": round(max(0.0, a_val), 2)})
+        else:
+            # If no explicit flag exists, infer by presence of actual value.
+            if actual_col and row.get(actual_col) is not None:
+                history.append({"date": date_str, "value": round(max(0.0, a_val), 2)})
+            else:
+                forecast.append({"date": date_str, "value": round(max(0.0, f_val), 2), "lower": round(max(0.0, l_val), 2), "upper": round(max(0.0, u_val), 2)})
+
+    # Preserve app contract: return context history + requested horizon
+    history = history[-90:]
+    forecast = forecast[:periods]
+
+    if not forecast:
+        return None
+
+    if not history:
+        try:
+            history = _query_historical(metric)[-90:]
+        except Exception:
+            history = _demo_historical(metric)[-90:]
+
+    mape = 0.0
+    rmse = 0.0
+    try:
+        board_rows = _load_table_rows(FORECAST_LEADERBOARD_TABLE, limit=1000)
+        if board_rows:
+            b = board_rows[0]
+            b_metric_col = _pick_column(b, ["metric", "metric_name"])
+            b_model_col = _pick_column(b, ["model", "model_name"])
+            b_run_col = _pick_column(b, ["run_date", "created_at", "generated_at", "execution_date"])
+            b_mape_col = _pick_column(b, ["mape", "mape_pct", "mean_absolute_percentage_error"])
+            b_rmse_col = _pick_column(b, ["rmse", "rmse_value", "root_mean_squared_error"])
+
+            scoped = board_rows
+            if b_metric_col:
+                scoped = [r for r in scoped if str(r.get(b_metric_col, "")).lower() == metric.lower()]
+            if b_model_col and model and model not in {"", "auto"}:
+                scoped = [r for r in scoped if str(r.get(b_model_col, "")).lower() == model.lower()]
+            if b_run_col and scoped:
+                latest_b_run = max(str(r.get(b_run_col) or "") for r in scoped)
+                scoped = [r for r in scoped if str(r.get(b_run_col) or "") == latest_b_run]
+            if scoped:
+                mape = _to_float(scoped[0].get(b_mape_col), 0.0) if b_mape_col else 0.0
+                rmse = _to_float(scoped[0].get(b_rmse_col), 0.0) if b_rmse_col else 0.0
+    except Exception:
+        pass
+
+    resolved_model = model
+    if model in {"", "auto"} and model_col:
+        resolved_model = str(filtered[0].get(model_col) or "holt_winters").lower()
+
+    return {
+        "history": history,
+        "forecast": forecast,
+        "mape": round(mape, 2),
+        "rmse": round(rmse, 2),
+        "resolved_model": resolved_model,
+        "source": "delta_tables",
+    }
+
+
+def _load_precomputed_insights(metric: str, model: str) -> Optional[dict]:
+    """Load precomputed AI narrative from arr_forecast_insights when available."""
+    try:
+        rows = _load_table_rows(FORECAST_INSIGHTS_TABLE, limit=1000)
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    sample = rows[0]
+    metric_col = _pick_column(sample, ["metric", "metric_name"])
+    model_col = _pick_column(sample, ["model", "model_name"])
+    run_col = _pick_column(sample, ["run_date", "created_at", "generated_at", "execution_date"])
+
+    scoped = rows
+    if metric_col:
+        scoped = [r for r in scoped if str(r.get(metric_col, "")).lower() == metric.lower()]
+    if model_col and model and model not in {"", "auto"}:
+        scoped = [r for r in scoped if str(r.get(model_col, "")).lower() == model.lower()]
+    if run_col and scoped:
+        latest_run = max(str(r.get(run_col) or "") for r in scoped)
+        scoped = [r for r in scoped if str(r.get(run_col) or "") == latest_run]
+
+    if not scoped:
+        return None
+
+    row = scoped[0]
+    return {
+        "description": row.get("description") or row.get("summary") or row.get("narrative") or "",
+        "key_drivers": row.get("key_drivers") or row.get("drivers") or [],
+        "executive_actions": row.get("executive_actions") or row.get("actions") or [],
+        "downside_risks": row.get("downside_risks") or row.get("risks") or [],
+        "upside_opportunities": row.get("upside_opportunities") or row.get("opportunities") or [],
+        "trend_status": row.get("trend_status") or row.get("trend") or "stable",
+        "risk_level": row.get("risk_level") or row.get("risk") or "moderate",
+        "model_confidence": _to_float(row.get("model_confidence"), 0.85),
+        "source": "delta_tables",
+    }
+
+
+def _table_readiness(table_name: str) -> dict:
+    """Check whether a forecast table exists and has a latest run_date value."""
+    fqn = _table_fqn(table_name)
+    out = {
+        "table": table_name,
+        "fqn": fqn,
+        "exists": False,
+        "ready": False,
+        "row_count": 0,
+        "latest_run_date": None,
+        "run_date_column": None,
+        "error": None,
+    }
+
+    try:
+        sample_rows = execute_query(f"SELECT * FROM {fqn} LIMIT 1")
+        out["exists"] = True
+
+        # Count rows for basic readiness signal.
+        count_rows = execute_query(f"SELECT COUNT(*) AS row_count FROM {fqn}")
+        if count_rows:
+            out["row_count"] = int(_to_float(count_rows[0].get("row_count"), 0))
+
+        if not sample_rows:
+            out["error"] = "table exists but has no rows"
+            return out
+
+        sample = sample_rows[0]
+        run_col = _pick_column(sample, ["run_date", "created_at", "generated_at", "execution_date"])
+        out["run_date_column"] = run_col
+
+        if run_col:
+            latest_rows = execute_query(
+                f"SELECT CAST({run_col} AS STRING) AS latest_run_date "
+                f"FROM {fqn} WHERE {run_col} IS NOT NULL ORDER BY {run_col} DESC LIMIT 1"
+            )
+            if latest_rows:
+                out["latest_run_date"] = latest_rows[0].get("latest_run_date")
+        else:
+            out["error"] = "run_date-like column not found"
+
+        out["ready"] = bool(out["exists"] and out["row_count"] > 0 and out["latest_run_date"])
+        return out
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
 
 
 # ── Model implementations (pure Python, no heavy deps beyond scipy/numpy) ──────
@@ -286,14 +621,14 @@ def _simple_trend_forecast(history: list, periods: int) -> dict:
     return {"forecast": forecast, "mape": 0, "rmse": 0}
 
 
-def _dispatch_model(model: str, history: list, periods: int) -> dict:
+def _dispatch_model(model: str, history: list, periods: int, metric: str) -> dict:
     dispatch = {
         "prophet":          _run_prophet,
         "holt_winters":     _run_holt_winters,
         "arima":            _run_arima,
         "triple_smoothing": _run_triple_smoothing,
         "linear_seasonal":  _run_linear_seasonal,
-        "databricks_ai":    lambda h, p: _run_databricks_ai(h, p),
+        "databricks_ai":    lambda h, p: _run_databricks_ai(h, p, metric),
     }
     fn = dispatch.get(model, _run_holt_winters)
     return fn(history, periods)
@@ -307,6 +642,49 @@ async def list_models():
     return {"models": SUPPORTED_MODELS, "metrics": SUPPORTED_METRICS}
 
 
+@router.get("/health/tables")
+async def forecast_tables_health():
+    """
+    Validate forecast table readiness in one call:
+    - table exists
+    - has rows
+    - has latest run_date-like value
+    """
+    live_available = _live_mode_available()
+    table_names = [FORECAST_OUTPUT_TABLE, FORECAST_INSIGHTS_TABLE, FORECAST_LEADERBOARD_TABLE]
+
+    if not live_available:
+        return {
+            "ready": False,
+            "live_mode_available": False,
+            "source": "demo",
+            "error": "Databricks token/host not available in current runtime",
+            "tables": [
+                {
+                    "table": t,
+                    "fqn": _table_fqn(t),
+                    "exists": False,
+                    "ready": False,
+                    "row_count": 0,
+                    "latest_run_date": None,
+                    "run_date_column": None,
+                    "error": "live mode unavailable",
+                }
+                for t in table_names
+            ],
+        }
+
+    checks = await asyncio.gather(*[asyncio.to_thread(_table_readiness, t) for t in table_names])
+    ready = all(c.get("ready") for c in checks)
+
+    return {
+        "ready": ready,
+        "live_mode_available": True,
+        "source": "databricks",
+        "tables": checks,
+    }
+
+
 @router.get("/run")
 async def run_forecast(
     model:   str = "holt_winters",
@@ -318,9 +696,30 @@ async def run_forecast(
     Returns: historical series + forecast + confidence intervals + accuracy metrics.
     """
     periods = max(7, min(periods, 365))
+    if metric not in SUPPORTED_METRICS:
+        metric = "won_pipeline"
+
+    # Preferred architecture: load precomputed outputs from Delta tables.
+    live_available = _live_mode_available()
+    if live_available:
+        table_result = await asyncio.to_thread(_load_precomputed_forecast, metric, model, periods)
+        if table_result:
+            resolved_model = table_result.get("resolved_model", model)
+            model_meta = SUPPORTED_MODELS.get(resolved_model, {"name": resolved_model, "description": ""})
+            return {
+                "model":      resolved_model,
+                "model_name": model_meta["name"],
+                "metric":     metric,
+                "periods":    periods,
+                "history":    table_result["history"],
+                "forecast":   table_result["forecast"],
+                "mape":       table_result.get("mape", 0),
+                "rmse":       table_result.get("rmse", 0),
+                "source":     "databricks_precomputed",
+            }
 
     # Load historical data
-    if _AVAILABLE:
+    if live_available:
         try:
             history = await asyncio.to_thread(_query_historical, metric)
         except Exception as e:
@@ -333,7 +732,7 @@ async def run_forecast(
         history = _demo_historical(metric)
 
     # Run the selected model in a thread pool (CPU-bound)
-    result = await asyncio.to_thread(_dispatch_model, model, history, periods)
+    result = await asyncio.to_thread(_dispatch_model, model, history, periods, metric)
 
     model_meta = SUPPORTED_MODELS.get(model, {"name": model, "description": ""})
 
@@ -346,7 +745,7 @@ async def run_forecast(
         "forecast":   result["forecast"],
         "mape":       result.get("mape", 0),
         "rmse":       result.get("rmse", 0),
-        "source":     "databricks" if _AVAILABLE else "demo",
+        "source":     "databricks" if live_available else "demo",
     }
 
 
@@ -424,27 +823,15 @@ def _run_databricks_ai(history: list, periods: int, metric: str = "won_pipeline"
     Falls back to Holt-Winters if the function is unavailable (e.g. workspace tier).
     ai_forecast is Databricks Public Preview — available on Serverless SQL warehouses.
     """
-    if not _AVAILABLE:
+    if not _live_mode_available():
         return _run_holt_winters(history, periods)
 
-    col_map = {
-        "won_pipeline":     "SUM(CASE WHEN deal_status='Won' THEN amount_towards_plan ELSE 0 END)",
-        "active_pipeline":  "SUM(CASE WHEN deal_status='Open' THEN amount_towards_plan ELSE 0 END)",
-        "created_pipeline": "SUM(amount_towards_plan)",
-        "win_rate":         ("SUM(CASE WHEN deal_status='Won' THEN 1 ELSE 0 END)*100.0"
-                             "/NULLIF(SUM(CASE WHEN deal_status IN('Won','Lost') THEN 1 ELSE 0 END),0)"),
-    }
-    agg         = col_map.get(metric, col_map["won_pipeline"])
     six_q_ago   = (datetime.now() - timedelta(days=540)).strftime("%Y-%m-%d")
+    series_sql  = _metric_series_sql(metric, six_q_ago)
     sql = f"""
         SELECT *
         FROM ai_forecast(
-            (SELECT snapshot_date AS ds, ROUND({agg}, 2) AS y
-             FROM {TABLE}
-             WHERE snapshot_date >= '{six_q_ago}'
-               AND amount_towards_plan IS NOT NULL
-             GROUP BY snapshot_date
-             ORDER BY snapshot_date),
+            ({series_sql}),
             horizon         => {periods},
             frequency       => 'day',
             prediction_interval_width => 0.95
@@ -596,7 +983,7 @@ def _forecast_description(model: str, trend: str, growth: float, confidence: flo
             f"{mn} model predicts the next 90 days with {confidence * 100:.0f}% confidence.")
 
 
-def _best_model_result(history: list) -> tuple[str, dict]:
+def _best_model_result(history: list, metric: str) -> tuple[str, dict]:
     """Backtest top 3 models, pick the one with lowest MAPE > 0."""
     candidates = ["holt_winters", "arima", "triple_smoothing", "linear_seasonal"]
     try:
@@ -607,7 +994,7 @@ def _best_model_result(history: list) -> tuple[str, dict]:
     best_key, best_mape, best_result = candidates[0], float("inf"), None
     for m in candidates[:4]:
         try:
-            r = _dispatch_model(m, history, 90)
+            r = _dispatch_model(m, history, 90, metric)
             if 0 < r.get("mape", 0) < best_mape:
                 best_mape, best_key, best_result = r["mape"], m, r
         except Exception:
@@ -623,7 +1010,10 @@ def _best_model_result(history: list) -> tuple[str, dict]:
 async def compare_models(metric: str = "won_pipeline", periods: int = 90):
     """Run all available models and return side-by-side MAPE/RMSE comparison."""
     periods = max(7, min(periods, 365))
-    if _AVAILABLE:
+    if metric not in SUPPORTED_METRICS:
+        metric = "won_pipeline"
+    live_available = _live_mode_available()
+    if live_available:
         try:
             history = await asyncio.to_thread(_query_historical, metric)
         except Exception:
@@ -635,7 +1025,7 @@ async def compare_models(metric: str = "won_pipeline", periods: int = 90):
 
     async def _one(m: str):
         try:
-            r = await asyncio.to_thread(_dispatch_model, m, history, periods)
+            r = await asyncio.to_thread(_dispatch_model, m, history, periods, metric)
             fc = r.get("forecast", [])
             return m, {
                 "model":        m,
@@ -653,8 +1043,13 @@ async def compare_models(metric: str = "won_pipeline", periods: int = 90):
     # Sort by MAPE ascending (best first); errors go last
     ranked = sorted(results.values(),
                     key=lambda x: x.get("mape", 9999) if x.get("status") == "ok" else 99999)
-    return {"metric": metric, "periods": periods, "models": results,
-            "ranked": [r["model"] for r in ranked], "source": "databricks" if _AVAILABLE else "demo"}
+    return {
+        "metric": metric,
+        "periods": periods,
+        "models": results,
+        "ranked": [r["model"] for r in ranked],
+        "source": "databricks" if live_available else "demo",
+    }
 
 
 @router.get("/accuracy")
@@ -673,7 +1068,51 @@ async def get_forecast_intelligence(
     trend status, risk level, best/worst case scenarios, key drivers,
     recommended actions, downside risks, and upside opportunities.
     """
-    if _AVAILABLE:
+    if metric not in SUPPORTED_METRICS:
+        metric = "won_pipeline"
+
+    live_available = _live_mode_available()
+
+    # Preferred architecture: consume generated narrative from Delta table.
+    if live_available:
+        table_intel = await asyncio.to_thread(_load_precomputed_insights, metric, model)
+        table_fc = await asyncio.to_thread(_load_precomputed_forecast, metric, model, 90)
+        if table_intel and table_fc:
+            fc = table_fc.get("forecast", [])
+            most_likely = round(float(fc[-1]["value"]), 0) if fc else 0.0
+            best_case = round(float(fc[-1].get("upper", most_likely)), 0) if fc else most_likely
+            worst_case = round(float(fc[-1].get("lower", most_likely)), 0) if fc else most_likely
+
+            resolved_model = table_fc.get("resolved_model", model)
+            model_name = SUPPORTED_MODELS.get(resolved_model, {}).get("name", resolved_model)
+
+            return {
+                "model_used":           resolved_model,
+                "model_name":           model_name,
+                "model_confidence":     table_intel.get("model_confidence", 0.85),
+                "trend_status":         table_intel.get("trend_status", "stable"),
+                "risk_level":           table_intel.get("risk_level", "moderate"),
+                "growth_rate":          _growth_rate(table_fc.get("history", [])),
+                "forecast_90d": {
+                    "most_likely": most_likely,
+                    "best_case":   best_case,
+                    "worst_case":  worst_case,
+                },
+                "upside_dollar":        round(best_case - most_likely, 0),
+                "downside_dollar":      round(worst_case - most_likely, 0),
+                "mape":                 table_fc.get("mape", 0),
+                "rmse":                 table_fc.get("rmse", 0),
+                "key_drivers":          table_intel.get("key_drivers", []),
+                "executive_actions":    table_intel.get("executive_actions", []),
+                "downside_risks":       table_intel.get("downside_risks", []),
+                "upside_opportunities": table_intel.get("upside_opportunities", []),
+                "description":          table_intel.get("description", ""),
+                "metric":               metric,
+                "history_days":         len(table_fc.get("history", [])),
+                "source":               "databricks_precomputed",
+            }
+
+    if live_available:
         try:
             history = await asyncio.to_thread(_query_historical, metric)
         except Exception as exc:
@@ -686,10 +1125,10 @@ async def get_forecast_intelligence(
 
     # Model selection
     if model in ("auto", "") or model not in SUPPORTED_MODELS:
-        chosen_model, result = await asyncio.to_thread(_best_model_result, history)
+        chosen_model, result = await asyncio.to_thread(_best_model_result, history, metric)
     else:
         chosen_model = model
-        result = await asyncio.to_thread(_dispatch_model, model, history, 90)
+        result = await asyncio.to_thread(_dispatch_model, model, history, 90, metric)
 
     trend      = _trend_status(history)
     risk       = _risk_level(result)
@@ -730,6 +1169,6 @@ async def get_forecast_intelligence(
         "description":          _forecast_description(chosen_model, trend, growth, confidence),
         "metric":               metric,
         "history_days":         len(history),
-        "source":               "databricks" if _AVAILABLE else "demo",
+        "source":               "databricks" if live_available else "demo",
     }
 

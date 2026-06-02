@@ -31,6 +31,10 @@ env:
   
   - name: DATABRICKS_HTTP_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
+
+  # Preferred alias used by forecasting module and deployment guides
+  - name: DATABRICKS_SQL_WAREHOUSE_PATH
+    value: "/sql/1.0/warehouses/c24ee33594e13e93"
   
   # Application settings
   - name: ENVIRONMENT

@@ -1,74 +1,75 @@
 # GAIM Executive App
 
-AI-powered executive analytics dashboard combining GAIM KPIs with forecasting and automated insights.
+GAIM Executive App is the Atlas Databricks application for executive KPI monitoring, pipeline analysis, forecasting, and AI-assisted insight delivery.
 
-## 🎯 Overview
+## Overview
 
-This tool provides:
-- **Real-time KPI Monitoring**: Connect to your Power BI data sources
-- **Descriptive Analytics**: Interactive charts showing trends and patterns
-- **Predictive Analytics**: ML-based forecasting using Prophet/scikit-learn
-- **AI Insights**: Azure OpenAI-generated recommendations and alerts
+The project combines:
+- Live and cached KPI APIs over Databricks data
+- Forecasting APIs for scenario-based ARR and pipeline outlooks
+- React dashboard experiences for executive monitoring and drill-downs
+- Notification, preference, action, and AI assistant routes for workflow support
 
-## 🏗️ Architecture
+The current forecasting direction is a precomputed, model-driven pipeline that can evolve from Prophet-only scenarios to a multi-model engine with accuracy tracking and AI narratives.
 
-```
+## Repository Layout
+
+```text
 gaim-executive-app/
-├── app.yaml              # Databricks App entry config
-├── backend/              # FastAPI Python backend
-├── frontend/             # React web application
-├── notebooks/            # Databricks scheduled precompute jobs
-├── schemas/              # Unity Catalog DDL and grants
-└── docs/                 # Documentation
+|- app.yaml                     Databricks App entry config
+|- backend/                     FastAPI backend, routes, services, config
+|- frontend/                    React + Vite application
+|- notebooks/                   Forecast and precompute jobs
+|- powerbi-reference/           Power BI semantic model reference assets
+|- schemas/                     Unity Catalog DDL, grants, and gold-layer setup
+`- docs/                        Supporting implementation notes
 ```
 
-## 🚀 Quick Start
+## Current Architecture
+
+- Backend bootstrap lives in `backend/bootstrap.py` and mounts route modules for forecast, insights, preferences, notifications, performance hub, deals, coverage, and AI workflows.
+- API entrypoints and static app serving live in `backend/main.py`.
+- Frontend is a Vite React app with dashboard components, hooks, contexts, and an API service layer.
+- Databricks remains the system of record for GAIM tables and forecast source data.
+- Power BI semantic model files under `powerbi-reference/` are the reference surface for ARR forecast lineage.
+
+## Local Development
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.10+
 - Node.js 18+
-- Azure OpenAI API access
-- Database connection (same as Power BI)
+- Databricks access or configured local mock/demo fallback
 
-### Backend Setup
-```bash
+### Backend
+
+```powershell
 cd backend
-python -m venv venv
-venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-### Frontend Setup
-```bash
+### Frontend
+
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-## 📊 Features Roadmap
+## Current Focus Areas
 
-### Week 1 POC
-- [x] Project structure
-- [ ] Backend API endpoints
-- [ ] Database connection
-- [ ] Basic forecasting
-- [ ] Azure OpenAI integration
-- [ ] Frontend UI components
-- [ ] KPI cards
-- [ ] Charts integration
+- Stabilize forecast serving around precomputed-first, live-fallback behavior
+- Align forecast table naming and contracts across app, notebooks, and Power BI reference
+- Expand executive insights beyond placeholder responses
+- Keep the UI stable while real KPI and forecast sources are progressively hardened
 
-### Future Enhancements
-- [ ] Real-time data refresh
-- [ ] Custom alert rules
-- [ ] Export to PDF/PowerPoint
-- [ ] Mobile responsive design
-- [ ] User authentication
+## Key Reference Docs
 
-## 📝 License
+- `ARCHITECTURE.md`
+- `ARR_FORECAST_ANALYSIS.md`
+- `PROJECT_STATUS.md`
+- `DASHBOARD_REFERENCE.md`
 
-Internal use - GAIM Team
+## License
 
-## 🤝 Contributing
-
-Contact: GAIM Team
+Internal use only.

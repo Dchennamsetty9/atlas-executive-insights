@@ -1,223 +1,88 @@
 # Atlas Executive Insights - Project Status
 
-**Last Updated**: May 8, 2026  
-**Status**: 🟢 MVP Complete (95% Complete)
+**Last Updated**: May 27, 2026  
+**Status**: Active application with production-oriented backend routes, stable frontend shell, and forecast architecture still being hardened.
 
 ---
 
-## ✅ Completed
+## Current Snapshot
 
-### 1. **Project Infrastructure** ✅
-- [x] Project structure created
-- [x] Backend folder (FastAPI)
-- [x] Frontend folder (React + Vite)
-- [x] Power BI reference folder
-- [x] Documentation folder
-- [x] Virtual environments configured
-
-### 2. **Backend Setup** ✅
-- [x] FastAPI application (`main.py`)
-- [x] Python 3.12.10 environment
-- [x] All dependencies installed:
-  - FastAPI 0.109.0
-  - Databricks SQL Connector 3.0.0
-  - Prophet 1.1.5 (Facebook forecasting)
-  - OpenAI 1.10.0
-  - scikit-learn, pandas, numpy
-- [x] CORS middleware configured
-- [x] Backend server running on port 8000
-
-### 3. **Frontend Setup** ✅
-- [x] React 18.2.0 + Vite
-- [x] Node.js v26.1.0, npm 11.13.0
-- [x] 382 packages installed
-- [x] Tailwind CSS configured
-- [x] Chart.js + Recharts for visualization
-- [x] Lucide React icons
-- [x] Frontend server running on port 3000
-
-### 4. **Database Integration** ✅
-- [x] Databricks connection configured
-- [x] Connection string: goto-eureka-mdl-1.cloud.databricks.com
-- [x] Catalog: datagroup_mdl
-- [x] Schema: mdl_sales_analytics
-- [x] Connection tested (can query tables)
-
-### 5. **Data Fetcher Service** ✅
-- [x] Base DataFetcher class
-- [x] Databricks query execution
-- [x] KPI data fetching (8 core metrics):
-  - Won Pipeline $
-  - Won Volume
-  - Average Deal Size
-  - Opportunities Created
-  - Created Pipeline $
-  - Active Pipeline $
-  - Close Rate %
-  - Coverage %
-- [x] Historical data fetching for forecasting
-- [x] ARR data fetching from `partner_ending_arr`
-- [x] **NEW**: Prophet forecast data from `forecast_prophet` table
-- [x] **NEW**: Win probability from `opportunity_scoring` table
-- [x] **NEW**: Forecast accuracy tracking from `forecast_prophet_2024`
-- [x] ARR segmentation (by product, channel, market)
-- [x] Mock data fallbacks for testing
-
-### 6. **Forecasting Service** ✅
-- [x] Base ForecastingService class
-- [x] **Prophet integration enabled**
-- [x] Linear regression fallback
-- [x] Confidence interval calculations
-- [x] Multi-metric forecasting
-- [x] Accuracy scoring
-- [x] Support for:
-  - ARR forecasting
-  - Won pipeline forecasting
-  - Active pipeline forecasting
-  - Created pipeline forecasting
-
-### 7. **API Endpoints** ✅
-**Health & Status:**
-- [x] `GET /` - Health check
-
-**KPI Endpoints:**
-- [x] `GET /api/kpis` - Get all KPI cards
-- [x] `GET /api/charts/{chart_type}` - Get chart data
-
-**ARR Endpoints:**
-- [x] `GET /api/arr/forecast` - ARR forecast
-- [x] `GET /api/arr/segments` - ARR by product/channel/market
-- [x] `GET /api/arr/history` - Historical ARR with growth rates
-
-**Forecasting Endpoints:**
-- [x] `GET /api/forecast` - Single metric forecast
-- [x] `GET /api/forecasts/all` - All metrics forecast
-- [x] **NEW**: `GET /api/forecast/prophet` - Prophet forecast with scenarios
-- [x] **NEW**: `GET /api/forecast/scenarios` - Best/most likely/worst case
-- [x] **NEW**: `GET /api/forecast/win-probability` - ML win probability
-- [x] **NEW**: `GET /api/forecast/accuracy` - Forecast accuracy metrics
-
-**AI Endpoints:**
-- [x] `GET /api/insights` - AI-generated insights (placeholder)
-- [x] `GET /api/recommendations` - AI recommendations (placeholder)
-
-### 8. **Power BI Analysis** ✅
-- [x] ARR Forecast dashboard analyzed (29 tables)
-- [x] Key tables documented:
-  - `forecast_prophet` (48 columns, 21 measures)
-  - `forecast_prophet_2024` (33 columns)
-  - `opportunity_scoring` (92 columns, 11 measures)
-  - `gaim_pipeline_daily_snapshot` (112 columns)
-- [x] DAX measures documented
-- [x] Data flow mapped
-- [x] Calculations explained
-
-### 9. **Documentation** ✅
-- [x] README.md files
-- [x] Setup guides (SETUP.md, QUICKSTART.md)
-- [x] Database connection guide
-- [x] POC plan document
-- [x] ARR Forecast tables analysis document
-- [x] Power BI reference folder README
-- [x] **NEW**: Frontend completion documentation (FRONTEND_COMPLETE.md)
-- [x] **NEW**: Architecture documentation (ARCHITECTURE.md)
-
-### 10. **Frontend Components** ✅ **[JUST COMPLETED]**
-**Status**: All core components built and integrated  
-**Location**: `frontend/src/components/`
-
-**Completed**:
-- [x] **KPICard.jsx** - Reusable KPI card with trends, targets, progress bar
-- [x] **KPIGrid.jsx** - 8-card grid with API integration
-- [x] **ARRTrendChart.jsx** - Historical ARR line chart with growth metrics
-- [x] **PipelineChart.jsx** - Pipeline bar chart (Won, Created, Active)
-- [x] **ForecastChart.jsx** - Prophet forecast with:
-  - 3 scenario toggles (Best/Most Likely/Worst)
-  - Confidence interval visualization
-  - Historical + forecast combined view
-  - Interactive scenario selection
-- [x] **App.jsx** - Main dashboard layout with all sections
-- [x] **App.css** - Global styles, animations, responsive design
-- [x] Loading states with skeleton screens
-- [x] Error handling with demo data fallback
-- [x] Responsive design (mobile/tablet/desktop)
-
-### 11. **API Service Layer (Frontend)** ✅ **[JUST COMPLETED]**
-**Status**: Complete with 14 methods  
-**Location**: `frontend/src/services/api.js`
-
-**Completed**:
-- [x] Axios client configuration (30s timeout)
-- [x] Request/response interceptors
-- [x] 14 API endpoint wrappers:
-  - healthCheck, getKPIs, getChartData
-  - getARRForecast, getARRSegments, getARRHistory
-  - getSingleForecast, getAllForecasts
-  - getProphetForecast, getForecastScenarios
-  - getWinProbability, getForecastAccuracy
-  - getInsights, getRecommendations
-- [x] Error handling with console logging
-- [x] Mock data fallbacks (getDemoKPIs)
+- Project identity is standardized around `gaim-executive-app`.
+- Backend is no longer a single-file prototype; shared setup lives in `backend/bootstrap.py` and route modules are mounted from `backend/routes/`.
+- Frontend remains React + Vite with dashboard components, hooks, contexts, and API wrappers.
+- Notification, preferences, actions, forecast, performance hub, and AI-related backend routes are present.
+- No workspace diagnostics are currently reported for the repository.
 
 ---
 
-## 🟡 In Progress
+## Completed
 
-### 1. **Insights Engine** 🟡
-**Status**: Placeholder only  
-**Location**: `backend/services/insights_engine.py`
+### Backend foundation
+- [x] FastAPI app bootstrap with CORS and request-token middleware
+- [x] Modular route registration for:
+  - forecast
+  - insights
+  - genie
+  - performance hub
+  - coverage, deals, deal bands, pipeline segments, mql
+  - preferences, actions, notifications
+- [x] Shared service initialization for data fetch, forecasting, insights, metrics, and Genie support
+- [x] Health and debug endpoints for Databricks connectivity and schema inspection
 
-**Needs**:
-- [ ] Azure OpenAI integration
-- [ ] Prompt templates for insights
-- [ ] Data analysis logic
-- [ ] Alert generation
-- [ ] Anomaly detection
+### Frontend foundation
+- [x] React + Vite application scaffold
+- [x] Dashboard UI shell and component structure
+- [x] API service layer wired to backend endpoints
+- [x] Notification and alert interaction flows added earlier in this session history
 
-**Priority**: Medium
+### Forecasting and data integration
+- [x] Forecast route surface exists in the backend
+- [x] Current app forecasting uses federated source tables for won, opened, and target context
+- [x] ARR Forecast Power BI semantic model reviewed to confirm these source-of-record tables:
+  - `forecast_prophet`
+  - `forecast_prophet_2024`
+  - `gaim_pipeline_daily_snapshot`
+  - `opportunity_scoring`
+- [x] Precompute assets exist in repository to support gold-layer forecast evolution
 
-### 2. **Metrics Calculator** 🟡
-**Status**: Basic structure  
-**Location**: `backend/services/metrics.py`
-
-**Needs**:
-- [ ] KPI card formatting (some handled in frontend now)
-- [ ] Trend calculations (some handled in frontend now)
-- [ ] Comparison logic (vs target, vs previous period)
-- [ ] Chart data transformation
-- [ ] Icon mapping
-
-**Priority**: Low (most functionality moved to frontend)
+### Documentation and deployment
+- [x] Databricks app config present in `app.yaml`
+- [x] Rename normalization to GAIM Executive App completed in core project docs and config
+- [x] Architecture and forecast analysis documents are present for handoff/reference
 
 ---
 
-## ❌ Not Started
+## In Progress
 
-### 1. **Advanced Frontend Features** ❌
-**Status**: Core features complete, advanced features not started
+### Forecast architecture consolidation
+- [ ] Reduce overlap between route-level forecast logic and service-level forecast logic
+- [ ] Standardize forecast table naming across app code, notebooks, and docs
+- [ ] Move toward precomputed-first forecast serving with controlled live fallback
 
-**Future Enhancements**:
-- [ ] Date range selector with date picker
-- [ ] Advanced filters/slicers (by product, region, team)
-- [ ] Drill-down details for charts
-- [ ] Export functionality (PDF, CSV)
-- [ ] Dashboard customization (user preferences)
-- [ ] Real-time updates (WebSocket)
-- [ ] Historical comparison views
-- [ ] Alert notifications
+### Insight generation
+- [ ] Replace placeholder insight behavior with production prompts and deterministic business logic
+- [ ] Add forecast freshness, model version, and confidence metadata to user-facing responses
 
-**Priority**: Medium (post-MVP)
+### KPI contract hardening
+- [ ] Keep current KPI cards stable while replacing proxy/fallback values with authoritative sources where available
+- [ ] Document exact source mapping for each KPI and forecast output
 
-### 2. **State Management (Frontend)** ❌
-**Status**: Not needed for MVP (component-level state sufficient)
+---
 
-**Future Needs**:
-- [ ] React Context or Redux setup
-- [ ] Global state for complex interactions
-- [ ] Centralized filter state
-- [ ] User preferences state
+## Next Recommended Refresh Items
 
-**Priority**: Low (only if app grows significantly)
+1. Implement gold-first forecast reads from curated forecast results tables.
+2. Add a forecast freshness endpoint and expose run metadata in the UI.
+3. Publish one canonical source-contract document for KPI and forecast tables.
+4. Finish deduplicating forecast logic between `backend/routes/forecast.py` and backend services.
+
+---
+
+## Risks / Attention Areas
+
+- Forecast naming drift still exists between some docs/notebooks and the Power BI reference model.
+- Some KPI values are preserved with fallback/proxy behavior to avoid frontend regressions while source coverage is incomplete.
+- Insight endpoints need stronger production behavior before they should be treated as authoritative.
 
 ### 3. **Azure OpenAI Configuration** ❌
 **Status**: Placeholder credentials in .env  

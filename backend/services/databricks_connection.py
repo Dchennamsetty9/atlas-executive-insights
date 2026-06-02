@@ -27,7 +27,8 @@ HOST      = os.getenv("DATABRICKS_SERVER_HOSTNAME") \
          or os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com")
 # Strip https:// prefix — the SDK expects a bare hostname
 HOST = HOST.removeprefix("https://").removeprefix("http://").rstrip("/")
-HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
+HTTP_PATH = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH") \
+         or os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
 
 # Maximum total time the SDK retry loop will run before giving up.
 # Default is 900 s — far too long for a web request; cap at 12 s so a failed
