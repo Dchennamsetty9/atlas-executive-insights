@@ -1,75 +1,36 @@
-/**
- * ForecastIntelligence — Executive-level AI forecast intelligence panel.
- *
- * Layout:
- *   Header: metric selector · model selector | Upside $ · Downside $
- *   Trend card: trend badge · risk badge · confidence · best/worst case
- *   Description paragraph
- *   2×2 grid: Key Drivers · Executive Actions (checkable) · Downside Risks · Upside Opportunities
- *
- * Calls GET /api/forecast/intelligence?metric=&model=
- * Executive actions are persisted to /api/actions (POST) and toggled (PATCH).
- * Respects data-theme (dark / light) via CSS variables.
- */
-
 import { useState, useEffect, useCallback } from 'react';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-const METRICS = [
-  { key: 'won_pipeline',     label: 'Won Pipeline' },
-  { key: 'active_pipeline',  label: 'Active Pipeline' },
-  { key: 'created_pipeline', label: 'Created Pipeline' },
-  { key: 'win_rate',         label: 'Win Rate' },
-];
-
-const MODEL_OPTIONS = [
-  { key: 'auto',             label: 'Auto (Best Fit)' },
-  { key: 'holt_winters',     label: 'Holt-Winters' },
-  { key: 'prophet',          label: 'Prophet' },
-  { key: 'arima',            label: 'ARIMA' },
-  { key: 'triple_smoothing', label: 'Triple Smoothing' },
-  { key: 'linear_seasonal',  label: 'Linear + Seasonal' },
-  { key: 'databricks_ai',    label: 'Databricks AI' },
-];
-
 const TREND_META = {
-  stable:       { label: 'STABLE',       color: '#3b82f6', bg: 'rgba(59,130,246,0.12)'  },
-  accelerating: { label: 'ACCELERATING', color: '#10b981', bg: 'rgba(16,185,129,0.12)'  },
-  decelerating: { label: 'DECELERATING', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)'  },
-  volatile:     { label: 'VOLATILE',     color: '#ef4444', bg: 'rgba(239,68,68,0.12)'   },
+  STABLE: { label: 'STABLE', color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
+  ACCELERATING: { label: 'ACCELERATING', color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
+  DECELERATING: { label: 'DECELERATING', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
 };
 
 const RISK_META = {
-  low:      { label: 'LOW RISK',      color: '#10b981', bg: 'rgba(16,185,129,0.1)'  },
-  moderate: { label: 'MODERATE RISK', color: '#f59e0b', bg: 'rgba(245,158,11,0.1)'  },
-  high:     { label: 'HIGH RISK',     color: '#ef4444', bg: 'rgba(239,68,68,0.1)'   },
+  'LOW RISK': { label: 'LOW RISK', color: '#10b981', bg: 'rgba(16,185,129,0.1)' },
+  'MODERATE RISK': { label: 'MODERATE RISK', color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
+  'HIGH RISK': { label: 'HIGH RISK', color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
 };
 
 const fmtUSD = (v) => {
-  if (v == null) return '—';
-  const abs = Math.abs(v);
-  if (abs >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toFixed(0)}`;
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  const n = Number(v);
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
 };
 
-const fmtDelta = (v) => {
-  if (v == null) return '—';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}${fmtUSD(v)}`;
-};
+const listOrEmpty = (v) => (Array.isArray(v) ? v : []);
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
-
-const SectionCard = ({ title, icon, children, accentColor = '#3b82f6', tint = false }) => (
+const SectionCard = ({ title, icon, children, accentColor = '#3b82f6' }) => (
   <div style={{
-    background:    tint ? `rgba(${accentColor.replace('#','').match(/.{2}/g).map(h=>parseInt(h,16)).join(',')},0.05)` : 'var(--bg-surface)',
-    border:        `1px solid var(--border-glass)`,
-    borderRadius:  10,
-    padding:       '16px 18px',
-    display:       'flex',
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border-glass)',
+    borderRadius: 10,
+    padding: '16px 18px',
+    display: 'flex',
     flexDirection: 'column',
-    gap:           10,
+    gap: 10,
   }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <span style={{ fontSize: 16 }}>{icon}</span>
@@ -88,274 +49,98 @@ const Bullet = ({ children, color = '#94a3b8' }) => (
   </div>
 );
 
-const NumberedItem = ({ n, children }) => (
-  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-    <span style={{
-      minWidth: 20, height: 20, borderRadius: 4,
-      background: 'rgba(59,130,246,0.15)', color: '#3b82f6',
-      fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>{n}</span>
-    <span style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>{children}</span>
-  </div>
-);
-
-// ── Checkable Executive Action ─────────────────────────────────────────────────
-
-const CheckableAction = ({ n, text, source = 'forecast' }) => {
-  const [done,      setDone]      = useState(false);
-  const [owner,     setOwner]     = useState('');
-  const [editing,   setEditing]   = useState(false);
-  const [actionId,  setActionId]  = useState(null);
-
-  // Persist to backend on first render
-  useEffect(() => {
-    fetch('/api/actions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, source, priority: n === 1 ? 'high' : 'medium' }),
-    })
-      .then(r => r.json())
-      .then(d => { if (d.success) setActionId(d.data?.action_id); })
-      .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const toggle = () => {
-    const next = !done;
-    setDone(next);
-    if (actionId) {
-      fetch(`/api/actions/${actionId}/status`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: next ? 'done' : 'pending', owner: owner || null }),
-      }).catch(() => {});
-    }
-  };
-
-  const assignOwner = (e) => {
-    const val = e.target.value.trim();
-    setOwner(val);
-    setEditing(false);
-    if (actionId && val) {
-      fetch(`/api/actions/${actionId}/status`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: done ? 'done' : 'pending', owner: val }),
-      }).catch(() => {});
-    }
-  };
-
-  return (
-    <div style={{
-      display: 'flex', gap: 8, alignItems: 'flex-start',
-      padding: '6px 8px', borderRadius: 6,
-      background: done ? 'rgba(16,185,129,0.06)' : 'transparent',
-      border: done ? '1px solid rgba(16,185,129,0.15)' : '1px solid transparent',
-      transition: 'all 0.2s',
-    }}>
-      {/* Checkbox */}
-      <button
-        onClick={toggle}
-        title={done ? 'Mark as pending' : 'Mark as done'}
-        style={{
-          flexShrink: 0, width: 18, height: 18, borderRadius: 4,
-          border: `2px solid ${done ? '#10b981' : '#475569'}`,
-          background: done ? '#10b981' : 'transparent',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 10, color: '#fff', marginTop: 1,
-        }}
-      >
-        {done && '✓'}
-      </button>
-
-      <div style={{ flex: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-          {/* Number badge */}
-          <span style={{
-            minWidth: 18, height: 18, borderRadius: 3,
-            background: done ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)',
-            color: done ? '#10b981' : '#3b82f6',
-            fontSize: 10, fontWeight: 700,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          }}>{n}</span>
-          <span style={{
-            fontSize: 12, color: done ? '#64748b' : 'var(--text-secondary)',
-            lineHeight: 1.5, textDecoration: done ? 'line-through' : 'none',
-            flex: 1,
-          }}>{text}</span>
-        </div>
-
-        {/* Owner row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, marginLeft: 24 }}>
-          {editing ? (
-            <input
-              autoFocus
-              defaultValue={owner}
-              onBlur={assignOwner}
-              onKeyDown={e => e.key === 'Enter' && assignOwner(e)}
-              placeholder="Assign to…"
-              style={{
-                fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                background: 'var(--bg-glass)', border: '1px solid var(--border-glass)',
-                color: 'var(--text-primary)', outline: 'none', fontFamily: 'inherit',
-              }}
-            />
-          ) : (
-            <button
-              onClick={() => setEditing(true)}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                fontSize: 10, color: owner ? '#94a3b8' : '#475569',
-                fontStyle: owner ? 'normal' : 'italic', padding: 0,
-              }}
-            >
-              {owner ? `→ ${owner}` : 'Assign owner…'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const SkeletonRow = () => (
   <div style={{ height: 14, borderRadius: 6, background: 'var(--bg-glass)', animation: 'pulse 1.5s ease-in-out infinite', marginBottom: 8 }} />
 );
 
-// ── Main component ─────────────────────────────────────────────────────────────
-
-const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp }) => {
-  // Controlled mode: use props from parent (ForecastChart).
-  // Standalone mode: own internal selectors when props are undefined.
-  const isControlled = modelProp !== undefined && metricProp !== undefined;
-
-  const [metric,  setMetric]  = useState(metricProp  ?? 'won_pipeline');
-  const [model,   setModel]   = useState(modelProp   ?? 'auto');
-  const [data,    setData]    = useState(null);
+const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
+  const [data, setData] = useState(null);
+  const [source, setSource] = useState('demo');
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
-
-  // Sync with parent props in controlled mode
-  useEffect(() => { if (metricProp !== undefined) setMetric(metricProp); }, [metricProp]);
-  useEffect(() => { if (modelProp  !== undefined) setModel(modelProp);  }, [modelProp]);
+  const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/forecast/intelligence?metric=${metric}&model=${model}`);
+      const res = await fetch('/api/forecast/insights');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json());
+      const json = await res.json();
+      setSource(json.source ?? 'demo');
+      setData(json.data ?? null);
+      if (onInsightsLoaded) onInsightsLoaded(json.data ?? null);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [metric, model]);
+  }, [onInsightsLoaded]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  // Derived display values
-  const trendMeta = TREND_META[data?.trend_status]  || TREND_META.stable;
-  const riskMeta  = RISK_META[data?.risk_level]      || RISK_META.moderate;
+  const trendMeta = TREND_META[String(data?.momentum || 'STABLE').toUpperCase()] || TREND_META.STABLE;
+  const riskMeta = RISK_META[String(data?.risk_level || 'MODERATE RISK').toUpperCase()] || RISK_META['MODERATE RISK'];
 
-  const confidencePct  = data ? Math.round(data.model_confidence * 100) : null;
-  const confidenceColor = confidencePct == null ? '#94a3b8'
-                        : confidencePct >= 90 ? '#10b981'
-                        : confidencePct >= 70 ? '#f59e0b' : '#ef4444';
-
-  const isWinRate = metric === 'win_rate';
-  const fmtVal    = isWinRate
-    ? (v) => (v != null ? `${v.toFixed(1)}%` : '—')
-    : fmtUSD;
-  const fmtDeltaFn = isWinRate
-    ? (v) => { if (v == null) return '—'; const s = v >= 0 ? '+' : ''; return `${s}${v.toFixed(2)}pp`; }
-    : fmtDelta;
-
-  const sel = (setter) => (e) => setter(e.target.value);
-
-  const selectStyle = {
-    background:   'var(--bg-glass)',
-    border:       '1px solid var(--border-glass)',
-    borderRadius: 6,
-    color:        'var(--text-primary)',
-    fontSize:     12,
-    padding:      '4px 8px',
-    cursor:       'pointer',
-    outline:      'none',
-  };
+  const confidencePct = data?.model_confidence != null ? Number(data.model_confidence) : null;
+  const confidenceColor = confidencePct == null ? '#94a3b8' : confidencePct >= 80 ? '#10b981' : confidencePct >= 60 ? '#f59e0b' : '#ef4444';
 
   return (
-    <div className={className} style={{
-      fontFamily: 'Inter, system-ui, sans-serif',
-      display:    'flex',
-      flexDirection: 'column',
-      gap:        16,
-    }}>
-      {/* ── Panel Header ─────────────────────────────────────────────────── */}
+    <div style={{ fontFamily: 'Inter, system-ui, sans-serif', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        {/* Left: title + selectors (selectors hidden in controlled/embedded mode) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-              Forecast Intelligence
-            </span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Forecast Intelligence</span>
             <span style={{
-              fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
-              color: '#3b82f6', background: 'rgba(59,130,246,0.1)',
-              padding: '2px 7px', borderRadius: 20,
-            }}>AI</span>
-          </div>
-          {!isControlled && (
-            <>
-              <select style={selectStyle} value={metric} onChange={sel(setMetric)}>
-                {METRICS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-              </select>
-              <select style={selectStyle} value={model} onChange={sel(setModel)}>
-                {MODEL_OPTIONS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-              </select>
-            </>
-          )}
-          {data?.model_used && (
-            <span style={{ fontSize: 11, color: '#64748b' }}>
-              using <span style={{ color: '#94a3b8' }}>{data.model_name}</span>
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.08em',
+              color: '#3b82f6',
+              background: 'rgba(59,130,246,0.1)',
+              padding: '2px 7px',
+              borderRadius: 20,
+            }}>
+              AI
             </span>
-          )}
+          </div>
+          <span style={{ fontSize: 11, color: '#64748b' }}>
+            using <span style={{ color: '#94a3b8' }}>{data?.best_model || selectedModel || 'Ensemble (70/30)'}</span>
+          </span>
         </div>
 
-        {/* Right: upside / downside */}
         <div style={{ display: 'flex', gap: 20 }}>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: '#10b981', letterSpacing: '0.06em', marginBottom: 2 }}>UPSIDE</div>
             <div style={{ fontSize: 18, fontWeight: 800, color: '#10b981', lineHeight: 1 }}>
-              {loading ? '—' : fmtDeltaFn(data?.upside_dollar)}
+              {loading ? '—' : (data?.upside || '—')}
             </div>
           </div>
           <div style={{ width: 1, background: 'var(--border-glass)' }} />
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', letterSpacing: '0.06em', marginBottom: 2 }}>DOWNSIDE</div>
             <div style={{ fontSize: 18, fontWeight: 800, color: '#ef4444', lineHeight: 1 }}>
-              {loading ? '—' : fmtDeltaFn(data?.downside_dollar)}
+              {loading ? '—' : (data?.downside || '—')}
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Error ─────────────────────────────────────────────────────────── */}
       {error && (
         <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#ef4444' }}>
-          Failed to load intelligence: {error} — <button onClick={load} style={{ background: 'none', border: 'none', color: '#ef4444', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}>retry</button>
+          Failed to load intelligence: {error}
         </div>
       )}
 
-      {/* ── Trend Summary Card ────────────────────────────────────────────── */}
       <div style={{
-        background:    'var(--bg-surface)',
-        border:        '1px solid var(--border-glass)',
-        borderRadius:  12,
-        padding:       '18px 20px',
-        display:       'flex',
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-glass)',
+        borderRadius: 12,
+        padding: '18px 20px',
+        display: 'flex',
         flexDirection: 'column',
-        gap:           14,
+        gap: 14,
       }}>
-        {/* Row 1: badges + confidence */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {loading ? (
@@ -363,19 +148,33 @@ const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp 
             ) : (
               <>
                 <span style={{
-                  fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
-                  color: trendMeta.color, background: trendMeta.bg,
-                  padding: '4px 12px', borderRadius: 20, border: `1px solid ${trendMeta.color}40`,
-                }}>{trendMeta.label}</span>
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  color: trendMeta.color,
+                  background: trendMeta.bg,
+                  padding: '4px 12px',
+                  borderRadius: 20,
+                  border: `1px solid ${trendMeta.color}40`,
+                }}>
+                  {trendMeta.label}
+                </span>
                 <span style={{
-                  fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
-                  color: riskMeta.color, background: riskMeta.bg,
-                  padding: '4px 12px', borderRadius: 20, border: `1px solid ${riskMeta.color}40`,
-                }}>{riskMeta.label}</span>
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  color: riskMeta.color,
+                  background: riskMeta.bg,
+                  padding: '4px 12px',
+                  borderRadius: 20,
+                  border: `1px solid ${riskMeta.color}40`,
+                }}>
+                  {riskMeta.label}
+                </span>
               </>
             )}
           </div>
-          {/* Confidence */}
+
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 10, color: '#64748b', letterSpacing: '0.06em', marginBottom: 1 }}>MODEL CONFIDENCE</div>
             <div style={{ fontSize: 28, fontWeight: 800, color: confidenceColor, lineHeight: 1 }}>
@@ -384,111 +183,96 @@ const ForecastIntelligence = ({ className, model: modelProp, metric: metricProp 
           </div>
         </div>
 
-        {/* Row 2: description */}
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          {loading ? <><SkeletonRow /><SkeletonRow /></> : data?.description}
+          {loading ? <><SkeletonRow /><SkeletonRow /></> : data?.narrative}
         </div>
 
-        {/* Row 3: best case / worst case cards */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div style={{
-            background:   'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)',
-            borderRadius: 8, padding: '12px 14px',
+            background: 'rgba(16,185,129,0.06)',
+            border: '1px solid rgba(16,185,129,0.2)',
+            borderRadius: 8,
+            padding: '12px 14px',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: '#10b981', letterSpacing: '0.06em' }}>BEST CASE (90d)</div>
-              <span style={{ fontSize: 10, color: '#64748b', background: 'rgba(16,185,129,0.1)', padding: '1px 6px', borderRadius: 8 }}>
-                20% probability
-              </span>
-            </div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#10b981', letterSpacing: '0.06em', marginBottom: 4 }}>BEST CASE</div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#10b981' }}>
-              {loading ? '—' : fmtVal(data?.forecast_90d?.best_case)}
+              {loading ? '—' : fmtUSD(data?.forecast_high)}
             </div>
           </div>
           <div style={{
-            background:   'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
-            borderRadius: 8, padding: '12px 14px',
+            background: 'rgba(239,68,68,0.06)',
+            border: '1px solid rgba(239,68,68,0.2)',
+            borderRadius: 8,
+            padding: '12px 14px',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', letterSpacing: '0.06em' }}>WORST CASE (90d)</div>
-              <span style={{ fontSize: 10, color: '#64748b', background: 'rgba(239,68,68,0.1)', padding: '1px 6px', borderRadius: 8 }}>
-                15% probability
-              </span>
-            </div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', letterSpacing: '0.06em', marginBottom: 4 }}>WORST CASE</div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#ef4444' }}>
-              {loading ? '—' : fmtVal(data?.forecast_90d?.worst_case)}
+              {loading ? '—' : fmtUSD(data?.forecast_low)}
             </div>
           </div>
         </div>
 
-        {/* Row 4: most likely */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid var(--border-glass)' }}>
-          <span style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.06em' }}>MOST LIKELY (90d)</span>
+          <span style={{ fontSize: 11, color: '#64748b', letterSpacing: '0.06em' }}>MOST LIKELY</span>
           <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)' }}>
-            {loading ? '—' : fmtVal(data?.forecast_90d?.most_likely)}
+            {loading ? '—' : fmtUSD(data?.forecast_most_likely)}
           </span>
-          {data?.mape > 0 && (
-            <span style={{ fontSize: 11, color: '#64748b', background: 'var(--bg-glass)', padding: '2px 8px', borderRadius: 10 }}>
-              MAPE {data.mape.toFixed(1)}%
+          <span style={{ fontSize: 11, color: '#64748b', background: 'var(--bg-glass)', padding: '2px 8px', borderRadius: 10 }}>
+            MAPE {data?.best_mape != null ? `${Number(data.best_mape).toFixed(1)}%` : '—'}
+          </span>
+          {source === 'live' && (
+            <span style={{ fontSize: 11, color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 10 }}>
+              LIVE
             </span>
           )}
         </div>
       </div>
 
-      {/* ── 2×2 Intelligence Grid ────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-        {/* Key Drivers */}
         <SectionCard title="Key Drivers" icon="✅" accentColor="#10b981">
           {loading
-            ? [1,2,3].map(i => <SkeletonRow key={i} />)
-            : (data?.key_drivers || []).map((d, i) => <Bullet key={i} color="#10b981">{d}</Bullet>)
-          }
+            ? [1, 2, 3].map((i) => <SkeletonRow key={i} />)
+            : listOrEmpty(data?.key_drivers).map((d, i) => <Bullet key={i} color="#10b981">{d}</Bullet>)}
         </SectionCard>
 
-        {/* Executive Actions — checkable + owner assignment */}
         <SectionCard title="Executive Actions" icon="⚙️" accentColor="#3b82f6">
           {loading
-            ? [1,2,3].map(i => <SkeletonRow key={i} />)
-            : (data?.executive_actions || []).map((a, i) => (
-                <CheckableAction key={`${metric}-${model}-${i}`} n={i + 1} text={a} source="forecast" />
-              ))
-          }
+            ? [1, 2, 3].map((i) => <SkeletonRow key={i} />)
+            : listOrEmpty(data?.executive_actions).map((a, i) => <Bullet key={i} color="#3b82f6">{a}</Bullet>)}
         </SectionCard>
 
-        {/* Downside Risks */}
         <SectionCard title="Downside Risks" icon="⚠️" accentColor="#ef4444">
           {loading
-            ? [1,2,3].map(i => <SkeletonRow key={i} />)
-            : (data?.downside_risks || []).map((r, i) => <Bullet key={i} color="#ef4444">{r}</Bullet>)
-          }
+            ? [1, 2, 3].map((i) => <SkeletonRow key={i} />)
+            : listOrEmpty(data?.downside_risks).map((r, i) => <Bullet key={i} color="#ef4444">{r}</Bullet>)}
         </SectionCard>
 
-        {/* Upside Opportunities */}
         <SectionCard title="Upside Opportunities" icon="📈" accentColor="#10b981">
           {loading
-            ? [1,2,3].map(i => <SkeletonRow key={i} />)
-            : (data?.upside_opportunities || []).map((o, i) => <Bullet key={i} color="#10b981">{o}</Bullet>)
-          }
+            ? [1, 2, 3].map((i) => <SkeletonRow key={i} />)
+            : listOrEmpty(data?.upside_opportunities).map((o, i) => <Bullet key={i} color="#10b981">{o}</Bullet>)}
         </SectionCard>
       </div>
 
-      {/* ── Footer: source + refresh ─────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
         <span style={{ fontSize: 11, color: '#475569' }}>
-          {data?.source === 'databricks' ? '🟢 Live data from Databricks' : '🔵 Demo data — connect to Databricks for live insights'}
-          {data?.history_days ? ` · ${data.history_days} days of history` : ''}
+          Last updated: {data?.run_date || '—'}
         </span>
-        <button onClick={load} disabled={loading} style={{
-          background:   'var(--bg-glass)',
-          border:       '1px solid var(--border-glass)',
-          borderRadius: 6,
-          color:        'var(--text-secondary)',
-          fontSize:     11,
-          padding:      '4px 12px',
-          cursor:       loading ? 'default' : 'pointer',
-          opacity:      loading ? 0.5 : 1,
-        }}>
-          {loading ? 'Refreshing…' : '↻ Refresh'}
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{
+            background: 'var(--bg-glass)',
+            border: '1px solid var(--border-glass)',
+            borderRadius: 6,
+            color: 'var(--text-secondary)',
+            fontSize: 11,
+            padding: '4px 12px',
+            cursor: loading ? 'default' : 'pointer',
+            opacity: loading ? 0.5 : 1,
+          }}
+        >
+          {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
     </div>
