@@ -109,26 +109,25 @@ const PipelineChart = () => {
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+    <div className="luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.title }}>Pipeline Overview</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 11, color: C.subtitle }}>Performance Hub Metrics: Won, Created, and Active Pipeline</p>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: C.title, letterSpacing: -0.3 }}>Pipeline Overview</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 10, color: C.subtitle, lineHeight: 1.45 }}>Performance Hub Metrics: Won, Created, and Active Pipeline</p>
         </div>
         {error === 'demo' && (
-          <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', padding: '2px 8px', borderRadius: 6 }}>
+          <span style={{ fontSize: 9, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', padding: '3px 8px', borderRadius: 999 }}>
             Demo Mode
           </span>
         )}
       </div>
 
-      <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={data} margin={{ top: 14, right: 10, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={C.grid} />
           <XAxis dataKey="name" tick={{ fill: C.tick, fontSize: 12, fontWeight: 500 }} tickLine={false} axisLine={false} />
           <YAxis tickFormatter={formatCurrency} tick={{ fill: C.tick, fontSize: 11 }} tickLine={false} axisLine={false} width={52} />
           <Tooltip content={<CustomTooltip />} />
-          <Legend wrapperStyle={{ paddingTop: 12, fontSize: 11, color: C.legend }} />
           <Bar dataKey="value" name="Actual" radius={[6, 6, 0, 0]} maxBarSize={60}>
             {data.map((entry, i) => (
               <Cell key={`c-${i}`} fill={COLORS[entry.name] || '#3b82f6'} />
@@ -138,7 +137,7 @@ const PipelineChart = () => {
         </BarChart>
       </ResponsiveContainer>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
         {data.map((item, i) => (
           <div key={i} style={{ textAlign: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, marginBottom: 4 }}>

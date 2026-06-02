@@ -288,17 +288,17 @@ const ImpactWaterfall = ({ filters }) => {
   const headingColor = below ? '#ef4444' : '#10b981';
 
   return (
-    <div className="glass-card" style={{ padding: '14px 16px', marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: '14px 16px', marginBottom: 16 }}>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 16 }}>💰</span>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>
               Revenue Gap Decomposition
             </div>
-            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 4, lineHeight: 1.45 }}>
               Two-funnel model · Dollarized impact per KPI
             </div>
           </div>
@@ -307,7 +307,7 @@ const ImpactWaterfall = ({ filters }) => {
         <div style={{
           background: below ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)',
           border: `1px solid ${below ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
-          borderRadius: 6, padding: '4px 10px',
+          borderRadius: 999, padding: '4px 10px',
           display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
         }}>
           <span style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>

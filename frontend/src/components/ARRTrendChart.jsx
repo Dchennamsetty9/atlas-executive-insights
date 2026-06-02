@@ -164,12 +164,12 @@ const ARRTrendChart = () => {
   }
 
   return (
-    <div>
+    <div className="luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* ── Header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.title, letterSpacing: -0.3 }}>ARR Trend</h2>
-          <p style={{ margin: '3px 0 0', fontSize: 11, color: C.subtitle }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: C.title, letterSpacing: -0.4 }}>ARR Trend</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 10, color: C.subtitle, lineHeight: 1.45 }}>
             Annual Recurring Revenue
             {!isDemo && dataSource && (
               <span style={{ marginLeft: 6, color: C.label, opacity: 0.7 }}>
@@ -178,23 +178,23 @@ const ARRTrendChart = () => {
             )}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {/* Period pills */}
           {PERIODS.map(p => {
             const active = period === p.label;
             return (
               <button key={p.label} onClick={() => setPeriod(p.label)} style={{
-                fontSize: 11, fontWeight: active ? 700 : 500,
+                fontSize: 10, fontWeight: active ? 700 : 600,
                 color: active ? '#3b82f6' : C.label,
                 background: active ? C.pillActive : C.pillBg,
                 border: `1px solid ${active ? C.pillActiveBorder : 'transparent'}`,
-                borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
+                borderRadius: 999, padding: '4px 10px', cursor: 'pointer',
                 transition: 'all 0.15s ease',
               }}>{p.label}</button>
             );
           })}
           {isDemo && (
-            <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', padding: '2px 8px', borderRadius: 6, marginLeft: 4 }}>
+            <span style={{ fontSize: 9, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', padding: '3px 8px', borderRadius: 999, marginLeft: 2 }}>
               Demo Mode
             </span>
           )}
@@ -202,8 +202,8 @@ const ARRTrendChart = () => {
       </div>
 
       {/* ── Chart ── */}
-      <ResponsiveContainer width="100%" height={240}>
-        <AreaChart data={data} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={280}>
+        <AreaChart data={data} margin={{ top: 14, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="arrGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%"  stopColor="#3b82f6" stopOpacity={isDark ? 0.28 : 0.18} />
@@ -254,7 +254,7 @@ const ARRTrendChart = () => {
 
       {/* ── Stats row ── */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginTop: 16 }}>
           {/* Current ARR */}
           <div style={{ background: C.cardBg, border: `1px solid ${C.cardBorder}`, borderRadius: 8, padding: '10px 12px' }}>
             <p style={{ fontSize: 9, color: C.label, textTransform: 'uppercase', letterSpacing: 0.6, margin: '0 0 4px', fontWeight: 600 }}>Current ARR</p>

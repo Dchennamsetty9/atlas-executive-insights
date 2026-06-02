@@ -119,12 +119,12 @@ const PipelineCoverage = () => {
   ];
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>🎯 Pipeline Coverage</div>
-        <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
-          In-quarter open pipeline ÷ remaining target — healthy range: 2–4×
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>🎯 Pipeline Coverage</div>
+        <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>
+          In-quarter open pipeline ÷ remaining target — healthy range: 2–4x
         </div>
       </div>
 
@@ -153,8 +153,8 @@ const PipelineCoverage = () => {
             <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
               Coverage this quarter
             </div>
-            <ResponsiveContainer width="100%" height={150}>
-              <LineChart data={trend} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={trend} margin={{ left: 0, right: 8, top: 14, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
                 <XAxis dataKey="date" tickFormatter={fmtDate} tick={axisStyle} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={axisStyle} axisLine={false} tickLine={false} width={32} domain={[0, 6]} tickFormatter={(v) => `${v}x`} />

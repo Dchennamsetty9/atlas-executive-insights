@@ -64,19 +64,19 @@ const MQLAnalytics = () => {
   const gridStyle = { stroke: 'rgba(255,255,255,0.05)' };
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>📈 MQL Analytics</div>
-          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>📈 MQL Analytics</div>
+          <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>
             Marketing Qualified Leads — volume, conversion, and pacing
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {PERIODS.map(p => (
             <button key={p} onClick={() => setPeriod(p)} style={{
-              padding: '3px 10px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+              padding: '4px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: period === p ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${period === p ? '#3b82f6' : 'rgba(255,255,255,0.08)'}`,
               color: period === p ? '#3b82f6' : '#475569',

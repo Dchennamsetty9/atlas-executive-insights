@@ -86,19 +86,19 @@ const PipelineSegmentAnalysis = () => {
   }));
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>🗂 Pipeline by Segment</div>
-          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Pipeline value and deal count, current vs prior period</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>🗂 Pipeline by Segment</div>
+          <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>Pipeline value and deal count, current vs prior period</div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {/* Dimension picker */}
           <div style={{ display: 'flex', gap: 3 }}>
             {DIMENSIONS.map(d => (
               <button key={d.value} onClick={() => setDimension(d.value)} style={{
-                padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
                 background: dimension === d.value ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.04)',
                 border: `1px solid ${dimension === d.value ? '#3b82f6' : 'rgba(255,255,255,0.08)'}`,
                 color: dimension === d.value ? '#3b82f6' : '#475569',
@@ -109,7 +109,7 @@ const PipelineSegmentAnalysis = () => {
           <div style={{ display: 'flex', gap: 3 }}>
             {COMPARES.map(c => (
               <button key={c.value} onClick={() => setCompare(c.value)} style={{
-                padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
                 background: compare === c.value ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.04)',
                 border: `1px solid ${compare === c.value ? '#f59e0b' : 'rgba(255,255,255,0.08)'}`,
                 color: compare === c.value ? '#f59e0b' : '#475569',
@@ -119,7 +119,7 @@ const PipelineSegmentAnalysis = () => {
           <div style={{ display: 'flex', gap: 3 }}>
             {['value', 'volume'].map(v => (
               <button key={v} onClick={() => setView(v)} style={{
-                padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
                 background: view === v ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.04)',
                 border: `1px solid ${view === v ? '#10b981' : 'rgba(255,255,255,0.08)'}`,
                 color: view === v ? '#10b981' : '#475569',
@@ -137,8 +137,8 @@ const PipelineSegmentAnalysis = () => {
       ) : (
         <>
           {/* Bar chart */}
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={chartData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }} barCategoryGap="35%">
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={chartData} margin={{ left: 4, right: 4, top: 14, bottom: 4 }} barCategoryGap="35%">
               <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
               <XAxis dataKey="segment" tick={{ ...axisStyle, fontSize: 9 }} axisLine={false} tickLine={false} />
               <YAxis tick={axisStyle} axisLine={false} tickLine={false} width={48}

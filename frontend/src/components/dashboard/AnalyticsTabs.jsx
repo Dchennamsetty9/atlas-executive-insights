@@ -25,21 +25,23 @@ export default function AnalyticsTabs() {
     <div>
       {/* Section header */}
       <div style={{
-        fontSize: 11, fontWeight: 700, color: '#475569',
-        textTransform: 'uppercase', letterSpacing: 1.2,
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        paddingBottom: 6, marginBottom: 0,
+        fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+        textTransform: 'uppercase', letterSpacing: 1.4,
+        paddingBottom: 8, marginBottom: 0,
       }}>
         Extended Analytics
       </div>
 
       {/* Tab strip */}
       <div style={{
-        display: 'flex', gap: 2,
-        borderBottom: '1px solid rgba(255,255,255,0.07)',
-        marginBottom: 0,
+        display: 'flex', gap: 8,
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 16,
+        padding: 8,
+        marginBottom: 14,
         overflowX: 'auto',
-        paddingBottom: 0,
+        backdropFilter: 'blur(14px)',
       }}>
         {TABS.map(tab => {
           const isActive = active === tab.id;
@@ -49,16 +51,16 @@ export default function AnalyticsTabs() {
               onClick={() => setActive(tab.id)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
-                padding: '10px 16px',
-                background: 'transparent',
-                border: 'none',
-                borderBottom: isActive ? '2px solid #3b82f6' : '2px solid transparent',
-                marginBottom: -1,
-                color: isActive ? '#f1f5f9' : '#64748b',
-                fontSize: 12, fontWeight: isActive ? 700 : 500,
+                padding: '10px 14px',
+                background: isActive ? 'linear-gradient(135deg, rgba(59,130,246,0.18), rgba(124,58,237,0.12))' : 'transparent',
+                border: `1px solid ${isActive ? 'rgba(59,130,246,0.28)' : 'transparent'}`,
+                borderRadius: 12,
+                color: isActive ? '#f8fafc' : '#64748b',
+                fontSize: 12, fontWeight: isActive ? 700 : 600,
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                transition: 'color 0.15s, border-color 0.15s',
+                transition: 'color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s',
+                boxShadow: isActive ? '0 10px 24px rgba(59,130,246,0.12)' : 'none',
               }}
             >
               <span style={{ fontSize: 13 }}>{tab.icon}</span>
@@ -70,12 +72,12 @@ export default function AnalyticsTabs() {
 
       {/* Tab panels */}
       <div style={{
-        background: 'rgba(15,23,42,0.6)',
-        border: '1px solid rgba(255,255,255,0.06)',
-        borderTop: 'none',
-        borderRadius: '0 0 10px 10px',
-        padding: '20px 16px',
-        minHeight: 200,
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02))',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 18,
+        padding: 18,
+        minHeight: 240,
+        boxShadow: '0 14px 34px rgba(0,0,0,0.16)',
       }}>
         {active === 'mql'      && <MQLAnalytics />}
         {active === 'pipeline' && <PipelineSegmentAnalysis />}

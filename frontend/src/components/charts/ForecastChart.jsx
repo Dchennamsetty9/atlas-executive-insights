@@ -8,7 +8,7 @@
 import { useState, useEffect } from 'react';
 import {
   ComposedChart, Line, Area, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
+  ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from 'recharts';
 import ForecastIntelligence from './ForecastIntelligence';
 
@@ -102,19 +102,19 @@ const ForecastChart = () => {
   const today = new Date().toISOString().split('T')[0];
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>🔮 Forecast</div>
-          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Multi-model forward projection with confidence intervals</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>🔮 Forecast</div>
+          <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>Multi-model forward projection with confidence intervals</div>
         </div>
 
         {/* Accuracy badges */}
         {!loading && (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <div style={{
-              padding: '3px 8px', borderRadius: 6,
+              padding: '4px 9px', borderRadius: 999,
               background: 'rgba(255,255,255,0.04)',
               border: '1px solid rgba(255,255,255,0.08)',
               fontSize: 10, color: '#94a3b8',
@@ -124,7 +124,7 @@ const ForecastChart = () => {
               </span>
             </div>
             <div style={{
-              padding: '3px 8px', borderRadius: 6,
+              padding: '4px 9px', borderRadius: 999,
               background: 'rgba(255,255,255,0.04)',
               border: '1px solid rgba(255,255,255,0.08)',
               fontSize: 10, color: '#94a3b8',
@@ -134,7 +134,7 @@ const ForecastChart = () => {
               </span>
             </div>
             {data.source === 'demo' && (
-              <div style={{ padding: '3px 8px', borderRadius: 6, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', fontSize: 9, color: '#f59e0b' }}>
+              <div style={{ padding: '4px 9px', borderRadius: 999, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', fontSize: 9, color: '#f59e0b' }}>
                 DEMO DATA
               </div>
             )}
@@ -143,12 +143,12 @@ const ForecastChart = () => {
       </div>
 
       {/* Controls */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
         {/* Model selector */}
         <div style={{ display: 'flex', gap: 3 }}>
           {MODELS.map(m => (
             <button key={m.key} onClick={() => setModel(m.key)} style={{
-              padding: '3px 10px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+              padding: '4px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: model === m.key ? `${m.color}22` : 'rgba(255,255,255,0.04)',
               border: `1px solid ${model === m.key ? m.color : 'rgba(255,255,255,0.08)'}`,
               color: model === m.key ? m.color : '#475569',
@@ -159,7 +159,7 @@ const ForecastChart = () => {
         <div style={{ display: 'flex', gap: 3 }}>
           {METRICS.map(m => (
             <button key={m.key} onClick={() => setMetric(m.key)} style={{
-              padding: '3px 10px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+              padding: '4px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: metric === m.key ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${metric === m.key ? '#8b5cf6' : 'rgba(255,255,255,0.08)'}`,
               color: metric === m.key ? '#8b5cf6' : '#475569',
@@ -170,7 +170,7 @@ const ForecastChart = () => {
         <div style={{ display: 'flex', gap: 3 }}>
           {[30, 60, 90].map(p => (
             <button key={p} onClick={() => setPeriods(p)} style={{
-              padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+              padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: periods === p ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${periods === p ? '#10b981' : 'rgba(255,255,255,0.08)'}`,
               color: periods === p ? '#10b981' : '#475569',
@@ -181,16 +181,16 @@ const ForecastChart = () => {
 
       {/* Chart */}
       {loading ? (
-        <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569', fontSize: 12 }}>
+        <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569', fontSize: 12 }}>
           Running {modelMeta.label} forecast…
         </div>
       ) : error ? (
-        <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', fontSize: 12 }}>
+        <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', fontSize: 12 }}>
           {error}
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={220}>
-          <ComposedChart data={chartData} margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={chartData} margin={{ left: 8, right: 8, top: 14, bottom: 0 }}>
             <defs>
               <linearGradient id="fcGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={modelMeta.color} stopOpacity={0.15} />
@@ -203,8 +203,7 @@ const ForecastChart = () => {
             <Tooltip content={<DarkTooltip fmt={metricMeta.fmt} />} cursor={{ stroke: 'rgba(255,255,255,0.1)' }} />
 
             {/* Reference line: today */}
-            <ReferenceLine x={today} stroke="rgba(255,255,255,0.15)" strokeDasharray="4 2"
-              label={{ value: 'Today', fill: '#475569', fontSize: 9, position: 'insideTopRight' }} />
+            <ReferenceLine x={today} stroke="rgba(255,255,255,0.15)" strokeDasharray="4 2" />
 
             {/* CI shaded area (lower to upper) */}
             <Area

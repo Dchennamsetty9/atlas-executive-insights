@@ -120,11 +120,11 @@ const LargestDealsTable = ({ limit = 20 }) => {
   });
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header */}
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>🏆 Largest Open Deals</div>
-        <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Top {limit} open opportunities by ARR — sorted by {sortKey.replace('_', ' ')}</div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>🏆 Largest Open Deals</div>
+        <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>Top {limit} open opportunities by ARR — sorted by {sortKey.replace('_', ' ')}</div>
       </div>
 
       {/* AI Insight Banner */}

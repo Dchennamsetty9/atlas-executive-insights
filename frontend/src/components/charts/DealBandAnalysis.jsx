@@ -75,18 +75,21 @@ const DealBandAnalysis = () => {
   }));
 
   return (
-    <div className="glass-card" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>💼 Deal Band Analysis</div>
-          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Performance by deal size — volume, value, win rate, cycle time</div>
+             <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>💼 Deal Band Analysis</div>
+             <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>Performance by deal size — volume, value, win rate, cycle time</div>
         </div>
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {/* Compare toggle */}
           {['yoy', 'prior_quarter'].map(c => (
             <button key={c} onClick={() => setCompare(c)} style={{
               padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: compare === c ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${compare === c ? '#f59e0b' : 'rgba(255,255,255,0.08)'}`,
               color: compare === c ? '#f59e0b' : '#475569',
@@ -112,7 +115,7 @@ const DealBandAnalysis = () => {
         <>
           {/* Bar chart */}
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={chartData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }} barCategoryGap="30%">
+             <BarChart data={chartData} margin={{ left: 4, right: 4, top: 14, bottom: 4 }} barCategoryGap="30%">
               <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
               <XAxis dataKey="band" tick={{ ...axisStyle, fontSize: 8 }} axisLine={false} tickLine={false} />
               <YAxis tick={axisStyle} axisLine={false} tickLine={false} width={48}
