@@ -22,13 +22,9 @@ router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 SCHEMA  = os.getenv("DATABRICKS_SCHEMA",  "mdl_sales_analytics")
 
-FORECAST_OUTPUT_TABLE = os.getenv("FORECAST_OUTPUT_TABLE", "arr_forecast_output")
-FORECAST_INSIGHTS_TABLE = os.getenv("FORECAST_INSIGHTS_TABLE", "arr_forecast_insights")
-FORECAST_LEADERBOARD_TABLE = os.getenv("FORECAST_LEADERBOARD_TABLE", "arr_model_leaderboard")
-
-
-def _table_fqn(table_name: str) -> str:
-    return f"{CATALOG}.{SCHEMA}.{table_name}"
+FORECAST_OUTPUT_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_forecast_output`"
+FORECAST_INSIGHTS_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_forecast_insights`"
+FORECAST_LEADERBOARD_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_model_leaderboard`"
 
 def _live_mode_available() -> bool:
     """Evaluate Databricks availability at request time (supports forwarded user tokens)."""
@@ -200,7 +196,7 @@ def _parse_bool(value: Any) -> Optional[bool]:
 
 
 def _load_table_rows(table_name: str, limit: int = 5000) -> list[dict]:
-    sql = f"SELECT * FROM {_table_fqn(table_name)} LIMIT {limit}"
+    sql = f"SELECT * FROM {table_name} LIMIT {limit}"
     return execute_query(sql)
 
 
@@ -222,11 +218,12 @@ def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optiona
     model_col = _pick_column(sample, ["model", "model_name"])
     run_col = _pick_column(sample, ["run_date", "created_at", "generated_at", "execution_date"])
     date_col = _pick_column(sample, ["ds", "date", "forecast_date", "target_date"])
-    forecast_col = _pick_column(sample, ["forecast_value", "yhat", "prediction", "predicted_value", "value"])
-    lower_col = _pick_column(sample, ["lower_bound", "yhat_lower", "lower_ci", "lower"])
-    upper_col = _pick_column(sample, ["upper_bound", "yhat_upper", "upper_ci", "upper"])
+    forecast_col = _pick_column(sample, ["most_likely", "forecast_value", "yhat", "prediction", "predicted_value", "value"])
+    lower_col = _pick_column(sample, ["worst_case", "lower_bound", "yhat_lower", "lower_ci", "lower"])
+    upper_col = _pick_column(sample, ["best_case", "upper_bound", "yhat_upper", "upper_ci", "upper"])
     actual_col = _pick_column(sample, ["actual_value", "actual", "observed", "y"])
     is_forecast_col = _pick_column(sample, ["is_forecast", "future_flag", "is_future"])
+    is_historical_col = _pick_column(sample, ["is_historical", "historical_flag"])
 
     if not date_col or not forecast_col:
         return None
@@ -234,8 +231,13 @@ def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optiona
     filtered = rows
     if metric_col:
         filtered = [r for r in filtered if str(r.get(metric_col, "")).lower() == metric.lower()]
+
+    # Prefer requested model when present; gracefully fall back to any available model for the metric.
     if model_col and model and model not in {"", "auto"}:
-        filtered = [r for r in filtered if str(r.get(model_col, "")).lower() == model.lower()]
+        requested = [r for r in filtered if str(r.get(model_col, "")).lower() == model.lower()]
+        if requested:
+            filtered = requested
+
     if run_col and filtered:
         latest_run = max(str(r.get(run_col) or "") for r in filtered)
         filtered = [r for r in filtered if str(r.get(run_col) or "") == latest_run]
@@ -258,6 +260,10 @@ def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optiona
         a_val = _to_float(row.get(actual_col), f_val) if actual_col else f_val
 
         flag = _parse_bool(row.get(is_forecast_col)) if is_forecast_col else None
+        if flag is None and is_historical_col:
+            hist_flag = _parse_bool(row.get(is_historical_col))
+            if hist_flag is not None:
+                flag = not hist_flag
         if flag is True:
             forecast.append({"date": date_str, "value": round(max(0.0, f_val), 2), "lower": round(max(0.0, l_val), 2), "upper": round(max(0.0, u_val), 2)})
         elif flag is False:
@@ -298,7 +304,9 @@ def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optiona
             if b_metric_col:
                 scoped = [r for r in scoped if str(r.get(b_metric_col, "")).lower() == metric.lower()]
             if b_model_col and model and model not in {"", "auto"}:
-                scoped = [r for r in scoped if str(r.get(b_model_col, "")).lower() == model.lower()]
+                requested_b = [r for r in scoped if str(r.get(b_model_col, "")).lower() == model.lower()]
+                if requested_b:
+                    scoped = requested_b
             if b_run_col and scoped:
                 latest_b_run = max(str(r.get(b_run_col) or "") for r in scoped)
                 scoped = [r for r in scoped if str(r.get(b_run_col) or "") == latest_b_run]
@@ -309,8 +317,8 @@ def _load_precomputed_forecast(metric: str, model: str, periods: int) -> Optiona
         pass
 
     resolved_model = model
-    if model in {"", "auto"} and model_col:
-        resolved_model = str(filtered[0].get(model_col) or "holt_winters").lower()
+    if model_col and filtered:
+        resolved_model = str(filtered[0].get(model_col) or model or "holt_winters").lower()
 
     return {
         "history": history,
@@ -340,8 +348,11 @@ def _load_precomputed_insights(metric: str, model: str) -> Optional[dict]:
     scoped = rows
     if metric_col:
         scoped = [r for r in scoped if str(r.get(metric_col, "")).lower() == metric.lower()]
+
     if model_col and model and model not in {"", "auto"}:
-        scoped = [r for r in scoped if str(r.get(model_col, "")).lower() == model.lower()]
+        requested = [r for r in scoped if str(r.get(model_col, "")).lower() == model.lower()]
+        if requested:
+            scoped = requested
     if run_col and scoped:
         latest_run = max(str(r.get(run_col) or "") for r in scoped)
         scoped = [r for r in scoped if str(r.get(run_col) or "") == latest_run]
@@ -365,9 +376,10 @@ def _load_precomputed_insights(metric: str, model: str) -> Optional[dict]:
 
 def _table_readiness(table_name: str) -> dict:
     """Check whether a forecast table exists and has a latest run_date value."""
-    fqn = _table_fqn(table_name)
+    fqn = table_name
+    short_name = str(table_name).replace("`", "").split(".")[-1]
     out = {
-        "table": table_name,
+        "table": short_name,
         "fqn": fqn,
         "exists": False,
         "ready": False,
@@ -384,15 +396,29 @@ def _table_readiness(table_name: str) -> dict:
         # Count rows for basic readiness signal.
         count_rows = execute_query(f"SELECT COUNT(*) AS row_count FROM {fqn}")
         if count_rows:
-            out["row_count"] = int(_to_float(count_rows[0].get("row_count"), 0))
+            count_row = count_rows[0] or {}
+            row_count_val = count_row.get("row_count")
+            if row_count_val is None and count_row:
+                # Connector/warehouse variants may return COUNT(*) without alias key.
+                row_count_val = next(iter(count_row.values()))
+            out["row_count"] = int(_to_float(row_count_val, 0))
+
+        # Detect run_date-like schema from DESCRIBE even before first row exists.
+        describe_rows = execute_query(f"DESCRIBE {fqn}")
+        run_like_cols = {"run_date", "created_at", "generated_at", "execution_date"}
+        for d in describe_rows:
+            col_name = str(d.get("col_name") or d.get("col_name ") or "").strip().lower()
+            if col_name in run_like_cols:
+                out["run_date_column"] = col_name
+                break
 
         if not sample_rows:
-            out["error"] = "table exists but has no rows"
+            out["error"] = "table exists but has no rows yet (scheduled notebook has not written data)"
             return out
 
         sample = sample_rows[0]
         run_col = _pick_column(sample, ["run_date", "created_at", "generated_at", "execution_date"])
-        out["run_date_column"] = run_col
+        out["run_date_column"] = run_col or out["run_date_column"]
 
         if run_col:
             latest_rows = execute_query(
@@ -662,7 +688,7 @@ async def forecast_tables_health():
             "tables": [
                 {
                     "table": t,
-                    "fqn": _table_fqn(t),
+                    "fqn": t,
                     "exists": False,
                     "ready": False,
                     "row_count": 0,
@@ -683,6 +709,77 @@ async def forecast_tables_health():
         "source": "databricks",
         "tables": checks,
     }
+
+
+@router.get("/arr")
+async def get_arr_forecast():
+    """Return precomputed ARR forecast output rows for charting."""
+    if not _live_mode_available():
+        return {
+            "rows": [],
+            "source": "demo",
+            "live_mode_available": False,
+            "error": "Databricks token/host not available in current runtime",
+        }
+
+    rows = await asyncio.to_thread(
+        execute_query,
+        (
+            "SELECT ds, model, forecast_type, yhat, yhat_lower, yhat_upper "
+            f"FROM {FORECAST_OUTPUT_TABLE} "
+            "ORDER BY ds"
+        ),
+    )
+    return {"rows": rows, "source": "databricks", "live_mode_available": True}
+
+
+@router.get("/insights")
+async def get_forecast_insights():
+    """Return the latest precomputed ARR forecast insights row."""
+    if not _live_mode_available():
+        return {
+            "row": None,
+            "source": "demo",
+            "live_mode_available": False,
+            "error": "Databricks token/host not available in current runtime",
+        }
+
+    rows = await asyncio.to_thread(
+        execute_query,
+        (
+            "SELECT * "
+            f"FROM {FORECAST_INSIGHTS_TABLE} "
+            "ORDER BY run_date DESC "
+            "LIMIT 1"
+        ),
+    )
+    return {
+        "row": rows[0] if rows else None,
+        "source": "databricks",
+        "live_mode_available": True,
+    }
+
+
+@router.get("/leaderboard")
+async def get_model_leaderboard():
+    """Return model leaderboard sorted by lowest MAPE first."""
+    if not _live_mode_available():
+        return {
+            "rows": [],
+            "source": "demo",
+            "live_mode_available": False,
+            "error": "Databricks token/host not available in current runtime",
+        }
+
+    rows = await asyncio.to_thread(
+        execute_query,
+        (
+            "SELECT model, mape, granularity, type "
+            f"FROM {FORECAST_LEADERBOARD_TABLE} "
+            "ORDER BY mape ASC"
+        ),
+    )
+    return {"rows": rows, "source": "databricks", "live_mode_available": True}
 
 
 @router.get("/run")
