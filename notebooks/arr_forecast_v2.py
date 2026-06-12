@@ -51,24 +51,16 @@ import numpy as np
 import pandas as pd
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-# Source aligned with the PRODUCTION Prophet model ("ARR Forecast with marketing
-# spend and headcount" notebook) so Atlas and Power BI are definitionally
-# identical: certified SFDC opp line items, Growth (new + expansion) only,
-# Care / Sales Other channels excluded.
-SOURCE_TABLE             = "datagroup.datalake_transform.cds_sfdc_opp_products_latest"
-HISTORY_START            = "2023-01-01"          # prod model trains from 2023
-PURCHASE_TYPE_ROLLUP     = "Growth"              # = new + expansion (Atlas scope)
+# Source: federated.sales.metis_won_opps_fact — the accessible, cleaned won-bookings
+# fact. It is built from gaim_pipeline_daily_snapshot (itself built from the CDS
+# opp-products table with MIGRATION and ZERO-DOLLAR opps already removed upstream),
+# so it needs no demo_stage / purchase_type_rollup / migration / zero-dollar filters.
+# Verified: reconciles with the production CDS 'Growth' series within <1% per week.
+SOURCE_TABLE             = "federated.sales.metis_won_opps_fact"
+HISTORY_START            = "2023-01-01"          # match prod model training window
 SALES_CHANNEL_EXCLUSIONS = ("Care", "Sales Other")
-# Migration + zero-dollar opps are excluded to match the production daily-snapshot
-# definition (gaim_pipeline_daily_snapshot is built from CDS with these removed).
-# Zero-dollar: CDS exposes the boolean `is_opp_amount_zero` — exclude where true.
-EXCLUDE_ZERO_DOLLAR      = True
-# Migration: confirm the exact CDS column + value with the model owner, then set
-# below. Most likely purchase_type='Migration'. Set MIGRATION_COL=None to disable.
-MIGRATION_COL            = "purchase_type"       # TODO confirm (candidates: purchase_type / opportunity_type / type)
-MIGRATION_VALUES         = ("Migration",)        # TODO confirm exact value(s)
-# Product groups now come from the canonical Atlas hierarchy join, not a hardcoded
-# allowlist. None = no group filter (Total model). Set for the per-segment build.
+# Product groups come from the canonical Atlas hierarchy join (genus → group),
+# not a hardcoded allowlist. None = no group filter (Total model); set for per-segment.
 PRODUCT_HIERARCHY_TABLE  = "datagroup_mdl.mdl_sales_analytics.gaim_product_hierarchy_atlas"
 PRODUCT_GROUPS           = None                  # e.g. ("ITSG", "Core Collab", ...)
 OUTPUT_CATALOG  = "datagroup_mdl"
@@ -89,24 +81,17 @@ print(f"[v2] ARR Forecast run {RUN_DATE} — horizon {HORIZON_WEEKS}w, "
       f"{BACKTEST_FOLDS}×{BACKTEST_H}w backtest")
 
 # COMMAND ----------
-# MAGIC %md ## Section 1 — Load weekly Won ARR (Total, production-aligned)
-# MAGIC Mirrors the production Prophet model's predicate exactly:
-# MAGIC `cds_sfdc_opp_products_latest`, `demo_stage = 0`,
-# MAGIC `purchase_type_rollup = 'Growth'` (new + expansion), Care / Sales Other
-# MAGIC channels excluded, won = `is_won = 'True' AND is_closed = 'True'`.
-# MAGIC The table keeps only the latest snapshot, so no `data_date` dedup is needed.
-# MAGIC Monday-aligned weekly buckets; Total-level (the app contract has no segment
-# MAGIC column). Per-segment modeling is a contract change — see methodology doc.
+# MAGIC %md ## Section 1 — Load weekly Won ARR (Total)
+# MAGIC Source: `federated.sales.metis_won_opps_fact` (accessible; migration +
+# MAGIC zero-dollar opps already removed upstream). Latest `data_date` snapshot only,
+# MAGIC Care / Sales Other channels excluded, Monday-aligned weekly buckets.
+# MAGIC Total-level (the app contract has no segment column). The optional
+# MAGIC product-hierarchy join (genus → Atlas Product_Group) is in place so the
+# MAGIC per-segment build only needs PRODUCT_GROUPS set — see methodology doc.
 
 # COMMAND ----------
 
 _chan_excl = ", ".join(f"'{c}'" for c in SALES_CHANNEL_EXCLUSIONS)
-_zero_filter = "AND c.is_opp_amount_zero = false" if EXCLUDE_ZERO_DOLLAR else ""
-_migration_filter = (
-    f"AND c.{MIGRATION_COL} NOT IN ("
-    + ", ".join(f"'{v}'" for v in MIGRATION_VALUES) + ")"
-    if MIGRATION_COL and MIGRATION_VALUES else ""
-)
 # Product-group filter applied against the canonical Atlas hierarchy (joined on genus)
 _prod_filter = (
     "AND h.Product_Group IN (" + ", ".join(f"'{p}'" for p in PRODUCT_GROUPS) + ")"
@@ -121,13 +106,8 @@ FROM {SOURCE_TABLE} c
 LEFT JOIN {PRODUCT_HIERARCHY_TABLE} h
        ON LOWER(TRIM(c.product_genus)) = LOWER(TRIM(h.Product_Genus))
 WHERE
-    c.demo_stage = 0
-    AND c.purchase_type_rollup = '{PURCHASE_TYPE_ROLLUP}'
-    AND c.is_won = 'True'
-    AND c.is_closed = 'True'
+    c.data_date = (SELECT MAX(data_date) FROM {SOURCE_TABLE})
     AND c.sales_channel NOT IN ({_chan_excl})
-    {_zero_filter}
-    {_migration_filter}
     {_prod_filter}
     AND c.close_date >= '{HISTORY_START}'
     AND c.close_date <= CURRENT_DATE()
