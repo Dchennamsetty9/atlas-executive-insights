@@ -106,6 +106,7 @@ class NotificationService:
     def list_notifications(self, user_id: Optional[str] = None,
                            unread_only: bool = False,
                            limit: int = 50) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
         wheres, params = [], []
         if user_id:
             wheres.append("(user_id = ? OR user_id IS NULL)")

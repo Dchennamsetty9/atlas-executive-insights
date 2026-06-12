@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # Databricks (recommended - same source as Performance Hub)
     # When deployed to Databricks Apps, these are auto-provided
     databricks_server_hostname: str = os.getenv("DATABRICKS_SERVER_HOSTNAME", os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com"))
-    databricks_http_path: str = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH", os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93"))
+    databricks_http_path: str = "/sql/1.0/warehouses/c24ee33594e13e93"
     databricks_access_token: str = os.getenv("DATABRICKS_TOKEN", "")
     databricks_catalog: str = "datagroup_mdl"
     databricks_schema: str = "mdl_sales_analytics"
@@ -26,9 +26,11 @@ class Settings(BaseSettings):
     db_driver: str = "ODBC Driver 18 for SQL Server"
     
     # Application
-    environment: str = os.getenv("ENVIRONMENT", "development")
-    debug: bool = os.getenv("DEBUG", "True").lower() == "true"
+    environment: str = os.getenv("ENVIRONMENT", "production")
+    debug: bool = os.getenv("DEBUG", "False").lower() == "true"
     api_port: int = int(os.getenv("PORT", "8000"))
+    auth_allow_anonymous_local: bool = os.getenv("AUTH_ALLOW_ANONYMOUS_LOCAL", "true").lower() == "true"
+    enable_debug_endpoints: bool = os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() == "true"
     
     # CORS origins — FastAPI CORSMiddleware does NOT support wildcard subdomains,
     # so the workspace hostname must be listed explicitly.

@@ -33,6 +33,9 @@ import asyncio
 import logging
 import os
 from typing import Any, Dict, Optional
+import re
+
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,7 @@ logger = logging.getLogger(__name__)
 _PRIMARY_ENDPOINT  = "databricks-claude-sonnet-4-6"
 _FALLBACK_ENDPOINT = "databricks-gemini-3-1-flash-lite"
 _MAX_TOKENS        = 150   # ~3-4 sentences; executive summary only
+_DEFAULT_WAREHOUSE_ID = "c24ee33594e13e93"
 
 # ── Impact column → human-readable label ──────────────────────────────────────
 _DRIVER_LABELS: Dict[str, str] = {
@@ -222,7 +226,42 @@ class AIService:
             "insight":       insight_text,
             "prompt":        prompt,
             "fallback_used": fallback_used,
+            "model":         "rule-based" if fallback_used else "databricks-endpoint",
         }
+
+
+    @staticmethod
+    def _warehouse_id_from_http_path(http_path: str) -> str:
+        """Extract Databricks warehouse ID from /sql/1.0/warehouses/<id>."""
+        match = re.search(r"/warehouses/([^/?]+)", http_path or "")
+        return match.group(1) if match else _DEFAULT_WAREHOUSE_ID
+
+
+    @staticmethod
+    def _is_safe_read_only_sql(statement: str) -> bool:
+        """Allow only single-statement SELECT/CTE queries and reject mutating SQL."""
+        if not statement or not statement.strip():
+            return False
+
+        # Strip /* */ and -- comments before safety checks.
+        no_block_comments = re.sub(r"/\*.*?\*/", " ", statement, flags=re.S)
+        no_line_comments = re.sub(r"--.*?$", " ", no_block_comments, flags=re.M)
+        normalized = no_line_comments.strip()
+
+        # Allow at most one trailing semicolon, but disallow chained statements.
+        stripped_trailing = normalized.rstrip(";").strip()
+        if ";" in stripped_trailing:
+            return False
+
+        upper_stmt = stripped_trailing.upper()
+        if not (upper_stmt.startswith("SELECT") or upper_stmt.startswith("WITH")):
+            return False
+
+        forbidden = r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|CALL)\b"
+        if re.search(forbidden, upper_stmt):
+            return False
+
+        return True
 
     # ── Generic multi-turn LLM helpers ──────────────────────────────────────
 
@@ -296,8 +335,13 @@ class AIService:
         if w is None:
             raise RuntimeError("WorkspaceClient unavailable")
 
+        if not self._is_safe_read_only_sql(query):
+            raise ValueError("Only single-statement read-only SELECT queries are allowed")
+
+        warehouse_id = self._warehouse_id_from_http_path(settings.databricks_http_path)
+
         result = w.statement_execution.execute_statement(
-            warehouse_id="c24ee33594e13e93",
+            warehouse_id=warehouse_id,
             statement=query,
             wait_timeout="30s",
         )

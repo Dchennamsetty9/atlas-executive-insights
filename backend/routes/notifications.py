@@ -14,27 +14,22 @@ In-app notifications + threshold alert management.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from auth import require_authenticated_user
 from services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
-
-def _user(token: str = "") -> str:
-    return token[:64] if token else "anonymous"
-
-
 @router.get("")
 async def list_notifications(
     unread_only: bool = False,
     limit: int = 50,
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    user_id: str = Depends(require_authenticated_user)
 ):
-    user_id = _user(x_forwarded_access_token)
     notifs = notification_service.list_notifications(
         user_id=user_id, unread_only=unread_only, limit=limit
     )
@@ -43,9 +38,8 @@ async def list_notifications(
 
 @router.get("/count")
 async def unread_count(
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    user_id: str = Depends(require_authenticated_user)
 ):
-    user_id = _user(x_forwarded_access_token)
     count = notification_service.unread_count(user_id=user_id)
     return {"unread_count": count}
 
@@ -53,7 +47,7 @@ async def unread_count(
 @router.post("/read/{notification_id}")
 async def mark_read(
     notification_id: str,
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    _user_id: str = Depends(require_authenticated_user)
 ):
     notification_service.mark_read(notification_id)
     return {"success": True}
@@ -61,9 +55,8 @@ async def mark_read(
 
 @router.post("/read-all")
 async def mark_all_read(
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    user_id: str = Depends(require_authenticated_user)
 ):
-    user_id = _user(x_forwarded_access_token)
     notification_service.mark_all_read(user_id=user_id)
     return {"success": True}
 
@@ -72,7 +65,7 @@ async def mark_all_read(
 
 @router.post("/check")
 async def check_thresholds(
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    _user_id: str = Depends(require_authenticated_user)
 ):
     """
     Pull the latest KPI data and fire alerts for any metric below its threshold.
@@ -112,7 +105,7 @@ class TestAlertBody(BaseModel):
 @router.post("/test")
 async def send_test_alert(
     body: TestAlertBody,
-    x_forwarded_access_token: Optional[str] = Header(default="")
+    _user_id: str = Depends(require_authenticated_user)
 ):
     """
     Send a test notification to verify email and Slack are configured correctly.

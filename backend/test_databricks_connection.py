@@ -21,7 +21,7 @@ print(f"Server: {server_hostname}")
 print(f"HTTP Path: {http_path}")
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
-print(f"Token: {access_token[:20]}... (length: {len(access_token)})")
+print(f"Token configured: {'yes' if access_token else 'no'}")
 print("=" * 60)
 
 try:

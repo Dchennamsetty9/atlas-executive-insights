@@ -7,7 +7,7 @@ import logging
 import os
 import asyncio
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime, timedelta
@@ -17,6 +17,7 @@ import uvicorn
 
 import pandas as pd
 from config.settings import settings
+from auth import require_debug_access
 from bootstrap import (
     app,
     data_fetcher,
@@ -77,7 +78,9 @@ async def health_check():
 
 
 @app.get("/api/debug/identity")
-async def debug_identity():
+async def debug_identity(
+    _user_id: str = Depends(require_debug_access),
+):
     """
     Returns the identity the app is running as on Databricks.
     Use this to verify the service principal has UC access to GAIM tables.
@@ -136,6 +139,7 @@ async def debug_identity():
 
 @app.get("/api/debug/schema")
 async def debug_schema(
+    _user_id: str = Depends(require_debug_access),
     table: str = "gaim_pipeline_daily_snapshot",
     catalog: str = "datagroup_mdl",
     schema: str = "mdl_sales_analytics",
@@ -161,8 +165,14 @@ async def debug_schema(
         "gaim_partner_sales_targets_cy_daily",
         "gaim_mql_daily_snapshot",
     }
+    _ALLOWED_CATALOGS = {"datagroup_mdl"}
+    _ALLOWED_SCHEMAS = {"mdl_sales_analytics"}
     if table not in _ALLOWED:
         return {"error": f"Table '{table}' is not in the allowed list", "allowed": sorted(_ALLOWED)}
+    if catalog not in _ALLOWED_CATALOGS:
+        return {"error": f"Catalog '{catalog}' is not allowed", "allowed_catalogs": sorted(_ALLOWED_CATALOGS)}
+    if schema not in _ALLOWED_SCHEMAS:
+        return {"error": f"Schema '{schema}' is not allowed", "allowed_schemas": sorted(_ALLOWED_SCHEMAS)}
 
     try:
         rows = await asyncio.to_thread(
