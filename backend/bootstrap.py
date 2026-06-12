@@ -65,8 +65,7 @@ app.add_middleware(
 @app.middleware("http")
 async def inject_forwarded_token(request: Request, call_next):
     token = request.headers.get("x-forwarded-access-token", "")
-    if token:
-        set_request_token(token)
+    set_request_token(token or "")
     return await call_next(request)
 
 
