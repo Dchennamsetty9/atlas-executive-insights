@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { apiService } from '../services/api';
 import { useTheme } from '../hooks/useTheme';
+import { ChartExportBar } from '../utils/chartExport';
 
 const PERIODS = [
   { label: '3M',  months: 3  },
@@ -11,6 +12,7 @@ const PERIODS = [
 ];
 
 const ARRTrendChart = () => {
+  const chartRef = useRef(null);
   const isDark = useTheme();
   const C = isDark ? {
     title:      '#f1f5f9',
@@ -202,6 +204,13 @@ const ARRTrendChart = () => {
       </div>
 
       {/* ── Chart ── */}
+      <ChartExportBar
+        containerRef={chartRef}
+        data={data}
+        columns={['date', 'arr']}
+        filename="arr-trend"
+      />
+      <div ref={chartRef}>
       <ResponsiveContainer width="100%" height={280}>
         <AreaChart data={data} margin={{ top: 14, right: 8, left: 0, bottom: 0 }}>
           <defs>
@@ -251,6 +260,7 @@ const ARRTrendChart = () => {
           />
         </AreaChart>
       </ResponsiveContainer>
+      </div>
 
       {/* ── Stats row ── */}
       {stats && (

@@ -318,3 +318,151 @@ select.select-dark option { background: var(--bg-elevated); color: var(--text-pr
 
 @keyframes kpiPulse { 0%,100% { box-shadow: 0 0 14px rgba(239,68,68,0.15); } 50% { box-shadow: 0 0 22px rgba(239,68,68,0.35); } }
 
+/* ============================================================
+   Skeleton shimmer — improved loading state
+   ============================================================ */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.05) 0%,
+    rgba(255,255,255,0.10) 50%,
+    rgba(255,255,255,0.05) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+[data-theme="light"] .skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(0,0,0,0.05) 0%,
+    rgba(0,0,0,0.10) 50%,
+    rgba(0,0,0,0.05) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ============================================================
+   Mobile responsiveness
+   ============================================================ */
+@media (max-width: 768px) {
+  /* Full-width sidebar on mobile */
+  aside {
+    width: 100% !important;
+    padding-top: 0 !important;
+  }
+
+  /* Stack sidebar + main vertically */
+  div[style*="display: flex"][style*="maxWidth: 1600"] {
+    flex-direction: column !important;
+  }
+
+  /* Charts: 1 column on mobile */
+  div[style*="gridTemplateColumns: '1fr 1fr'"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* KPI grid: 2 cols on mobile */
+  div[style*="gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))'"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* AIChatPanel full-width on mobile */
+  div[style*="width: 420"][style*="position: fixed"] {
+    width: calc(100vw - 32px) !important;
+    right: 16px !important;
+    left: 16px !important;
+    bottom: 16px !important;
+  }
+
+  /* Header: hide secondary controls on very small screens */
+  @media (max-width: 480px) {
+    .header-secondary { display: none !important; }
+  }
+}
+
+/* ============================================================
+   Print stylesheet — exec-ready 1-page report
+   ============================================================ */
+@media print {
+  * { box-shadow: none !important; animation: none !important; }
+
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 11px;
+  }
+
+  header {
+    position: static !important;
+    background: #ffffff !important;
+    border-bottom: 2px solid #0066FF !important;
+    padding: 8px 16px !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* Hide non-essential UI */
+  button:not(.print-show),
+  aside,
+  .glass-card > div[style*="position: fixed"],
+  [style*="position: fixed"] { display: none !important; }
+
+  /* Print KPI grid as 4-col */
+  main > div:first-child { display: none; } /* BusinessPerformancePanel */
+
+  div[style*="gridTemplateColumns: 'repeat(auto-fill"] {
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 8px !important;
+  }
+
+  .glass-card, .kpi-card-dark {
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    break-inside: avoid;
+  }
+
+  /* Recharts prints cleanly with SVG — no changes needed */
+
+  footer { display: block !important; border-top: 1px solid #e2e8f0; margin-top: 16px; padding-top: 8px; }
+
+  /* Atlas watermark on print */
+  body::after {
+    content: 'Atlas Executive Insights — CONFIDENTIAL';
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    font-size: 9px;
+    color: #94a3b8;
+    letter-spacing: 0.5px;
+  }
+}
+
+/* ============================================================
+   Hover depth improvements for KPI cards
+   ============================================================ */
+.kpi-card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.kpi-card-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(59,130,246,0.2);
+}
+
+/* ============================================================
+   Keyboard focus visible ring — accessibility
+   ============================================================ */
+:focus-visible {
+  outline: 2px solid #0066FF;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+

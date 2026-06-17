@@ -122,8 +122,16 @@ const SuggestionChip = memo(({ text, onClick }) => (
 SuggestionChip.displayName = 'SuggestionChip';
 
 // ── Main panel ───────────────────────────────────────────────────────────────
-const AIChatPanel = ({ onAnalyzingChange, context }) => {
+const AIChatPanel = ({ onAnalyzingChange, context, externalOpen, onOpenChange }) => {
   const [isOpen,           setIsOpen]           = useState(false);
+
+  // Sync with external open state (Cmd+K)
+  useEffect(() => {
+    if (externalOpen !== undefined && externalOpen !== isOpen) {
+      setIsOpen(externalOpen);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalOpen]);
   const [question,         setQuestion]         = useState('');
   const [messages,         setMessages]         = useState([]);
   const [loading,          setLoading]          = useState(false);
@@ -171,6 +179,7 @@ const AIChatPanel = ({ onAnalyzingChange, context }) => {
 
   const handleOpen = useCallback(async () => {
     setIsOpen(true);
+    onOpenChange?.(true);
     const ctxKey = context?.activeTab ?? context?.section ?? 'default';
     const contextual = getSuggestions(ctxKey);
     setSuggestions(contextual);
@@ -280,6 +289,12 @@ const AIChatPanel = ({ onAnalyzingChange, context }) => {
           transition={{ duration: 2, repeat: Infinity }}
         >✦</motion.span>
         Ask AI
+        <span style={{
+          fontSize: 9, fontWeight: 500,
+          background: 'rgba(255,255,255,0.15)',
+          borderRadius: 4, padding: '1px 5px',
+          letterSpacing: 0.3,
+        }}>⌘K</span>
       </motion.button>
     );
   }
@@ -352,7 +367,7 @@ const AIChatPanel = ({ onAnalyzingChange, context }) => {
             </button>
           )}
           <button
-            onClick={() => setIsOpen(false)}
+            onClick={() => { setIsOpen(false); onOpenChange?.(false); }}
             style={{
             background: 'rgba(255,255,255,0.06)',
             border: '1px solid rgba(255,255,255,0.08)',

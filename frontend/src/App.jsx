@@ -1,5 +1,5 @@
-﻿import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Volume2, VolumeX, Sun, Moon } from 'lucide-react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
+import { RefreshCw, Volume2, VolumeX, Sun, Moon, Share2 } from 'lucide-react';
 import FilterPanel from './components/FilterPanel';
 import EnhancedKPICard from './components/EnhancedKPICard';
 import ARRTrendChart from './components/ARRTrendChart';
@@ -14,12 +14,32 @@ import KPIDetailModal from './components/dashboard/KPIDetailModal';
 import BusinessPerformancePanel from './components/dashboard/BusinessPerformancePanel';
 import AnalyticsTabs from './components/dashboard/AnalyticsTabs';
 import InsightBanner from './components/ai/InsightBanner';
+import OnboardingTour from './components/OnboardingTour';
 import { useUISound } from './hooks/useUISound';
 import { useDashboardData } from './hooks/useDashboardData';
+import { useUrlFilters } from './hooks/useUrlFilters';
 import { FilterProvider, useFilters } from './contexts/FilterContext';
 import NotificationBell from './components/NotificationBell';
 import './styles/futuristic-theme.css';
 import './App.css'
+
+// ── Quarter-end countdown helper ──────────────────────────────────────────────
+function getQuarterCountdown() {
+  const now = new Date();
+  const month = now.getMonth(); // 0-based
+  const quarterEnds = [
+    new Date(now.getFullYear(), 2, 31, 23, 59, 59),   // Q1: Mar 31
+    new Date(now.getFullYear(), 5, 30, 23, 59, 59),   // Q2: Jun 30
+    new Date(now.getFullYear(), 8, 30, 23, 59, 59),   // Q3: Sep 30
+    new Date(now.getFullYear(), 11, 31, 23, 59, 59),  // Q4: Dec 31
+  ];
+  const qIndex = Math.floor(month / 3);
+  const qEnd = quarterEnds[qIndex];
+  const diffMs = qEnd - now;
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  const qLabel = `Q${qIndex + 1}`;
+  return { days, qLabel, urgent: days <= 14 };
+}
 
 function AppInner() {
   const { filters, setFilters } = useFilters();
@@ -27,6 +47,9 @@ function AppInner() {
   const [selectedKpi,   setSelectedKpi]     = useState(null);
   const [activeInsightId, setActiveInsightId] = useState(null);
   const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
+  const [aiOpen,        setAiOpen]          = useState(false);
+  const [countdown,     setCountdown]       = useState(getQuarterCountdown);
+  const [shareCopied,   setShareCopied]     = useState(false);
   const { enabled: soundEnabled, toggle: toggleSound, play } = useUISound();
   const {
     backendStatus,
@@ -39,7 +62,36 @@ function AppInner() {
     handleRefreshNow,
   } = useDashboardData(filters, play);
 
+  // URL ↔ filter sync
+  useUrlFilters();
+
   useEffect(() => { localStorage.setItem('atlas-theme', theme); }, [theme]);
+
+  // Refresh countdown every minute
+  useEffect(() => {
+    const t = setInterval(() => setCountdown(getQuarterCountdown()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Cmd+K / Ctrl+K → open Ask AI
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setAiOpen(o => !o);
+        play('open');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [play]);
+
+  const handleShareUrl = () => {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    });
+  };
 
   const handleFilterChange = async (newFilters) => {
     setFilters(newFilters);
@@ -77,16 +129,42 @@ function AppInner() {
 
           {/* Logo + Title */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <div style={{
-              width: 24, height: 24, borderRadius: 6,
-              background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 12, boxShadow: '0 0 10px rgba(59,130,246,0.35)',
-            }}>⬡</div>
+            {/* GoTo brand logo SVG */}
+            <svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+              <rect width="32" height="32" rx="7" fill="url(#logoGrad)"/>
+              <path d="M16 8C11.6 8 8 11.6 8 16s3.6 8 8 8 8-3.6 8-8h-8v-3h11c0 6.1-4.9 11-11 11S5 22.1 5 16 9.9 5 16 5c3 0 5.7 1.2 7.7 3.1l-2.1 2.1C20.2 8.8 18.2 8 16 8z" fill="white"/>
+              <defs>
+                <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                  <stop stopColor="#0066FF"/>
+                  <stop offset="1" stopColor="#7c3aed"/>
+                </linearGradient>
+              </defs>
+            </svg>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.2px' }}>
               Atlas Executive Insights
             </span>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 }}>GAIM</span>
+            <span style={{
+              fontSize: 9, fontWeight: 700, color: '#0066FF',
+              background: 'rgba(0,102,255,0.1)', border: '1px solid rgba(0,102,255,0.25)',
+              borderRadius: 4, padding: '1px 5px', letterSpacing: 0.5,
+            }}>GAIM</span>
+          </div>
+
+          {/* Quarter-end countdown */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '3px 10px',
+            background: countdown.urgent ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${countdown.urgent ? 'rgba(239,68,68,0.35)' : 'rgba(255,255,255,0.07)'}`,
+            borderRadius: 6,
+            animation: countdown.urgent ? 'borderPulse 2.5s ease-in-out infinite' : 'none',
+          }}>
+            <span style={{ fontSize: 10, color: countdown.urgent ? '#ef4444' : '#64748b' }}>
+              {countdown.urgent ? '🔥' : '⏱'}
+            </span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: countdown.urgent ? '#ef4444' : '#64748b', fontVariantNumeric: 'tabular-nums' }}>
+              {countdown.qLabel} ends in {countdown.days}d
+            </span>
           </div>
 
           {/* Spacer */}
@@ -107,6 +185,25 @@ function AppInner() {
                 Data as of {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
             )}
+
+            {/* Share current filter view */}
+            <button
+              onClick={handleShareUrl}
+              title="Copy link to this filtered view"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '4px 10px',
+                background: shareCopied ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${shareCopied ? 'rgba(16,185,129,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                borderRadius: 6,
+                color: shareCopied ? '#10b981' : '#64748b',
+                fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                transition: 'all 0.2s',
+              }}
+            >
+              <Share2 size={11} />
+              {shareCopied ? 'Copied!' : 'Share'}
+            </button>
 
             {/* Notification bell */}
             <NotificationBell />
@@ -327,7 +424,14 @@ function AppInner() {
       )}
 
       {/* ── Floating AI Chat Panel ───────────────────────────────────── */}
-      <AIChatPanel onAnalyzingChange={setIsAnalyzing} />
+      <AIChatPanel
+        onAnalyzingChange={setIsAnalyzing}
+        externalOpen={aiOpen}
+        onOpenChange={setAiOpen}
+      />
+
+      {/* ── First-visit onboarding tour ──────────────────────────────── */}
+      <OnboardingTour onOpenAI={() => { setAiOpen(true); play('open'); }} />
     </div>
   );
 }

@@ -1,6 +1,35 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
+
+// ── Animated count-up hook ────────────────────────────────────────────────────
+function useCountUp(target, duration = 900, active = true) {
+  const [display, setDisplay] = useState(0);
+  const rafRef = useRef(null);
+  const startRef = useRef(null);
+  const startValRef = useRef(0);
+
+  useEffect(() => {
+    if (!active || target === undefined) return;
+    startRef.current = null;
+    startValRef.current = 0;
+
+    const animate = (ts) => {
+      if (!startRef.current) startRef.current = ts;
+      const elapsed = ts - startRef.current;
+      const progress = Math.min(elapsed / duration, 1);
+      // ease-out cubic
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(startValRef.current + (target - startValRef.current) * eased);
+      if (progress < 1) rafRef.current = requestAnimationFrame(animate);
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration, active]);
+
+  return display;
+}
 
 const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsightId, onInsightToggle }) => {
   const [aiInsight,  setAiInsight]  = useState(null);
@@ -137,6 +166,9 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
 
   const statusInfo = getStatusInfo();
   const trendColor = isNeutral ? 'text-gray-500' : isPositive ? 'text-green-600' : 'text-red-600';
+
+  // Animated display value (count-up on first render)
+  const animatedValue = useCountUp(value, 900, true);
   const getTrendIcon = () => {
     if (isNeutral) return <Minus className="w-4 h-4" />;
     return isPositive ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />;
@@ -186,7 +218,7 @@ const EnhancedKPICard = ({ kpi, insights, loading, compact = false, activeInsigh
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 8 : 10 }}>
           <div style={{ fontSize: compact ? 22 : 32, fontWeight: 800, color: '#f1f5f9', lineHeight: 1 }}>
-            {formatValue(value)}
+            {formatValue(animatedValue)}
             {unit && <span style={{ fontSize: compact ? 11 : 16, fontWeight: 400, color: '#475569', marginLeft: 4 }}>{unit}</span>}
           </div>
 

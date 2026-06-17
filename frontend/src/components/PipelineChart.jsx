@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { apiService } from '../services/api';
 import { useTheme } from '../hooks/useTheme';
+import { ChartExportBar } from '../utils/chartExport';
 
 const PipelineChart = () => {
+  const chartRef = useRef(null);
   const isDark = useTheme();
   const C = isDark ? {
     title:      '#f1f5f9',
@@ -122,6 +124,13 @@ const PipelineChart = () => {
         )}
       </div>
 
+      <ChartExportBar
+        containerRef={chartRef}
+        data={data}
+        columns={['name', 'value', 'target']}
+        filename="pipeline-by-segment"
+      />
+      <div ref={chartRef}>
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={data} margin={{ top: 14, right: 10, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={C.grid} />
@@ -136,6 +145,7 @@ const PipelineChart = () => {
           <Bar dataKey="target" name="Target" fill={C.targetBar} radius={[6, 6, 0, 0]} maxBarSize={60} />
         </BarChart>
       </ResponsiveContainer>
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
         {data.map((item, i) => (

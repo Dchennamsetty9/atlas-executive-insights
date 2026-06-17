@@ -9,6 +9,7 @@ import sys
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from config.settings import settings
 from services.data_fetcher import DataFetcher
@@ -33,6 +34,7 @@ from routes.preferences import router as preferences_router
 from routes.actions import router as actions_router
 from routes.notifications import router as notifications_router
 from routes.ai_stream import router as ai_stream_router
+from routes.ws import router as ws_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="GAIM Executive App API",
     description="AI-powered executive analytics backend - LIVE Databricks",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -53,6 +55,9 @@ def _sigterm_handler(signum, frame):
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
+
+# Compress responses >= 500 bytes — cuts JSON payload size ~80% on slow VPNs
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,7 +72,37 @@ app.add_middleware(
 async def inject_forwarded_token(request: Request, call_next):
     token = request.headers.get("x-forwarded-access-token", "")
     set_request_token(token or "")
-    return await call_next(request)
+    response = await call_next(request)
+    return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Structured request/error logging for production visibility."""
+    import time
+    start = time.time()
+    try:
+        response = await call_next(request)
+        duration_ms = int((time.time() - start) * 1000)
+        if response.status_code >= 400:
+            logger.warning(
+                "HTTP %s %s → %s [%dms]",
+                request.method, request.url.path, response.status_code, duration_ms,
+            )
+        else:
+            logger.debug(
+                "HTTP %s %s → %s [%dms]",
+                request.method, request.url.path, response.status_code, duration_ms,
+            )
+        return response
+    except Exception as exc:
+        duration_ms = int((time.time() - start) * 1000)
+        logger.error(
+            "UNHANDLED ERROR %s %s [%dms]: %s",
+            request.method, request.url.path, duration_ms, exc,
+            exc_info=True,
+        )
+        raise
 
 
 # Shared service singletons
@@ -93,3 +128,4 @@ app.include_router(preferences_router)
 app.include_router(actions_router)
 app.include_router(notifications_router)
 app.include_router(ai_stream_router)
+app.include_router(ws_router)

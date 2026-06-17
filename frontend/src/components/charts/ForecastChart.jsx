@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import {
   ComposedChart,
   Line,
@@ -10,6 +10,7 @@ import {
   CartesianGrid,
 } from 'recharts';
 import ForecastIntelligence from './ForecastIntelligence';
+import { ChartExportBar } from '../../utils/chartExport';
 
 const MODELS = [
   { label: 'LightGBM', color: '#00BFFF' },
@@ -46,6 +47,7 @@ const DarkTooltip = ({ active, payload, label }) => {
 };
 
 const ForecastChart = () => {
+  const chartRef = useRef(null);
   const [selectedModel, setSelectedModel] = useState('Ensemble (70/30)');
   const [forecastData, setForecastData] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
@@ -112,6 +114,9 @@ const ForecastChart = () => {
       row.forecast = Number(p.value ?? 0);
       row.lower = Number(p.lower ?? p.value ?? 0);
       row.upper = Number(p.upper ?? p.value ?? 0);
+      // For stacked confidence band: lowerBound + bandwidth = full range
+      row.lowerBound = row.lower;
+      row.bandwidth = Math.max(0, row.upper - row.lower);
       byDate.set(date, row);
     }
 
@@ -184,57 +189,89 @@ const ForecastChart = () => {
           {error}
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={280}>
-          <ComposedChart data={chartData} margin={{ left: 8, right: 8, top: 14, bottom: 0 }}>
-            <defs>
-              <linearGradient id="fcGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={modelColor} stopOpacity={0.2} />
-                <stop offset="100%" stopColor={modelColor} stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis
-              dataKey="date"
-              tickFormatter={fmtDate}
-              tick={{ fill: '#475569', fontSize: 10 }}
-              axisLine={false}
-              tickLine={false}
-              interval="preserveStartEnd"
-            />
-            <YAxis
-              tick={{ fill: '#475569', fontSize: 10 }}
-              axisLine={false}
-              tickLine={false}
-              width={52}
-              tickFormatter={fmtCurrencyCompact}
-            />
-            <Tooltip content={<DarkTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)' }} />
+        <>
+          <ChartExportBar
+            containerRef={chartRef}
+            data={chartData}
+            columns={['date', 'actual', 'forecast', 'lower', 'upper']}
+            filename={`forecast-${selectedModel.toLowerCase().replace(/\s+/g,'-')}`}
+          />
+          <div ref={chartRef}>
+            <ResponsiveContainer width="100%" height={280}>
+              <ComposedChart data={chartData} margin={{ left: 8, right: 8, top: 14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="fcBandGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={modelColor} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={modelColor} stopOpacity={0.05} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={fmtDate}
+                  tick={{ fill: '#475569', fontSize: 10 }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fill: '#475569', fontSize: 10 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={52}
+                  tickFormatter={fmtCurrencyCompact}
+                />
+                <Tooltip content={<DarkTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)' }} />
 
-            <Area type="monotone" dataKey="upper" stroke="none" fill="url(#fcGrad)" connectNulls />
-            <Area type="monotone" dataKey="lower" stroke="none" fill="white" fillOpacity={0} connectNulls />
+                {/* Confidence band: stacked approach — lowerBound transparent, bandwidth colored */}
+                <Area
+                  type="monotone"
+                  dataKey="lowerBound"
+                  stackId="confidence"
+                  stroke="none"
+                  fill="transparent"
+                  fillOpacity={0}
+                  connectNulls
+                  legendType="none"
+                  name=""
+                />
+                <Area
+                  type="monotone"
+                  dataKey="bandwidth"
+                  stackId="confidence"
+                  stroke={modelColor}
+                  strokeWidth={0.5}
+                  strokeDasharray="2 4"
+                  strokeOpacity={0.4}
+                  fill="url(#fcBandGrad)"
+                  connectNulls
+                  name="Confidence Band"
+                />
 
-            <Line
-              type="monotone"
-              dataKey="actual"
-              name="Actual"
-              stroke="#FFFFFF"
-              strokeWidth={2.2}
-              dot={false}
-              connectNulls={false}
-            />
+                <Line
+                  type="monotone"
+                  dataKey="actual"
+                  name="Actual"
+                  stroke="#FFFFFF"
+                  strokeWidth={2.2}
+                  dot={false}
+                  connectNulls={false}
+                />
 
-            <Line
-              type="monotone"
-              dataKey="forecast"
-              name={`${selectedModel} Forecast`}
-              stroke={modelColor}
-              strokeWidth={2.5}
-              dot={false}
-              strokeDasharray="6 3"
-              connectNulls
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+                <Line
+                  type="monotone"
+                  dataKey="forecast"
+                  name={`${selectedModel} Forecast`}
+                  stroke={modelColor}
+                  strokeWidth={2.5}
+                  dot={false}
+                  strokeDasharray="6 3"
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </>
       )}
 
       <div style={{ borderTop: '1px solid var(--border-glass)', marginTop: 20, paddingTop: 20 }}>
