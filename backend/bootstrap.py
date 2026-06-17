@@ -32,6 +32,7 @@ from routes.ai import router as ai_router
 from routes.preferences import router as preferences_router
 from routes.actions import router as actions_router
 from routes.notifications import router as notifications_router
+from routes.ai_stream import router as ai_stream_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,3 +92,4 @@ app.include_router(ai_router)
 app.include_router(preferences_router)
 app.include_router(actions_router)
 app.include_router(notifications_router)
+app.include_router(ai_stream_router)

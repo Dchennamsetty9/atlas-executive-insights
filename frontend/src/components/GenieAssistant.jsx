@@ -1,29 +1,36 @@
-﻿// Genie AI Assistant Component
-// Natural-language interface to the Metis - Sales KPI Analytics Genie Space.
-// Supports multi-turn conversations: each follow-up stays in the same Genie context.
+// GenieAssistant.jsx
+// Unified "Ask AI" panel — streams responses from /api/ai/ask/stream
+// Intent routing (backend): DATA → Genie NL→SQL | INSIGHT → OpenAI | RECOMMENDATION → Atlas Intelligence
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './GenieAssistant.css';
 
-const API = (path) => path; // relative paths â€” proxied to :8000 by Vite
+const API = (path) => path;
+
+// ── Intent badge colours (matches backend classification) ────────────────────
+const INTENT_STYLE = {
+  DATA:           { label: 'Live Data',       color: '#8b5cf6' },
+  INSIGHT:        { label: 'AI Insight',      color: '#10b981' },
+  RECOMMENDATION: { label: 'Recommendation',  color: '#f59e0b' },
+};
 
 const GenieAssistant = () => {
   const [isOpen, setIsOpen]             = useState(false);
   const [question, setQuestion]         = useState('');
   const [loading, setLoading]           = useState(false);
-  const [messages, setMessages]         = useState([]);   // [{question, answer, sql, status}]
+  const [messages, setMessages]         = useState([]);
+  // Each message: { question, answer, sql, status, intent }
   const [conversationId, setConversationId] = useState(null);
   const [suggestions, setSuggestions]   = useState([]);
-  const bottomRef = useRef(null);
+  const bottomRef   = useRef(null);
+  const readerRef   = useRef(null);   // holds the active ReadableStreamReader so we can cancel
 
-  // Scroll to bottom whenever a new message arrives
+  // Auto-scroll on new content
   useEffect(() => {
-    if (bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // Load suggested questions when the panel first opens
+  // Load suggested questions on first open
   const handleOpen = async () => {
     setIsOpen(true);
     if (suggestions.length === 0) {
@@ -37,31 +44,42 @@ const GenieAssistant = () => {
     }
   };
 
-  const startNewConversation = () => {
+  const startNewConversation = useCallback(() => {
+    // Cancel any in-flight stream
+    readerRef.current?.cancel();
     setMessages([]);
     setConversationId(null);
     setQuestion('');
-  };
+    setLoading(false);
+  }, []);
 
-  // Send a question â€” reuses existing conversationId for follow-ups
-  const askQuestion = async (text) => {
+  // ── Core streaming ask ─────────────────────────────────────────────────────
+  const askQuestion = useCallback(async (text) => {
     const q = text.trim();
-    if (!q) return;
+    if (!q || loading) return;
 
     setLoading(true);
     setQuestion('');
 
-    // Optimistically append the question while we wait
-    setMessages((prev) => [...prev, { question: q, answer: null, sql: null, status: 'loading' }]);
+    // Build history from current messages for multi-turn context
+    const history = messages.map((m) => ({
+      question: m.question,
+      answer:   m.answer || '',
+    }));
+
+    // Optimistic placeholder
+    const placeholder = { question: q, answer: '', sql: null, status: 'streaming', intent: null };
+    setMessages((prev) => [...prev, placeholder]);
 
     try {
-      const body = { question: q };
-      if (conversationId) body.conversation_id = conversationId;
-
-      const res  = await fetch(API('/api/genie/ask'), {
+      const res = await fetch(API('/api/ai/ask/stream'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        body:    JSON.stringify({
+          question:        q,
+          conversation_id: conversationId || undefined,
+          history,
+        }),
       });
 
       if (!res.ok) {
@@ -69,63 +87,144 @@ const GenieAssistant = () => {
         throw new Error(err.detail || `HTTP ${res.status}`);
       }
 
-      const data = await res.json();
+      const reader  = res.body.getReader();
+      readerRef.current = reader;
+      const decoder = new TextDecoder();
+      let buffer    = '';
 
-      // Persist the conversation ID so follow-ups stay in context
-      if (data.conversation_id) setConversationId(data.conversation_id);
+      // Stream reading loop
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      setMessages((prev) => [
-        ...prev.slice(0, -1),   // remove the optimistic placeholder
-        {
-          question: q,
-          answer:   data.answer  || 'No narrative returned.',
-          sql:      data.sql     || null,
-          status:   data.status  || 'COMPLETED',
-        },
-      ]);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();   // keep incomplete last line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let event;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+          switch (event.type) {
+            case 'routing':
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  intent: event.intent,
+                };
+                return updated;
+              });
+              break;
+
+            case 'progress':
+              // Show progress text in the answer area while streaming hasn't started yet
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last    = updated[updated.length - 1];
+                if (!last.answer) {
+                  updated[updated.length - 1] = { ...last, answer: `⏳ ${event.text}` };
+                }
+                return updated;
+              });
+              break;
+
+            case 'token':
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last    = updated[updated.length - 1];
+                const current = last.answer.startsWith('⏳') ? '' : last.answer;
+                updated[updated.length - 1] = { ...last, answer: current + event.text };
+                return updated;
+              });
+              break;
+
+            case 'sql':
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  sql: event.sql,
+                };
+                return updated;
+              });
+              break;
+
+            case 'done':
+              if (event.conversation_id) setConversationId(event.conversation_id);
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  status: 'COMPLETED',
+                };
+                return updated;
+              });
+              break;
+
+            case 'error':
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  answer: `Error: ${event.text}`,
+                  status: 'error',
+                };
+                return updated;
+              });
+              break;
+
+            default:
+              break;
+          }
+        }
+      }
     } catch (err) {
-      console.error('Genie error:', err);
-      setMessages((prev) => [
-        ...prev.slice(0, -1),
-        { question: q, answer: `Error: ${err.message}`, sql: null, status: 'error' },
-      ]);
+      console.error('Ask AI stream error:', err);
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          answer: `Error: ${err.message}`,
+          status: 'error',
+        };
+        return updated;
+      });
     } finally {
+      readerRef.current = null;
       setLoading(false);
     }
-  };
+  }, [loading, messages, conversationId]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     askQuestion(question);
   };
 
-  /* â”€â”€ Collapsed FAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  // ── Collapsed FAB ──────────────────────────────────────────────────────────
   if (!isOpen) {
     return (
-      <button className="genie-fab" onClick={handleOpen} title="Ask AI Assistant">
+      <button className="genie-fab" onClick={handleOpen} title="Ask AI">
         <span className="genie-icon">&#x2728;</span>
         Ask AI
       </button>
     );
   }
 
-  /* â”€â”€ Expanded panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  // ── Expanded panel ─────────────────────────────────────────────────────────
   return (
     <div className="genie-container">
       {/* Header */}
       <div className="genie-header">
         <h3>
           <span className="genie-icon">&#x2728;</span>
-          AI Insights&nbsp;
-          <span className="genie-subtitle">Metis &mdash; Sales KPI Analytics</span>
+          AI Insights Assistant&nbsp;
+          <span className="genie-subtitle">Genie &middot; OpenAI &middot; Atlas Intelligence</span>
         </h3>
         <div className="genie-header-actions">
           {messages.length > 0 && (
-            <button
-              className="genie-new-btn"
-              onClick={startNewConversation}
-              title="Start a new conversation"
-            >
+            <button className="genie-new-btn" onClick={startNewConversation} title="New conversation">
               New
             </button>
           )}
@@ -137,45 +236,63 @@ const GenieAssistant = () => {
       <div className="genie-body">
 
         {/* Conversation history */}
-        {messages.map((msg, i) => (
-          <div key={i} className={`genie-turn ${msg.status === 'error' ? 'is-error' : ''}`}>
-            <div className="genie-question"><strong>You:</strong> {msg.question}</div>
-            {msg.status === 'loading' ? (
-              <div className="genie-loading inline">
-                <span className="spinner-small"></span>
-                <em>Genie is translating to SQL and running the query&hellip;</em>
-              </div>
-            ) : (
-              <div className="genie-response">
-                <strong>Genie:</strong> {msg.answer}
-              </div>
-            )}
-            {msg.sql && (
-              <details className="genie-sql">
-                <summary>View SQL</summary>
-                <pre><code>{msg.sql}</code></pre>
-              </details>
-            )}
-          </div>
-        ))}
+        {messages.map((msg, i) => {
+          const intentMeta = INTENT_STYLE[msg.intent] || null;
+          return (
+            <div key={i} className={`genie-turn ${msg.status === 'error' ? 'is-error' : ''}`}>
 
-        {/* Suggestion chips â€” only when conversation is empty */}
+              {/* User question */}
+              <div className="genie-question">
+                <strong>You:</strong> {msg.question}
+              </div>
+
+              {/* Intent badge */}
+              {intentMeta && (
+                <div className="genie-intent-badge" style={{ color: intentMeta.color }}>
+                  &#9679; {intentMeta.label}
+                </div>
+              )}
+
+              {/* Answer / streaming / loading */}
+              {msg.status === 'streaming' && !msg.answer ? (
+                <div className="genie-loading inline">
+                  <span className="spinner-small"></span>
+                  <em>Thinking...</em>
+                </div>
+              ) : (
+                <div className="genie-response">
+                  <strong>Atlas:</strong>{' '}
+                  <span style={{ whiteSpace: 'pre-wrap' }}>{msg.answer}</span>
+                  {msg.status === 'streaming' && (
+                    <span className="genie-cursor">▍</span>
+                  )}
+                </div>
+              )}
+
+              {/* SQL disclosure */}
+              {msg.sql && (
+                <details className="genie-sql">
+                  <summary>View SQL</summary>
+                  <pre><code>{msg.sql}</code></pre>
+                </details>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Suggestion chips — only when no conversation yet */}
         {messages.length === 0 && !loading && suggestions.length > 0 && (
           <div className="genie-suggestions">
             <p className="suggestions-title">&#x1F4A1; Try asking:</p>
             {suggestions.slice(0, 5).map((s, i) => (
-              <button
-                key={i}
-                className="suggestion-button"
-                onClick={() => askQuestion(s)}
-              >
+              <button key={i} className="suggestion-button" onClick={() => askQuestion(s)}>
                 {s}
               </button>
             ))}
           </div>
         )}
 
-        {/* Conversation context indicator */}
+        {/* Multi-turn indicator */}
         {conversationId && (
           <p className="genie-context-note">
             &#x1F4AC; Conversation active &mdash; follow-up questions keep context.
@@ -190,7 +307,7 @@ const GenieAssistant = () => {
         <input
           type="text"
           className="genie-input"
-          placeholder={conversationId ? 'Ask a follow-up...' : 'Ask about your KPIs...'}
+          placeholder={conversationId ? 'Ask a follow-up...' : 'Ask about KPIs, pipeline, or forecasts...'}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           disabled={loading}
@@ -201,7 +318,7 @@ const GenieAssistant = () => {
           className="genie-submit"
           disabled={loading || !question.trim()}
         >
-          {loading ? '...' : 'Ask'}
+          {loading ? '...' : '→'}
         </button>
       </form>
     </div>
