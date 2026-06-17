@@ -1,20 +1,21 @@
-﻿"""
-Genie AI Service â€” Databricks Genie natural-language-to-SQL layer.
+"""
+Genie AI Service — Databricks Genie natural-language-to-SQL layer.
 
-Connects to the "Metis - Sales KPI Analytics" Genie Space using a Personal
-Access Token. All HTTP calls are run in a thread pool so the FastAPI event
-loop is never blocked.
+Auth strategy (in priority order):
+  1. WorkspaceClient() — on Databricks Apps this auto-authenticates using the
+     app's built-in service principal (no token config needed). Locally it reads
+     DATABRICKS_HOST + DATABRICKS_TOKEN from the environment.
+  2. Per-request forwarded user token (x-forwarded-access-token ContextVar) —
+     kept as a fallback for cases where WorkspaceClient is unavailable.
+
+Using WorkspaceClient removes the need for each end-user to have Unity Catalog
+permissions on the federated catalog; only the app's service principal needs access.
 
 Genie API flow
 --------------
-1. POST  /start-conversation          â†’ {conversation_id, message_id, status}
-2. GET   /conversations/{c}/messages/{m}   (poll until COMPLETED / FAILED)
-3. POST  /conversations/{c}/messages  â†’ {id (message_id), status}   (follow-up)
-
-The full message object (when COMPLETED) contains:
-  - attachments[].query.query      â† generated SQL
-  - attachments[].query.descriptionâ† narrative explanation
-  - content                        â† top-level narrative (may be empty)
+1. POST  /start-conversation              → {conversation_id, message_id, status}
+2. GET   /conversations/{c}/messages/{m}  (poll until COMPLETED / FAILED)
+3. POST  /conversations/{c}/messages      → follow-up in same conversation
 """
 
 import asyncio
@@ -22,26 +23,106 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-import requests
-
 DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com")
 GENIE_SPACE_ID  = os.environ.get("GENIE_SPACE_ID", "01f10b2015dc1186928a78ee0bb4869f")
 
-_POLL_INTERVAL  = 2   # seconds between status checks
-_POLL_TIMEOUT   = 60  # seconds before giving up
+_POLL_INTERVAL = 2    # seconds between status checks
+_POLL_TIMEOUT  = 90   # seconds before giving up (Genie can be slow on cold start)
 
 
-def _token() -> str:
-    """Return active token — checks per-request ContextVar first (Databricks Apps
-    user identity passthrough), then falls back to static env vars."""
-    from services.databricks_connection import _request_token as _req_tok
-    return (
-        _req_tok.get()
-        or os.environ.get("DATABRICKS_TOKEN")
-        or os.environ.get("DATABRICKS_ACCESS_TOKEN")
-        or ""
+# -- Auth: WorkspaceClient (preferred) ----------------------------------------
+
+def _build_ws_client():
+    """
+    Return a Databricks WorkspaceClient.
+    On Databricks Apps: auto-authenticates via the app's service principal OAuth.
+    Locally: reads DATABRICKS_HOST + DATABRICKS_TOKEN from the environment.
+    Returns None if the SDK is unavailable (shouldn't happen — it's in requirements.txt).
+    """
+    try:
+        from databricks.sdk import WorkspaceClient
+        host = DATABRICKS_HOST
+        if not host.startswith("https://"):
+            host = f"https://{host}"
+        return WorkspaceClient(host=host)
+    except Exception:
+        return None
+
+
+_ws_client = _build_ws_client()
+
+
+def _fallback_token() -> str:
+    """Fallback: per-request user token or static env var."""
+    try:
+        from services.databricks_connection import _request_token as _req_tok
+        return (
+            _req_tok.get()
+            or os.environ.get("DATABRICKS_TOKEN")
+            or os.environ.get("DATABRICKS_ACCESS_TOKEN")
+            or ""
+        )
+    except Exception:
+        return os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN") or ""
+
+
+# -- HTTP helpers (blocking — called via asyncio.to_thread) -------------------
+
+def _api_call(method: str, path: str, body: Optional[Dict] = None) -> Dict:
+    """
+    Make a Genie REST API call.
+    Uses WorkspaceClient.api_client when available (preferred — uses app's identity).
+    Falls back to raw requests with a Bearer token.
+    """
+    full_path = f"/api/2.0/genie/spaces/{GENIE_SPACE_ID}{path}"
+
+    if _ws_client is not None:
+        result = _ws_client.api_client.do(method, full_path, body=body or {})
+        return result if isinstance(result, dict) else {}
+
+    # Fallback: raw requests
+    import requests
+    host = DATABRICKS_HOST
+    if not host.startswith("https://"):
+        host = f"https://{host}"
+    url     = f"{host}{full_path}"
+    headers = {
+        "Authorization": f"Bearer {_fallback_token()}",
+        "Content-Type":  "application/json",
+    }
+    if method.upper() == "POST":
+        r = requests.post(url, headers=headers, json=body or {}, timeout=30)
+    else:
+        r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def _poll_message(conversation_id: str, message_id: str) -> Dict:
+    """Blocking poll loop — run inside asyncio.to_thread."""
+    path     = f"/conversations/{conversation_id}/messages/{message_id}"
+    deadline = time.time() + _POLL_TIMEOUT
+
+    while time.time() < deadline:
+        data   = _api_call("GET", path)
+        status = data.get("status", "")
+
+        if status == "COMPLETED":
+            return data
+        if status in ("FAILED", "ERROR", "CANCELLED"):
+            raise RuntimeError(
+                f"Genie message {message_id} ended with status {status}: "
+                f"{data.get('error', data.get('content', ''))}"
+            )
+        time.sleep(_POLL_INTERVAL)
+
+    raise TimeoutError(
+        f"Genie did not complete within {_POLL_TIMEOUT}s "
+        f"(conversation {conversation_id}, message {message_id})"
     )
 
+
+# -- GenieService -------------------------------------------------------------
 
 class GenieService:
     """
@@ -50,64 +131,12 @@ class GenieService:
     """
 
     def __init__(self):
-        self.base_url = f"https://{DATABRICKS_HOST}/api/2.0/genie/spaces/{GENIE_SPACE_ID}"
-        self.conversations: Dict[str, str] = {}  # user_id â†’ conversation_id
-
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {_token()}",
-            "Content-Type":  "application/json",
-        }
-
-    # â”€â”€ Blocking helpers (called via asyncio.to_thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    def _post(self, path: str, body: Dict) -> Dict:
-        url = f"{self.base_url}{path}"
-        r   = requests.post(url, headers=self._headers(), json=body, timeout=30)
-        r.raise_for_status()
-        return r.json()
-
-    def _get(self, path: str) -> Dict:
-        url = f"{self.base_url}{path}"
-        r   = requests.get(url, headers=self._headers(), timeout=30)
-        r.raise_for_status()
-        return r.json()
-
-    def _poll_message(self, conversation_id: str, message_id: str) -> Dict:
-        """Blocking poll loop â€” runs in thread pool."""
-        path     = f"/conversations/{conversation_id}/messages/{message_id}"
-        deadline = time.time() + _POLL_TIMEOUT
-
-        while time.time() < deadline:
-            data   = self._get(path)
-            status = data.get("status", "")
-
-            if status == "COMPLETED":
-                return data
-            if status in ("FAILED", "ERROR", "CANCELLED"):
-                raise RuntimeError(
-                    f"Genie message {message_id} ended with status {status}: "
-                    f"{data.get('error', '')}"
-                )
-            time.sleep(_POLL_INTERVAL)
-
-        raise TimeoutError(
-            f"Genie did not complete within {_POLL_TIMEOUT}s "
-            f"(conversation {conversation_id}, message {message_id})"
-        )
-
-    # â”€â”€ Public async API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self.conversations: Dict[str, str] = {}   # user_id → conversation_id
 
     async def start_conversation(self, question: str) -> Dict[str, Any]:
-        """
-        Start a brand-new Genie conversation with an opening question.
-        Returns the raw Genie response (includes conversation_id, message_id).
-        Polls until the response is ready, then returns the completed message.
-        """
+        """Start a new Genie conversation; poll until response is ready."""
         init = await asyncio.to_thread(
-            self._post,
-            "/start-conversation",
-            {"content": question},
+            _api_call, "POST", "/start-conversation", {"content": question}
         )
         conversation_id = init.get("conversation_id")
         message_id      = init.get("message_id")
@@ -115,19 +144,15 @@ class GenieService:
         if not conversation_id or not message_id:
             raise ValueError(f"Unexpected start-conversation response: {init}")
 
-        completed = await asyncio.to_thread(
-            self._poll_message, conversation_id, message_id
-        )
+        completed = await asyncio.to_thread(_poll_message, conversation_id, message_id)
         completed["conversation_id"] = conversation_id
         return completed
 
     async def send_message(self, conversation_id: str, message: str) -> Dict[str, Any]:
-        """
-        Send a follow-up message in an existing conversation.
-        Polls until the response is ready.
-        """
+        """Send a follow-up message in an existing conversation."""
         sent = await asyncio.to_thread(
-            self._post,
+            _api_call,
+            "POST",
             f"/conversations/{conversation_id}/messages",
             {"content": message},
         )
@@ -135,49 +160,33 @@ class GenieService:
         if not message_id:
             raise ValueError(f"No message id in response: {sent}")
 
-        completed = await asyncio.to_thread(
-            self._poll_message, conversation_id, message_id
-        )
+        completed = await asyncio.to_thread(_poll_message, conversation_id, message_id)
         completed["conversation_id"] = conversation_id
         return completed
 
     async def ask_kpi_question(self, question: str) -> Dict[str, Any]:
-        """One-shot question â€” always starts a fresh conversation."""
+        """One-shot question — always starts a fresh conversation."""
         result = await self.start_conversation(question)
         return self.parse_genie_response(result)
 
     async def ask_with_context(
         self, question: str, user_id: str = "default"
     ) -> Dict[str, Any]:
-        """
-        Ask a question, reusing an existing conversation for this user if one
-        exists, or starting a new one.
-        """
+        """Ask using an existing conversation for this user_id, or start a new one."""
         conv_id = self.conversations.get(user_id)
         if conv_id:
             try:
                 raw = await self.send_message(conv_id, question)
             except Exception:
-                # Conversation may have expired â€” start fresh
                 raw = await self.start_conversation(question)
                 self.conversations[user_id] = raw.get("conversation_id", conv_id)
         else:
             raw = await self.start_conversation(question)
             self.conversations[user_id] = raw.get("conversation_id", "")
-
         return self.parse_genie_response(raw)
 
     def parse_genie_response(self, response: Dict) -> Dict[str, Any]:
-        """
-        Extract a clean, structured result from a completed Genie message.
-
-        Genie returns:
-          - content          narrative summary (sometimes empty)
-          - attachments[]
-              .query.query           generated SQL
-              .query.description     narrative about the query
-              .text.content          plain-text paragraph attachments
-        """
+        """Extract SQL, narrative, and metadata from a completed Genie message."""
         attachments = response.get("attachments") or []
 
         sql         = None
@@ -197,7 +206,7 @@ class GenieService:
             response.get("content")
             or description
             or (text_parts[0] if text_parts else "")
-            or "Query completed â€” see data below."
+            or "Query completed — see data below."
         )
 
         return {
@@ -223,13 +232,10 @@ class GenieService:
             "What's driving the change in active pipeline?",
         ]
 
-    # â”€â”€ Legacy compatibility (used by main.py /api/insights) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
     async def ask_question(self, question: str) -> Dict[str, Any]:
-        """Alias kept for backward compatibility with existing /api/insights calls."""
+        """Alias kept for backward compatibility."""
         return await self.ask_kpi_question(question)
 
 
 # Singleton
-
 genie_service = GenieService()
