@@ -13,9 +13,11 @@ import ForecastIntelligence from './ForecastIntelligence';
 import { ChartExportBar } from '../../utils/chartExport';
 
 const MODELS = [
+  { label: 'Ensemble',  color: '#00FF88' },
   { label: 'LightGBM', color: '#00BFFF' },
-  { label: 'Prophet', color: '#FF6B6B' },
-  { label: 'Ensemble (70/30)', color: '#00FF88' },
+  { label: 'Prophet',  color: '#FF6B6B' },
+  { label: 'ETS',      color: '#f59e0b' },
+  { label: 'Chronos',  color: '#a78bfa' },
 ];
 
 const fmtDate = (d) => {
@@ -48,9 +50,11 @@ const DarkTooltip = ({ active, payload, label }) => {
 
 const ForecastChart = () => {
   const chartRef = useRef(null);
-  const [selectedModel, setSelectedModel] = useState('Ensemble (70/30)');
+  const [selectedModel, setSelectedModel] = useState('Ensemble');
+  const [selectedProduct, setSelectedProduct] = useState('All');
   const [forecastData, setForecastData] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
+  const [products, setProducts] = useState([]);
   const [source, setSource] = useState('demo');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -60,8 +64,11 @@ const ForecastChart = () => {
     setLoading(true);
     setError(null);
     try {
+      const productParam = selectedProduct && selectedProduct !== 'All'
+        ? `?product=${encodeURIComponent(selectedProduct)}`
+        : '';
       const [arrRes, leaderboardRes] = await Promise.all([
-        fetch('/api/forecast/arr'),
+        fetch(`/api/forecast/arr${productParam}`),
         fetch('/api/forecast/leaderboard'),
       ]);
       if (!arrRes.ok) throw new Error(`ARR HTTP ${arrRes.status}`);
@@ -72,6 +79,7 @@ const ForecastChart = () => {
 
       setForecastData(arrJson.data ?? null);
       setLeaderboard(lbJson.data ?? []);
+      setProducts(arrJson.products ?? []);
       setSource(arrJson.source ?? 'demo');
     } catch (e) {
       setError('Failed to load forecast data');
@@ -82,10 +90,13 @@ const ForecastChart = () => {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, selectedProduct]);
 
   const modelColor = MODELS.find((m) => m.label === selectedModel)?.color ?? '#00FF88';
-  const selectedM = leaderboard.find((r) => r.model === selectedModel);
+  const selectedM = leaderboard.find(
+    (r) => r.model === selectedModel &&
+           (selectedProduct === 'All' || r.product === selectedProduct)
+  );
 
   const chartData = useMemo(() => {
     if (!forecastData) return [];
@@ -159,7 +170,7 @@ const ForecastChart = () => {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
         {MODELS.map((m) => (
           <button
             key={m.label}
@@ -179,6 +190,30 @@ const ForecastChart = () => {
           </button>
         ))}
       </div>
+
+      {/* Product filter */}
+      {products.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+          {['All', ...products].map((p) => (
+            <button
+              key={p}
+              onClick={() => setSelectedProduct(p)}
+              style={{
+                padding: '3px 9px',
+                borderRadius: 999,
+                fontSize: 9,
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: selectedProduct === p ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${selectedProduct === p ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.07)'}`,
+                color: selectedProduct === p ? '#f1f5f9' : '#475569',
+              }}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <div style={{ height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569', fontSize: 12 }}>

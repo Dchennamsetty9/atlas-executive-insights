@@ -1,64 +1,62 @@
-"""Read-only forecast endpoints backed by precomputed Delta tables."""
+"""Read-only forecast endpoints backed by precomputed Delta tables.
+
+Schema (arr_forecast_ensemble):
+  run_timestamp, product, forecast_week_start, forecast_step, horizon_weeks,
+  arr_ensemble, arr_ets, arr_prophet, arr_lightgbm, arr_chronos,
+  mape_ets, mape_prophet, mape_lightgbm, mape_chronos, ensemble_weights
+
+Schema (arr_forecast_leaderboard):
+  product, ETS, Prophet, LightGBM, Chronos, best_model, best_mape
+"""
 
 import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from services.databricks_connection import execute_query, token_available
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 
-CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
-SCHEMA = os.getenv("DATABRICKS_SCHEMA", "mdl_sales_analytics")
+# ── Catalog / table config ────────────────────────────────────────────────────
+GOLD_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
+GOLD_SCHEMA  = os.getenv("FORECAST_SCHEMA",  "mdl_sales_analytics")
 
-FORECAST_OUTPUT_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_forecast_output`"
-FORECAST_INSIGHTS_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_forecast_insights`"
-FORECAST_LEADERBOARD_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`arr_model_leaderboard`"
+ENSEMBLE_TABLE   = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_ensemble`"
+LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_leaderboard`"
 
+# Source table for fetching recent actuals
+ACTUALS_CATALOG = os.getenv("ACTUALS_CATALOG", "datalake_transform")
+ACTUALS_TABLE   = f"`{ACTUALS_CATALOG}`.`cds_sfdc_opp_products_latest`"
 
-def _live_mode_available() -> bool:
-    _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
-    _force_live = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
-    return token_available() and (_on_databricks or _force_live)
+CHANNEL_EXCLUSIONS = ("'Care'", "'Sales Other'")
+PURCHASE_TYPE      = "Growth"
 
+# Model column → display label
+MODEL_COL_MAP = {
+    "arr_ets":      "ETS",
+    "arr_prophet":  "Prophet",
+    "arr_lightgbm": "LightGBM",
+    "arr_chronos":  "Chronos",
+    "arr_ensemble": "Ensemble",
+}
 
 SUPPORTED_MODELS = {
-    "lightgbm": {
-        "name": "LightGBM",
-        "description": "Gradient boosting with AR + calendar features (34.9% MAPE)",
-    },
-    "prophet": {
-        "name": "Prophet",
-        "description": "Multiplicative seasonality with quarterly/monthly patterns (34.7% MAPE)",
-    },
-    "ensemble": {
-        "name": "Ensemble (70/30)",
-        "description": "70% LightGBM + 30% Prophet weighted blend (31.3% MAPE — best)",
-    },
+    "ets":      {"name": "ETS",      "description": "Exponential Smoothing (statsmodels Holt-Winters)"},
+    "prophet":  {"name": "Prophet",  "description": "Facebook Prophet with quarterly seasonality"},
+    "lightgbm": {"name": "LightGBM", "description": "Gradient boosting with lag + rolling features"},
+    "chronos":  {"name": "Chronos",  "description": "Amazon Chronos-T5-Small (zero-shot foundation model)"},
+    "ensemble": {"name": "Ensemble", "description": "MAPE-weighted blend of all available models"},
 }
 
 
-MODEL_LABEL_BY_KEY = {
-    "lightgbm": "LightGBM",
-    "prophet": "Prophet",
-    "ensemble": "Ensemble (70/30)",
-}
-
-
-def _normalize_model_label(model: str) -> str:
-    m = str(model or "").strip().lower()
-    if m in {"lightgbm", "light_gbm"}:
-        return "LightGBM"
-    if m == "prophet":
-        return "Prophet"
-    if m in {"ensemble", "ensemble (70/30)", "ensemble_70_30"}:
-        return "Ensemble (70/30)"
-    if m == "actual":
-        return "actual"
-    return str(model or "")
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _live_mode_available() -> bool:
+    _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
+    _force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
+    return token_available() and (_on_databricks or _force_live)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -70,222 +68,165 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _parse_json_array(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    if value is None:
-        return []
-    text = str(value).strip()
-    if not text:
-        return []
-    try:
-        decoded = json.loads(text)
-        if isinstance(decoded, list):
-            return [str(v) for v in decoded]
-    except json.JSONDecodeError:
-        pass
-    return [s.strip() for s in text.split(";") if s.strip()]
-
-
-def _table_readiness(table_fqn: str) -> dict:
-    out = {
-        "table": str(table_fqn).replace("`", "").split(".")[-1],
-        "fqn": table_fqn,
-        "exists": False,
-        "ready": False,
-        "row_count": 0,
-        "latest_run_date": None,
-        "run_date_column": "run_date",
-        "error": None,
+def _empty_response(reason: str) -> dict:
+    """Return a consistent empty response when live mode is unavailable."""
+    return {
+        "source": "demo",
+        "live_mode_available": False,
+        "error": reason,
+        "data": {
+            "actual":    {"actuals": [], "forecast": []},
+            "ETS":       {"actuals": [], "forecast": []},
+            "Prophet":   {"actuals": [], "forecast": []},
+            "LightGBM":  {"actuals": [], "forecast": []},
+            "Chronos":   {"actuals": [], "forecast": []},
+            "Ensemble":  {"actuals": [], "forecast": []},
+        },
     }
 
-    try:
-        sample_rows = execute_query(f"SELECT * FROM {table_fqn} LIMIT 1")
-        out["exists"] = True
 
-        count_rows = execute_query(f"SELECT COUNT(*) AS row_count FROM {table_fqn}")
-        if count_rows:
-            row = count_rows[0] or {}
-            row_count = row.get("row_count")
-            if row_count is None and row:
-                row_count = next(iter(row.values()))
-            out["row_count"] = int(_to_float(row_count, 0))
-
-        latest_rows = execute_query(
-            f"SELECT CAST(run_date AS STRING) AS latest_run_date "
-            f"FROM {table_fqn} WHERE run_date IS NOT NULL ORDER BY run_date DESC LIMIT 1"
-        )
-        if latest_rows:
-            out["latest_run_date"] = latest_rows[0].get("latest_run_date")
-
-        out["ready"] = bool(out["exists"] and out["row_count"] > 0 and out["latest_run_date"])
-        if out["exists"] and out["row_count"] == 0:
-            out["error"] = "table exists but has no rows yet"
-        return out
-    except Exception as exc:
-        out["error"] = str(exc)
-        return out
-
-
+# ── Routes ────────────────────────────────────────────────────────────────────
 @router.get("/models")
 async def list_models():
     return {"models": SUPPORTED_MODELS}
 
 
-@router.get("/health/tables")
-async def forecast_tables_health():
-    table_names = [FORECAST_OUTPUT_TABLE, FORECAST_INSIGHTS_TABLE, FORECAST_LEADERBOARD_TABLE]
-
-    if not _live_mode_available():
-        return {
-            "ready": False,
-            "live_mode_available": False,
-            "source": "demo",
-            "error": "Databricks token/host not available in current runtime",
-            "tables": [
-                {
-                    "table": t,
-                    "fqn": t,
-                    "exists": False,
-                    "ready": False,
-                    "row_count": 0,
-                    "latest_run_date": None,
-                    "run_date_column": "run_date",
-                    "error": "live mode unavailable",
-                }
-                for t in table_names
-            ],
-        }
-
-    checks = await asyncio.gather(*[asyncio.to_thread(_table_readiness, t) for t in table_names])
-    return {
-        "ready": all(c.get("ready") for c in checks),
-        "live_mode_available": True,
-        "source": "live",
-        "tables": checks,
-    }
-
-
 @router.get("/arr")
-async def get_arr_forecast():
-    if not _live_mode_available():
-        return {
-            "source": "demo",
-            "data": {
-                "actual": {"actuals": [], "forecast": []},
-                "LightGBM": {"actuals": [], "forecast": []},
-                "Prophet": {"actuals": [], "forecast": []},
-                "Ensemble (70/30)": {"actuals": [], "forecast": []},
-            },
-            "live_mode_available": False,
-            "error": "Databricks token/host not available in current runtime",
-        }
+async def get_arr_forecast(product: Optional[str] = Query(None, description="Filter by product name")):
+    """
+    Return pre-computed ARR forecasts from Delta, shaped for the ForecastChart.
 
-    rows = await asyncio.to_thread(
-        execute_query,
-        (
-            "SELECT ds, model, forecast_type, yhat, yhat_lower, yhat_upper "
-            f"FROM {FORECAST_OUTPUT_TABLE} "
-            "ORDER BY ds"
-        ),
-    )
-
-    grouped = {
-        "actual": {"actuals": [], "forecast": []},
-        "LightGBM": {"actuals": [], "forecast": []},
-        "Prophet": {"actuals": [], "forecast": []},
-        "Ensemble (70/30)": {"actuals": [], "forecast": []},
+    Response shape:
+    {
+      "source": "live" | "demo",
+      "products": [...],          // all available products
+      "data": {
+        "actual":   {"actuals": [{date, value}], "forecast": []},
+        "ETS":      {"actuals": [], "forecast": [{date, value, lower, upper}]},
+        "Prophet":  ...,
+        "LightGBM": ...,
+        "Chronos":  ...,
+        "Ensemble": ...,
+      }
     }
+    """
+    if not _live_mode_available():
+        return _empty_response("Databricks token/host not available in current runtime")
 
-    for row in rows:
-        date_str = str(row.get("ds") or "")[:10]
+    # ── 1. Fetch forecast rows (latest run only) ──────────────────────────────
+    product_filter = ""
+    if product:
+        safe = product.replace("'", "''")
+        product_filter = f" AND product = '{safe}'"
+
+    forecast_sql = f"""
+        SELECT
+            forecast_week_start,
+            product,
+            arr_ets,
+            arr_prophet,
+            arr_lightgbm,
+            arr_chronos,
+            arr_ensemble
+        FROM {ENSEMBLE_TABLE}
+        WHERE run_timestamp = (SELECT MAX(run_timestamp) FROM {ENSEMBLE_TABLE})
+        {product_filter}
+        ORDER BY forecast_week_start
+    """
+
+    forecast_rows = await asyncio.to_thread(execute_query, forecast_sql)
+
+    # Aggregate across products (or single product if filtered)
+    fc_by_week: dict[str, dict[str, float]] = {}
+    products_seen: set[str] = set()
+
+    for row in forecast_rows:
+        date_str = str(row.get("forecast_week_start") or "")[:10]
         if not date_str:
             continue
+        products_seen.add(str(row.get("product") or ""))
+        if date_str not in fc_by_week:
+            fc_by_week[date_str] = {col: 0.0 for col in MODEL_COL_MAP}
+        for col in MODEL_COL_MAP:
+            fc_by_week[date_str][col] += _to_float(row.get(col), 0.0)
 
-        model_label = _normalize_model_label(row.get("model"))
-        forecast_type = str(row.get("forecast_type") or "").strip().lower()
+    # ── 2. Fetch recent actuals from source table ─────────────────────────────
+    excl = ", ".join(CHANNEL_EXCLUSIONS)
+    product_actual_filter = ""
+    if products_seen:
+        # use the product names seen in forecast table for consistent actuals
+        prod_list = ", ".join(f"'{p.replace(chr(39), chr(39)+chr(39))}'" for p in products_seen)
+        product_actual_filter = f"AND product_genus IN ({prod_list})"
 
-        point = {
-            "date": date_str,
-            "value": _to_float(row.get("yhat"), 0.0),
-            "lower": _to_float(row.get("yhat_lower"), _to_float(row.get("yhat"), 0.0)),
-            "upper": _to_float(row.get("yhat_upper"), _to_float(row.get("yhat"), 0.0)),
-        }
+    actuals_sql = f"""
+        SELECT
+            date_trunc('week', close_date) AS week_start,
+            SUM(amount_towards_plan)       AS arr
+        FROM {ACTUALS_TABLE}
+        WHERE sales_channel NOT IN ({excl})
+          AND purchase_type_rollup = '{PURCHASE_TYPE}'
+          AND is_won   = 'True'
+          AND is_closed = 'True'
+          AND close_date >= add_months(current_date(), -18)
+          {product_actual_filter}
+        GROUP BY date_trunc('week', close_date)
+        ORDER BY week_start
+    """
 
-        if model_label == "actual" or forecast_type == "actual":
-            grouped["actual"]["actuals"].append(point)
-            continue
+    try:
+        actual_rows = await asyncio.to_thread(execute_query, actuals_sql)
+    except Exception:
+        actual_rows = []
 
-        if model_label not in grouped:
-            continue
+    # ── 3. Build response structure ───────────────────────────────────────────
+    data: dict[str, dict] = {
+        "actual":   {"actuals": [], "forecast": []},
+        "ETS":      {"actuals": [], "forecast": []},
+        "Prophet":  {"actuals": [], "forecast": []},
+        "LightGBM": {"actuals": [], "forecast": []},
+        "Chronos":  {"actuals": [], "forecast": []},
+        "Ensemble": {"actuals": [], "forecast": []},
+    }
 
-        if forecast_type == "actual":
-            grouped[model_label]["actuals"].append(point)
-        else:
-            grouped[model_label]["forecast"].append(point)
+    for row in actual_rows:
+        date_str = str(row.get("week_start") or "")[:10]
+        if date_str:
+            data["actual"]["actuals"].append({
+                "date":  date_str,
+                "value": _to_float(row.get("arr"), 0.0),
+            })
+
+    for date_str, cols in sorted(fc_by_week.items()):
+        # Confidence band: ±15% of ensemble value (model-level uncertainty)
+        ensemble_val = cols["arr_ensemble"]
+        band = ensemble_val * 0.15
+
+        for col, label in MODEL_COL_MAP.items():
+            val = cols[col]
+            if val == 0.0:
+                continue  # model not available for this product
+            data[label]["forecast"].append({
+                "date":  date_str,
+                "value": round(val, 2),
+                "lower": round(max(0, val - band), 2),
+                "upper": round(val + band, 2),
+            })
 
     return {
         "source": "live",
-        "data": grouped,
+        "products": sorted(products_seen),
+        "data": data,
     }
-
-
-@router.get("/insights")
-async def get_forecast_insights():
-    if not _live_mode_available():
-        return {
-            "source": "demo",
-            "data": None,
-            "live_mode_available": False,
-            "error": "Databricks token/host not available in current runtime",
-        }
-
-    rows = await asyncio.to_thread(
-        execute_query,
-        (
-            "SELECT * "
-            f"FROM {FORECAST_INSIGHTS_TABLE} "
-            "ORDER BY run_date DESC "
-            "LIMIT 1"
-        ),
-    )
-
-    if not rows:
-        return {"source": "live", "data": None}
-
-    row = rows[0]
-    confidence = row.get("model_confidence")
-    confidence_val = int(round(_to_float(confidence, 0)))
-    if 0 <= _to_float(confidence, 0) <= 1:
-        confidence_val = int(round(_to_float(confidence, 0) * 100))
-
-    payload = {
-        "run_date": row.get("run_date"),
-        "momentum": row.get("momentum") or row.get("trend_status") or "STABLE",
-        "risk_level": row.get("risk_level") or "MODERATE RISK",
-        "narrative": row.get("narrative") or row.get("description") or "",
-        "model_confidence": confidence_val,
-        "upside": row.get("upside") or "",
-        "downside": row.get("downside") or "",
-        "best_model": row.get("best_model") or "Ensemble (70/30)",
-        "best_mape": _to_float(row.get("best_mape"), 0.0),
-        "monthly_best_model": row.get("monthly_best_model"),
-        "monthly_best_mape": _to_float(row.get("monthly_best_mape"), 0.0),
-        "ensemble_mape": _to_float(row.get("ensemble_mape"), 0.0),
-        "forecast_most_likely": _to_float(row.get("forecast_most_likely"), 0.0),
-        "forecast_low": _to_float(row.get("forecast_low"), 0.0),
-        "forecast_high": _to_float(row.get("forecast_high"), 0.0),
-        "key_drivers": _parse_json_array(row.get("key_drivers")),
-        "executive_actions": _parse_json_array(row.get("executive_actions")),
-        "downside_risks": _parse_json_array(row.get("downside_risks")),
-        "upside_opportunities": _parse_json_array(row.get("upside_opportunities")),
-    }
-
-    return {"source": "live", "data": payload}
 
 
 @router.get("/leaderboard")
 async def get_model_leaderboard():
+    """
+    Return MAPE leaderboard from arr_forecast_leaderboard Delta table.
+
+    Response shape:
+    {"source": "live", "data": [{model, mape, product, best_model, best_mape}]}
+    """
     if not _live_mode_available():
         return {
             "source": "demo",
@@ -296,28 +237,74 @@ async def get_model_leaderboard():
 
     rows = await asyncio.to_thread(
         execute_query,
-        (
-            "SELECT model, mape, granularity, type "
-            f"FROM {FORECAST_LEADERBOARD_TABLE} "
-            "ORDER BY mape ASC"
-        ),
+        f"""
+        SELECT
+            product,
+            `ETS`      AS mape_ets,
+            `Prophet`  AS mape_prophet,
+            `LightGBM` AS mape_lgb,
+            `Chronos`  AS mape_chronos,
+            best_model,
+            best_mape
+        FROM {LEADERBOARD_TABLE}
+        ORDER BY product
+        """,
     )
 
-    data = [
-        {
-            "model": _normalize_model_label(r.get("model")),
-            "mape": _to_float(r.get("mape"), 0.0),
-            "granularity": r.get("granularity") or "weekly",
-            "type": r.get("type") or "",
-        }
-        for r in rows
-    ]
+    data = []
+    for row in rows:
+        product    = str(row.get("product") or "")
+        best_model = str(row.get("best_model") or "")
+        best_mape  = _to_float(row.get("best_mape"), 0.0)
+        for col, label in [("mape_ets", "ETS"), ("mape_prophet", "Prophet"),
+                            ("mape_lgb", "LightGBM"), ("mape_chronos", "Chronos")]:
+            m = _to_float(row.get(col), None)
+            if m is not None and m > 0:
+                data.append({
+                    "model":      label,
+                    "product":    product,
+                    "mape":       round(m, 2),
+                    "best_model": best_model,
+                    "best_mape":  round(best_mape, 2),
+                })
+
+    # Sort: best MAPE first
+    data.sort(key=lambda r: r["mape"])
     return {"source": "live", "data": data}
+
+
+@router.get("/health/tables")
+async def forecast_tables_health():
+    tables = [ENSEMBLE_TABLE, LEADERBOARD_TABLE]
+    if not _live_mode_available():
+        return {
+            "ready": False,
+            "live_mode_available": False,
+            "source": "demo",
+            "error": "Databricks token/host not available in current runtime",
+            "tables": [{"table": t, "exists": False, "ready": False} for t in tables],
+        }
+
+    async def _check(tbl: str) -> dict:
+        try:
+            rows = await asyncio.to_thread(execute_query, f"SELECT COUNT(*) AS n FROM {tbl}")
+            n = _to_float((rows[0] or {}).get("n", 0), 0)
+            return {"table": tbl, "exists": True, "ready": n > 0, "row_count": int(n)}
+        except Exception as exc:
+            return {"table": tbl, "exists": False, "ready": False, "error": str(exc)}
+
+    checks = await asyncio.gather(*[_check(t) for t in tables])
+    return {
+        "ready": all(c.get("ready") for c in checks),
+        "live_mode_available": True,
+        "source": "live",
+        "tables": checks,
+    }
 
 
 @router.get("/run")
 async def run_forecast_model():
     return {
         "deprecated": True,
-        "message": "Use /api/forecast/arr for pre-computed forecasts",
+        "message": "Forecasts are pre-computed by the weekly Databricks Job. Use /api/forecast/arr.",
     }
