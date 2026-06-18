@@ -28,6 +28,7 @@ from routes.deal_bands import router as deal_bands_router
 from routes.coverage import router as coverage_router
 from routes.deals import router as deals_router
 from routes.forecast import router as forecast_router
+from routes.forecast_v2 import router as forecast_v2_router
 from routes.performance_hub import router as performance_hub_router
 from routes.ai import router as ai_router
 from routes.preferences import router as preferences_router
@@ -122,6 +123,7 @@ app.include_router(deal_bands_router)
 app.include_router(coverage_router)
 app.include_router(deals_router)
 app.include_router(forecast_router)
+app.include_router(forecast_v2_router)
 app.include_router(performance_hub_router)
 app.include_router(ai_router)
 app.include_router(preferences_router)
