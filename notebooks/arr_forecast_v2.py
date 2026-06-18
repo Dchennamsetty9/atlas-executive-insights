@@ -1,545 +1,596 @@
 # Databricks notebook source
-# GAIM Executive App — ARR Forecast v2 (feature-enhanced Prophet + LightGBM + learned ensemble)
-#
-# Replaces the Prophet-only weekly job. Improvements over v1:
-#   1. Honest accuracy: rolling-origin backtest (3 folds × 13-week horizon),
-#      MAPE reported OUT-OF-SAMPLE — never in-sample fitted values.
-#   2. Fiscal-calendar features: quarter-end / quarter-start weeks, month-of-quarter,
-#      weeks-to-quarter-end, US holiday weeks. Won ARR clusters at quarter close;
-#      v1 only had summer/winter/isweek1.
-#   3. Prophet config fixed for weekly data: daily/weekly seasonality OFF
-#      (v1 had daily_seasonality=True on weekly buckets — fits noise),
-#      custom quarterly + monthly seasonalities added, changepoint prior tuned by backtest.
-#   4. LightGBM with AR lags + calendar features and QUANTILE models (q10/q50/q90)
-#      for real 80% prediction intervals (v1 bounds were symmetric residual std).
-#   5. Ensemble weights LEARNED from backtest MAPE (inverse-MAPE), not fixed 70/30.
-#   6. Quarter-end attainment forecast reported separately (insights table:
-#      forecast_most_likely / forecast_low / forecast_high) with its own
-#      backtest accuracy (monthly_best_mape), per executive requirement.
-#
-# Output contract — matches backend/routes/forecast.py EXACTLY (the in-repo v1
-# notebook wrote most_likely/worst_case/best_case, which the app no longer reads):
-#   arr_forecast_output     : run_date, ds, model, forecast_type, yhat, yhat_lower, yhat_upper
-#                             model ∈ {actual, lightgbm, prophet, ensemble}
-#                             forecast_type ∈ {actual, forecast}
-#                             NOTE: route reads the WHOLE table (no run_date filter),
-#                             so this job OVERWRITES with the latest run only.
-#   arr_model_leaderboard   : run_date, model, mape, granularity, type
-#   arr_forecast_insights   : run_date, momentum, risk_level, narrative, model_confidence,
-#                             upside, downside, best_model, best_mape, monthly_best_model,
-#                             monthly_best_mape, ensemble_mape, forecast_most_likely,
-#                             forecast_low, forecast_high, key_drivers, executive_actions,
-#                             downside_risks, upside_opportunities
-#
-# Schedule: weekly (Monday 06:00 UTC, same slot as v1 — see databricks.yml)
+# MAGIC %md
+# MAGIC # ARR Forecast v2 — Total · Product · Geo Ensemble
+# MAGIC
+# MAGIC **5-model ensemble**: ETS · Prophet · LightGBM · Chronos · Ensemble
+# MAGIC **Output**: `datagroup_mdl.mdl_sales_analytics.arr_forecast_v2`
+# MAGIC **Grain**: (week × product × sales_market) + Total aggregates
+# MAGIC **Actuals**: SFDC for in-flight month · MC reconciled for all closed months
+# MAGIC **Forecast types**: Rolling 13-week AND Rest-of-Year (RoY)
+# MAGIC **Target**: MAPE < 15% per slice via quarter-end spike features
 
 # COMMAND ----------
-# MAGIC %md ## Section 0 — Install dependencies (once per cluster)
+# MAGIC %pip install prophet lightgbm statsmodels transformers torch --quiet
 
 # COMMAND ----------
-# MAGIC %pip install prophet==1.1.5 lightgbm==4.3.0 holidays==0.47 --quiet
-
-# COMMAND ----------
-
-import warnings
+import warnings, logging, math, datetime
 warnings.filterwarnings("ignore")
-
-import json
-from datetime import datetime, date, timedelta
+logging.getLogger("prophet").setLevel(logging.ERROR)
+logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
 
 import numpy as np
 import pandas as pd
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-# Source: federated.sales.metis_won_opps_fact — the accessible, cleaned won-bookings
-# fact. It is built from gaim_pipeline_daily_snapshot (itself built from the CDS
-# opp-products table with MIGRATION and ZERO-DOLLAR opps already removed upstream),
-# so it needs no demo_stage / purchase_type_rollup / migration / zero-dollar filters.
-# Verified: reconciles with the production CDS 'Growth' series within <1% per week.
-SOURCE_TABLE             = "federated.sales.metis_won_opps_fact"
-HISTORY_START            = "2023-01-01"          # match prod model training window
-SALES_CHANNEL_EXCLUSIONS = ("Care", "Sales Other")
-# Product groups come from the canonical Atlas hierarchy join (genus → group),
-# not a hardcoded allowlist. None = no group filter (Total model); set for per-segment.
-PRODUCT_HIERARCHY_TABLE  = "datagroup_mdl.mdl_sales_analytics.gaim_product_hierarchy_atlas"
-PRODUCT_GROUPS           = None                  # e.g. ("ITSG", "Core Collab", ...)
-OUTPUT_CATALOG  = "datagroup_mdl"
-OUTPUT_SCHEMA   = "mdl_sales_analytics"
-
-FORECAST_OUTPUT_TABLE      = f"{OUTPUT_CATALOG}.{OUTPUT_SCHEMA}.arr_forecast_output"
-FORECAST_INSIGHTS_TABLE    = f"{OUTPUT_CATALOG}.{OUTPUT_SCHEMA}.arr_forecast_insights"
-FORECAST_LEADERBOARD_TABLE = f"{OUTPUT_CATALOG}.{OUTPUT_SCHEMA}.arr_model_leaderboard"
-
-HORIZON_WEEKS   = 26          # forecast horizon shown in the app
-BACKTEST_FOLDS  = 3           # rolling-origin folds
-BACKTEST_H      = 13          # weeks per fold (one quarter)
-MIN_TRAIN_WEEKS = 78          # need 1.5y before first fold
-INTERVAL        = 0.80        # 80% band → quantiles 0.10 / 0.90
-RUN_DATE        = date.today().isoformat()
-
-print(f"[v2] ARR Forecast run {RUN_DATE} — horizon {HORIZON_WEEKS}w, "
-      f"{BACKTEST_FOLDS}×{BACKTEST_H}w backtest")
-
-# COMMAND ----------
-# MAGIC %md ## Section 1 — Load weekly Won ARR (Total)
-# MAGIC Source: `federated.sales.metis_won_opps_fact` (accessible; migration +
-# MAGIC zero-dollar opps already removed upstream). Latest `data_date` snapshot only,
-# MAGIC Care / Sales Other channels excluded, Monday-aligned weekly buckets.
-# MAGIC Total-level (the app contract has no segment column). The optional
-# MAGIC product-hierarchy join (genus → Atlas Product_Group) is in place so the
-# MAGIC per-segment build only needs PRODUCT_GROUPS set — see methodology doc.
-
-# COMMAND ----------
-
-_chan_excl = ", ".join(f"'{c}'" for c in SALES_CHANNEL_EXCLUSIONS)
-# Product-group filter applied against the canonical Atlas hierarchy (joined on genus)
-_prod_filter = (
-    "AND h.Product_Group IN (" + ", ".join(f"'{p}'" for p in PRODUCT_GROUPS) + ")"
-    if PRODUCT_GROUPS else ""
-)
-
-sql = f"""
-SELECT
-    c.close_date,
-    SUM(c.amount_towards_plan) AS won_arr
-FROM {SOURCE_TABLE} c
-LEFT JOIN {PRODUCT_HIERARCHY_TABLE} h
-       ON LOWER(TRIM(c.product_genus)) = LOWER(TRIM(h.Product_Genus))
-WHERE
-    c.data_date = (SELECT MAX(data_date) FROM {SOURCE_TABLE})
-    AND c.sales_channel NOT IN ({_chan_excl})
-    {_prod_filter}
-    AND c.close_date >= '{HISTORY_START}'
-    AND c.close_date <= CURRENT_DATE()
-GROUP BY c.close_date
-"""
-daily = spark.sql(sql).toPandas()
-daily["close_date"] = pd.to_datetime(daily["close_date"])
-
-# ISO Monday-aligned weekly aggregation; drop current partial week
-weekly = (
-    daily.set_index("close_date")["won_arr"]
-    .resample("W-MON", label="left", closed="left").sum()
-    .reset_index()
-    .rename(columns={"close_date": "ds", "won_arr": "y"})
-)
-last_complete = pd.Timestamp(date.today() - timedelta(days=date.today().weekday() + 1))
-weekly = weekly[weekly["ds"] <= last_complete - pd.Timedelta(weeks=1)].reset_index(drop=True)
-weekly["y"] = weekly["y"].clip(lower=0.0)
-
-assert len(weekly) >= MIN_TRAIN_WEEKS, (
-    f"Only {len(weekly)} weeks of history — need ≥{MIN_TRAIN_WEEKS}. "
-    "Check source table / HISTORY_START."
-)
-print(f"[v2] {len(weekly)} complete weeks loaded "
-      f"({weekly['ds'].min().date()} → {weekly['ds'].max().date()})")
-
-# COMMAND ----------
-# MAGIC %md ## Section 2 — Fiscal-calendar & lag feature engineering
-# MAGIC The single biggest known driver of weekly Won ARR shape is the sales
-# MAGIC calendar: deals are pulled into quarter-end weeks. v1 had no notion of this.
-
-# COMMAND ----------
-
-import holidays as _hol
-_US_HOLIDAYS = _hol.US(years=range(2021, date.today().year + 3))
-
-
-def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Calendar features for a frame with a 'ds' (week-start Monday) column."""
-    out = df.copy()
-    ds = pd.to_datetime(out["ds"])
-    week_end = ds + pd.Timedelta(days=6)
-
-    out["month"]            = ds.dt.month
-    out["quarter"]          = ds.dt.quarter
-    out["month_of_quarter"] = ((ds.dt.month - 1) % 3) + 1
-    woy = ds.dt.isocalendar().week.astype(float)
-    out["woy_sin"]          = np.sin(2 * np.pi * woy / 52.0)
-    out["woy_cos"]          = np.cos(2 * np.pi * woy / 52.0)
-
-    # quarter boundaries
-    q_end   = ds.dt.to_period("Q").dt.end_time.dt.normalize()
-    q_start = ds.dt.to_period("Q").dt.start_time.dt.normalize()
-    out["weeks_to_q_end"]    = ((q_end - ds).dt.days // 7).clip(0, 13).astype(float)
-    out["is_q_end_week"]     = (out["weeks_to_q_end"] <= 0).astype(int)
-    out["is_q_close_window"] = (out["weeks_to_q_end"] <= 1).astype(int)   # last 2 weeks
-    out["is_q_start_week"]   = (((ds - q_start).dt.days // 7) == 0).astype(int)
-    out["is_year_end_week"]  = ((ds.dt.month == 12) & (out["is_q_end_week"] == 1)).astype(int)
-
-    # holiday weeks (any US federal holiday inside the Mon–Sun bucket)
-    def _hol_count(s, e):
-        return sum(1 for d in pd.date_range(s, e) if d.date() in _US_HOLIDAYS)
-    out["holiday_count"]   = [_hol_count(s, e) for s, e in zip(ds, week_end)]
-    out["is_holiday_week"] = (out["holiday_count"] > 0).astype(int)
-    return out
-
-
-LAGS      = [1, 2, 3, 4, 8, 13, 26, 52]
-ROLL_WINS = [4, 13]
-
-
-def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
-    """AR lags + rolling stats on 'y'. Frame must be sorted by ds."""
-    out = df.copy()
-    for lag in LAGS:
-        out[f"lag_{lag}"] = out["y"].shift(lag)
-    for w in ROLL_WINS:
-        out[f"roll_mean_{w}"] = out["y"].shift(1).rolling(w).mean()
-        out[f"roll_std_{w}"]  = out["y"].shift(1).rolling(w).std()
-    out["yoy_ratio"] = out["y"].shift(1) / out["y"].shift(53).replace(0, np.nan)
-    return out
-
-
-CAL_FEATURES = ["month", "quarter", "month_of_quarter", "woy_sin", "woy_cos",
-                "weeks_to_q_end", "is_q_end_week", "is_q_close_window",
-                "is_q_start_week", "is_year_end_week", "holiday_count",
-                "is_holiday_week"]
-LAG_FEATURES = [f"lag_{l}" for l in LAGS] + \
-               [f"roll_mean_{w}" for w in ROLL_WINS] + \
-               [f"roll_std_{w}" for w in ROLL_WINS] + ["yoy_ratio"]
-ALL_FEATURES = CAL_FEATURES + LAG_FEATURES
-
-weekly = add_calendar_features(weekly)
-print(f"[v2] features ready: {len(ALL_FEATURES)} columns")
-
-# COMMAND ----------
-# MAGIC %md ## Section 3 — Models
-# MAGIC Each model exposes `fit_predict(train_df, future_ds) -> DataFrame[ds, yhat, yhat_lower, yhat_upper]`.
-
-# COMMAND ----------
-
+from pyspark.sql import functions as F
+from pyspark.sql.types import *
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from prophet import Prophet
 import lightgbm as lgb
+from sklearn.model_selection import TimeSeriesSplit
 
-PROPHET_REGRESSORS = ["is_q_end_week", "is_q_close_window", "is_q_start_week",
-                      "is_year_end_week", "is_holiday_week"]
+# ── Config ────────────────────────────────────────────────────────────────────
+CATALOG      = "datagroup_mdl"
+SCHEMA       = "mdl_sales_analytics"
+OUT_TABLE    = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"
+LB_TABLE     = f"{CATALOG}.{SCHEMA}.arr_forecast_v2_leaderboard"
 
+SFDC_TABLE   = "datalake_transform.cds_sfdc_opp_products_latest"
+MC_TABLE     = f"{CATALOG}.{SCHEMA}.mc_actuals"
 
-def prophet_fit_predict(train_df: pd.DataFrame, future_ds: pd.DatetimeIndex,
-                        changepoint_prior: float = 0.1,
-                        seasonality_mode: str = "multiplicative") -> pd.DataFrame:
-    """Prophet tuned for WEEKLY business data + fiscal regressors."""
-    m = Prophet(
-        interval_width=INTERVAL,
-        daily_seasonality=False,        # v1 bug: was True on weekly data
-        weekly_seasonality=False,       # meaningless at weekly granularity
-        yearly_seasonality=10,
-        seasonality_mode=seasonality_mode,
-        changepoint_prior_scale=changepoint_prior,
+TODAY            = datetime.date.today()
+RUN_DATE         = TODAY
+CUR_MONTH_START  = TODAY.replace(day=1)
+
+ROLLING_WEEKS    = 13
+ROY_WEEKS        = max(math.ceil((datetime.date(TODAY.year, 12, 28) - TODAY).days / 7), 4)
+TRAIN_FROM       = "2022-01-01"
+
+# product_genus → product_group
+PRODUCT_MAP = {
+    "GoTo Connect": "UCC",  "GoTo Engage":  "UCC",
+    "GoTo Resolve": "ITSG", "GoTo Central": "ITSG", "Rescue": "ITSG",
+}
+
+# raw sales_market → canonical geo
+GEO_NORM = {
+    "NA":"NA","US":"NA","North America":"NA","NAMER":"NA","AMER":"NA",
+    "EMEA":"EMEA","Europe":"EMEA","EUR":"EMEA",
+    "APAC":"APAC","Asia Pacific":"APAC","APJ":"APAC","AUS":"APAC","ROW":"APAC",
+    "LATAM":"LATAM","Latin America":"LATAM",
+}
+
+print(f"Run: {RUN_DATE}  closed-month cutoff: {CUR_MONTH_START}")
+print(f"Rolling: {ROLLING_WEEKS}w  RoY: {ROY_WEEKS}w")
+
+# COMMAND ----------
+# MAGIC %md ## 1 — SFDC Weekly Actuals
+
+# COMMAND ----------
+prod_case  = "CASE " + " ".join(f"WHEN product_genus='{k}' THEN '{v}'" for k,v in PRODUCT_MAP.items()) + " ELSE 'Other' END"
+geo_case_s = "CASE " + " ".join(f"WHEN sales_market='{k}'  THEN '{v}'" for k,v in GEO_NORM.items())  + " ELSE 'Other' END"
+
+sfdc_raw = spark.sql(f"""
+    SELECT
+        date_trunc('week', close_date)    AS week_start,
+        {prod_case}                       AS product_group,
+        {geo_case_s}                      AS geo,
+        SUM(COALESCE(arr, 0))             AS arr_sfdc
+    FROM {SFDC_TABLE}
+    WHERE is_won       = 'True'
+      AND purchase_type = 'Growth'
+      AND close_date   >= '{TRAIN_FROM}'
+      AND close_date   <  current_date()
+      AND COALESCE(arr, 0) > 0
+    GROUP BY 1, 2, 3
+""").filter(
+    F.col("product_group").isin("UCC","ITSG") &
+    F.col("geo").isin("NA","EMEA","APAC","LATAM")
+)
+
+# Add Total aggregates
+sfdc_tot_p = sfdc_raw.groupBy("week_start","geo").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total"))
+sfdc_tot_g = sfdc_raw.groupBy("week_start","product_group").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("geo",F.lit("Total"))
+sfdc_tot   = sfdc_raw.groupBy("week_start").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total"))
+sfdc_all   = sfdc_raw.union(sfdc_tot_p).union(sfdc_tot_g).union(sfdc_tot)
+
+print("SFDC rows:", sfdc_all.count())
+
+# COMMAND ----------
+# MAGIC %md ## 2 — MC Reconciled Actuals (closed months only)
+
+# COMMAND ----------
+geo_case_mc = "CASE " + " ".join(f"WHEN `Sales Market`='{k}' THEN '{v}'" for k,v in GEO_NORM.items()) + " ELSE 'Other' END"
+
+mc_raw = spark.sql(f"""
+    SELECT
+        date_trunc('month', `Month of Data Month`)                                         AS data_month,
+        CASE WHEN `Business Unit`='UCC'  THEN 'UCC'
+             WHEN `Business Unit`='ITSG' THEN 'ITSG'
+             ELSE 'Other' END                                                              AS product_group,
+        {geo_case_mc}                                                                      AS geo,
+        SUM(CAST(`Reported Bookings Total In USD Order Month Rate` AS DOUBLE))             AS arr_mc
+    FROM {MC_TABLE}
+    WHERE `Version`       = 'Actuals'
+      AND `Purchase Type` = 'Growth'
+      AND `Month of Data Month` < '{CUR_MONTH_START}'
+      AND `Month of Data Month` >= '{TRAIN_FROM}'
+    GROUP BY 1, 2, 3
+""").filter(
+    F.col("product_group").isin("UCC","ITSG") &
+    F.col("geo").isin("NA","EMEA","APAC","LATAM")
+)
+
+mc_tot_p = mc_raw.groupBy("data_month","geo").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total"))
+mc_tot_g = mc_raw.groupBy("data_month","product_group").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("geo",F.lit("Total"))
+mc_tot   = mc_raw.groupBy("data_month").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total"))
+mc_all   = mc_raw.union(mc_tot_p).union(mc_tot_g).union(mc_tot)
+
+print("MC rows:", mc_all.count())
+
+# COMMAND ----------
+# MAGIC %md ## 3 — Blend: MC overrides SFDC for closed months
+
+# COMMAND ----------
+sfdc_with_month = sfdc_all.withColumn("data_month", F.date_trunc("month", F.col("week_start")))
+
+sfdc_month_sum = sfdc_with_month.groupBy("data_month","product_group","geo").agg(
+    F.sum("arr_sfdc").alias("arr_sfdc_month")
+)
+
+blended = (
+    sfdc_with_month
+    .join(sfdc_month_sum, ["data_month","product_group","geo"], "left")
+    .join(mc_all.withColumnRenamed("arr_mc","arr_mc_month"), ["data_month","product_group","geo"], "left")
+    .withColumn("arr_actuals",
+        F.when(
+            (F.col("data_month") < F.lit(CUR_MONTH_START)) &
+            F.col("arr_mc_month").isNotNull() &
+            (F.col("arr_sfdc_month") > 0),
+            F.col("arr_sfdc") * (F.col("arr_mc_month") / F.col("arr_sfdc_month"))
+        ).otherwise(F.col("arr_sfdc"))
     )
-    m.add_seasonality(name="quarterly", period=91.3125, fourier_order=5)
-    m.add_seasonality(name="monthly",   period=30.4375, fourier_order=3)
-    for reg in PROPHET_REGRESSORS:
-        m.add_regressor(reg)
+    .select("week_start","product_group","geo","arr_actuals")
+    .orderBy("week_start")
+)
 
-    m.fit(train_df[["ds", "y"] + PROPHET_REGRESSORS])
+blended_pd = blended.toPandas()
+blended_pd["week_start"] = pd.to_datetime(blended_pd["week_start"])
+print("Blended rows:", len(blended_pd))
 
-    future = pd.DataFrame({"ds": future_ds})
-    future = add_calendar_features(future)
-    fc = m.predict(future[["ds"] + PROPHET_REGRESSORS])
+# COMMAND ----------
+# MAGIC %md ## 4 — Feature Engineering
+
+# COMMAND ----------
+def add_calendar_features(df: pd.DataFrame, date_col: str = "ds") -> pd.DataFrame:
+    df = df.copy()
+    dt = pd.to_datetime(df[date_col])
+    df["year"]                = dt.dt.year
+    df["month"]               = dt.dt.month
+    df["iso_week"]            = dt.dt.isocalendar().week.astype(int)
+    df["quarter"]             = dt.dt.quarter
+    q_start = dt.dt.to_period("Q").dt.start_time
+    df["week_of_quarter"]     = ((dt - q_start).dt.days // 7 + 1).clip(1, 13)
+    # Quarter-end spike flags — critical for MAPE < 15%
+    df["is_quarter_end_week"] = (df["week_of_quarter"] >= 12).astype(int)
+    df["is_quarter_last_week"]= (df["week_of_quarter"] == 13).astype(int)
+    df["is_summer"]           = dt.dt.month.isin([6,7,8]).astype(int)
+    df["is_year_end"]         = dt.dt.month.isin([11,12]).astype(int)
+    df["is_week1"]            = (df["iso_week"] == 1).astype(int)
+    return df
+
+# COMMAND ----------
+# MAGIC %md ## 5 — Model Functions
+
+# COMMAND ----------
+# ── ETS ───────────────────────────────────────────────────────────────────────
+def fit_ets(y, h):
+    try:
+        model = ExponentialSmoothing(
+            y, trend="add", seasonal="mul", seasonal_periods=13,
+            initialization_method="estimated"
+        ).fit(optimized=True)
+        fc  = model.forecast(h)
+        sim = model.simulate(h, repetitions=300, error="mul")
+        lo  = np.nanpercentile(sim, 10, axis=1)
+        hi  = np.nanpercentile(sim, 90, axis=1)
+        return np.maximum(fc,0), np.maximum(lo,0), np.maximum(hi,0)
+    except Exception:
+        mu = y[-4:].mean()
+        return np.full(h,mu), np.full(h,mu*0.85), np.full(h,mu*1.15)
+
+# ── Prophet ───────────────────────────────────────────────────────────────────
+def _qe_flag(dt_series):
+    q_start = dt_series.dt.to_period("Q").dt.start_time
+    wq = ((dt_series - q_start).dt.days // 7 + 1).clip(1, 13)
+    return (wq >= 12).astype(float)
+
+def fit_prophet(df_train, h):
+    """Prophet with quarterly/monthly seasonality + quarter-end regressor."""
+    df_p = df_train[["ds","y"]].copy()
+    df_p["is_quarter_end_week"] = _qe_flag(pd.to_datetime(df_p["ds"]))
+
+    m = Prophet(
+        changepoint_prior_scale=0.08, seasonality_prior_scale=15,
+        seasonality_mode="multiplicative", interval_width=0.80,
+        yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False,
+    )
+    m.add_seasonality("quarterly",        period=91.25, fourier_order=8)
+    m.add_seasonality("monthly",          period=30.44, fourier_order=5)
+    m.add_seasonality("quarter_end_spike",period=91.25, fourier_order=3,
+                       condition_name="is_quarter_end_week")
+    m.add_regressor("is_quarter_end_week", prior_scale=15, standardize=False)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m.fit(df_p)
+
+    future = m.make_future_dataframe(periods=h, freq="W-MON", include_history=False)
+    future["is_quarter_end_week"] = _qe_flag(pd.to_datetime(future["ds"]))
+    fc = m.predict(future)
+    return (np.maximum(fc["yhat"].values,0),
+            np.maximum(fc["yhat_lower"].values,0),
+            np.maximum(fc["yhat_upper"].values,0))
+
+# ── LightGBM ──────────────────────────────────────────────────────────────────
+N_LAGS = 8
+
+def _make_features(y, dates):
+    df = pd.DataFrame({"y": y, "ds": pd.to_datetime(dates)})
+    df = add_calendar_features(df, "ds")
+    for lag in range(1, N_LAGS+1):
+        df[f"lag_{lag}"] = df["y"].shift(lag)
+    df["rolling_4"]  = df["y"].shift(1).rolling(4).mean()
+    df["rolling_13"] = df["y"].shift(1).rolling(13).mean()
+    return df.dropna()
+
+FEAT_COLS = None  # set lazily
+
+def fit_lgb(y, dates, h):
+    global FEAT_COLS
+    n_lags = N_LAGS
+    df_full = _make_features(y, dates)
+    FEAT_COLS = [c for c in df_full.columns if c not in ("y","ds")]
+    X, Y = df_full[FEAT_COLS].values, df_full["y"].values
+
+    # Estimate residual std via 4-fold TSCV
+    tscv = TimeSeriesSplit(n_splits=4)
+    resids = []
+    for tr, va in tscv.split(X):
+        clf = lgb.LGBMRegressor(n_estimators=500, learning_rate=0.04,
+                                 num_leaves=20, min_child_samples=5,
+                                 subsample=0.8, colsample_bytree=0.8,
+                                 random_state=42, verbose=-1)
+        clf.fit(X[tr], Y[tr])
+        resids.extend((Y[va] - clf.predict(X[va])).tolist())
+
+    resid_std = np.std(resids) if resids else Y.std()*0.1
+
+    clf_final = lgb.LGBMRegressor(n_estimators=500, learning_rate=0.04,
+                                   num_leaves=20, min_child_samples=5,
+                                   subsample=0.8, colsample_bytree=0.8,
+                                   random_state=42, verbose=-1)
+    clf_final.fit(X, Y)
+
+    # 50-path Monte Carlo
+    N_PATHS = 50
+    paths = np.zeros((N_PATHS, h))
+    last_ds = pd.to_datetime(dates.iloc[-1])
+
+    for pi in range(N_PATHS):
+        y_buf  = list(y.copy())
+        d_buf  = list(pd.to_datetime(dates))
+        fc_p   = []
+        for step in range(h):
+            nd = last_ds + pd.Timedelta(weeks=step+1)
+            row_df = _make_features(np.array(y_buf), pd.Series(d_buf + [nd]))
+            if len(row_df) == 0:
+                fc_p.append(float(np.mean(y_buf[-4:])))
+                y_buf.append(y_buf[-1]); d_buf.append(nd)
+                continue
+            row = row_df[FEAT_COLS].iloc[-1:].values
+            pred = float(clf_final.predict(row)[0])
+            noise = np.random.normal(0, resid_std)
+            val = max(pred + noise, 0)
+            fc_p.append(val)
+            y_buf.append(pred); d_buf.append(nd)
+        paths[pi] = fc_p
+
+    return (np.maximum(paths.mean(0),0),
+            np.maximum(np.percentile(paths,10,axis=0),0),
+            np.maximum(np.percentile(paths,90,axis=0),0))
+
+# ── Chronos ───────────────────────────────────────────────────────────────────
+def fit_chronos(y, h):
+    try:
+        import torch
+        from transformers import pipeline as hf_pipeline
+        pipe = hf_pipeline(
+            "text-generation", model="amazon/chronos-t5-small",
+            device="cpu", torch_dtype=torch.float32,
+        )
+        ctx = torch.tensor(y, dtype=torch.float32).unsqueeze(0)
+        out = pipe(ctx, prediction_length=h, num_samples=50)
+        samples = np.array(out[0]["generated_text"])
+        if samples.ndim == 1:
+            samples = samples.reshape(1,-1)
+        return (np.maximum(np.median(samples,0),0),
+                np.maximum(np.percentile(samples,10,0),0),
+                np.maximum(np.percentile(samples,90,0),0))
+    except Exception as e:
+        print(f"  Chronos fallback ({e})")
+        mu = float(np.nanmean(y[-13:]))
+        return np.full(h,mu), np.full(h,mu*0.85), np.full(h,mu*1.15)
+
+# COMMAND ----------
+# MAGIC %md ## 6 — MAPE & Holdout Evaluation
+
+# COMMAND ----------
+def compute_mape(y_true, y_pred):
+    mask = y_true > 0
+    if mask.sum() == 0: return 999.0
+    return float(np.mean(np.abs((y_true[mask]-y_pred[mask])/y_true[mask]))*100)
+
+def holdout_mape(y, dates, fn, h=8):
+    if len(y) < h+26: return 999.0
+    y_tr, y_te = y[:-h], y[-h:]
+    d_tr = dates.iloc[:-h]
+    try:
+        if fn.__name__ == "fit_prophet":
+            fc,_,_ = fn(pd.DataFrame({"ds":d_tr,"y":y_tr}), h)
+        elif fn.__name__ == "fit_lgb":
+            fc,_,_ = fn(y_tr, d_tr, h)
+        else:
+            fc,_,_ = fn(y_tr, h)
+        return compute_mape(y_te, fc)
+    except Exception:
+        return 999.0
+
+# COMMAND ----------
+# MAGIC %md ## 7 — Forecast Slice Function
+
+# COMMAND ----------
+def forecast_slice(df_hist, h, forecast_type):
+    """
+    Full 5-model ensemble forecast for one (product, geo) slice.
+    Returns DataFrame with forecast rows.
+    """
+    df_hist = df_hist.sort_values("ds").reset_index(drop=True)
+    y       = df_hist["y"].values.astype(float)
+    dates   = df_hist["ds"]
+
+    if len(y) < 30:
+        print(f"  Skipping — only {len(y)} rows")
+        return pd.DataFrame()
+
+    # Clip outliers but preserve quarter-end spikes (wide 4.5× IQR fence)
+    q1, q3 = np.percentile(y,25), np.percentile(y,75)
+    y_c = np.clip(y, 0, q3 + 4.5*(q3-q1))
+
+    print(f"  Holdout MAPE evaluation (8-week)...")
+    m_ets = holdout_mape(y_c, dates, fit_ets)
+    m_ph  = holdout_mape(y_c, dates, fit_prophet)
+    m_lgb = holdout_mape(y_c, dates, fit_lgb)
+    m_chr = holdout_mape(y_c, dates, fit_chronos)
+    print(f"  ETS:{m_ets:.1f}%  Prophet:{m_ph:.1f}%  LGB:{m_lgb:.1f}%  Chronos:{m_chr:.1f}%")
+
+    df_tr = pd.DataFrame({"ds": dates, "y": y_c})
+
+    fc_ets, lo_ets, hi_ets = fit_ets(y_c, h)
+    fc_ph,  lo_ph,  hi_ph  = fit_prophet(df_tr, h)
+    fc_lgb, lo_lgb, hi_lgb = fit_lgb(y_c, dates, h)
+    fc_chr, lo_chr, hi_chr = fit_chronos(y_c, h)
+
+    # Inverse-MAPE weighted ensemble
+    def iw(m): return 1.0 / max(m, 0.1)
+    tw = sum(iw(x) for x in [m_ets, m_ph, m_lgb, m_chr])
+    we, wp, wl, wc = iw(m_ets)/tw, iw(m_ph)/tw, iw(m_lgb)/tw, iw(m_chr)/tw
+    print(f"  Weights → ETS:{we:.2f} Prophet:{wp:.2f} LGB:{wl:.2f} Chr:{wc:.2f}")
+
+    fc_ens = we*fc_ets + wp*fc_ph + wl*fc_lgb + wc*fc_chr
+    lo_ens = we*lo_ets + wp*lo_ph + wl*lo_lgb + wc*lo_chr
+    hi_ens = we*hi_ets + wp*hi_ph + wl*hi_lgb + wc*hi_chr
+
+    worst = np.minimum(lo_ens, fc_ens*0.88)
+    best  = np.maximum(hi_ens, fc_ens*1.12)
+
+    future_dates = pd.date_range(
+        pd.to_datetime(dates.max()) + pd.Timedelta(weeks=1),
+        periods=h, freq="W-MON"
+    )
+
     return pd.DataFrame({
-        "ds": fc["ds"],
-        "yhat":       fc["yhat"].clip(lower=0),
-        "yhat_lower": fc["yhat_lower"].clip(lower=0),
-        "yhat_upper": fc["yhat_upper"].clip(lower=0),
+        "ds":            future_dates,
+        "Most_Likely":   np.maximum(fc_ens,0),
+        "Worst_Case":    np.maximum(worst, 0),
+        "Best_Case":     np.maximum(best,  0),
+        "arr_ets":       np.maximum(fc_ets,0),
+        "arr_prophet":   np.maximum(fc_ph, 0),
+        "arr_lightgbm":  np.maximum(fc_lgb,0),
+        "arr_chronos":   np.maximum(fc_chr,0),
+        "mape_ets":      m_ets,
+        "mape_prophet":  m_ph,
+        "mape_lightgbm": m_lgb,
+        "mape_chronos":  m_chr,
+        "forecast_type": forecast_type,
     })
 
-
-_LGB_PARAMS = dict(
-    n_estimators=400, learning_rate=0.04, num_leaves=15,
-    min_child_samples=8, subsample=0.9, colsample_bytree=0.8,
-    reg_lambda=1.0, verbose=-1,
-)
-
-
-def lightgbm_fit_predict(train_df: pd.DataFrame, future_ds: pd.DatetimeIndex) -> pd.DataFrame:
-    """Recursive LightGBM with AR + calendar features; quantile models for bounds."""
-    hist = add_calendar_features(train_df[["ds", "y"]].sort_values("ds"))
-    hist = add_lag_features(hist).dropna(subset=["lag_1"])
-    X, y = hist[ALL_FEATURES], hist["y"]
-
-    models = {}
-    for name, alpha in [("q50", 0.50), ("q10", 0.10), ("q90", 0.90)]:
-        models[name] = lgb.LGBMRegressor(objective="quantile", alpha=alpha, **_LGB_PARAMS)
-        models[name].fit(X, y)
-
-    # Recursive multi-step: roll the median forward to regenerate lag features
-    work = train_df[["ds", "y"]].copy()
-    preds = []
-    for ds_next in future_ds:
-        step = pd.DataFrame({"ds": [ds_next], "y": [np.nan]})
-        ext = pd.concat([work, step], ignore_index=True)
-        ext = add_calendar_features(ext)
-        ext = add_lag_features(ext)
-        x_row = ext.iloc[[-1]][ALL_FEATURES]
-        p50 = float(models["q50"].predict(x_row)[0])
-        p10 = float(models["q10"].predict(x_row)[0])
-        p90 = float(models["q90"].predict(x_row)[0])
-        p50 = max(p50, 0.0)
-        p10 = max(min(p10, p50), 0.0)
-        p90 = max(p90, p50)
-        preds.append((ds_next, p50, p10, p90))
-        work = pd.concat([work, pd.DataFrame({"ds": [ds_next], "y": [p50]})],
-                         ignore_index=True)
-
-    return pd.DataFrame(preds, columns=["ds", "yhat", "yhat_lower", "yhat_upper"])
+# COMMAND ----------
+# MAGIC %md ## 8 — Main Loop
 
 # COMMAND ----------
-# MAGIC %md ## Section 4 — Rolling-origin backtest (honest out-of-sample MAPE)
-# MAGIC Three folds, each forecasting 13 unseen weeks. Also evaluates each fold
-# MAGIC aggregated to MONTHLY totals — the granularity the quarter-end number depends on.
+SLICES = [
+    ("Total","Total"),
+    ("UCC",  "Total"), ("ITSG","Total"),
+    ("Total","NA"),    ("Total","EMEA"), ("Total","APAC"), ("Total","LATAM"),
+    ("UCC",  "NA"),    ("UCC", "EMEA"),
+    ("ITSG", "NA"),    ("ITSG","EMEA"),
+]
 
-# COMMAND ----------
+all_fc, all_actuals = [], []
 
-def mape(actual, pred) -> float:
-    actual, pred = np.asarray(actual, float), np.asarray(pred, float)
-    mask = actual != 0
-    if not mask.any():
-        return 100.0
-    return float(np.mean(np.abs((actual[mask] - pred[mask]) / actual[mask])) * 100)
+for product_group, geo in SLICES:
+    print(f"\n{'='*55}")
+    print(f"  product={product_group}  geo={geo}")
+    print(f"{'='*55}")
 
+    mask = (
+        (blended_pd["product_group"] == product_group) &
+        (blended_pd["geo"]           == geo)
+    )
+    df_s = (blended_pd[mask]
+            .rename(columns={"week_start":"ds","arr_actuals":"y"})
+            [["ds","y"]]
+            .dropna(subset=["y"])
+            .reset_index(drop=True))
 
-def monthly_mape(test_df: pd.DataFrame, pred_df: pd.DataFrame) -> float:
-    a = test_df.set_index("ds")["y"].resample("MS").sum()
-    p = pred_df.set_index("ds")["yhat"].resample("MS").sum()
-    joined = pd.concat([a, p], axis=1, keys=["a", "p"]).dropna()
-    return mape(joined["a"].values, joined["p"].values) if len(joined) else 100.0
+    # Historical actuals rows
+    act = df_s.copy()
+    act["product"]      = product_group
+    act["sales_market"] = geo
+    act["Actuals"]      = act["y"]
+    act["Most_Likely"]  = None; act["Worst_Case"]    = None; act["Best_Case"]     = None
+    act["arr_ets"]      = None; act["arr_prophet"]   = None; act["arr_lightgbm"]  = None
+    act["arr_chronos"]  = None
+    act["mape_ets"]     = None; act["mape_prophet"]  = None; act["mape_lightgbm"] = None
+    act["mape_chronos"] = None
+    act["forecast_type"]= "actuals"
+    all_actuals.append(act.drop(columns=["y"]))
 
-
-# Prophet small hyperparameter race (changepoint prior × seasonality mode),
-# decided on fold 1 only to bound runtime.
-PROPHET_GRID = [(0.05, "multiplicative"), (0.1, "multiplicative"), (0.1, "additive")]
-
-n = len(weekly)
-fold_origins = [n - BACKTEST_H * k for k in range(BACKTEST_FOLDS, 0, -1)]
-
-# pick Prophet config on the earliest fold
-o0 = fold_origins[0]
-tr0, te0 = weekly.iloc[:o0], weekly.iloc[o0:o0 + BACKTEST_H]
-best_cfg, best_cfg_mape = PROPHET_GRID[0], np.inf
-for cfg in PROPHET_GRID:
-    try:
-        fc = prophet_fit_predict(tr0, pd.DatetimeIndex(te0["ds"]), *cfg)
-        m_ = mape(te0["y"].values, fc["yhat"].values)
-        print(f"[v2] prophet cfg {cfg}: fold-1 MAPE {m_:.1f}%")
-        if m_ < best_cfg_mape:
-            best_cfg, best_cfg_mape = cfg, m_
-    except Exception as exc:
-        print(f"[v2] prophet cfg {cfg} failed: {exc}")
-print(f"[v2] selected prophet cfg: changepoint={best_cfg[0]}, mode={best_cfg[1]}")
-
-bt = {"prophet": {"w": [], "m": [], "preds": []},
-      "lightgbm": {"w": [], "m": [], "preds": []}}
-
-for o in fold_origins:
-    train, test = weekly.iloc[:o], weekly.iloc[o:o + BACKTEST_H]
-    if len(test) < BACKTEST_H:
+    if len(df_s) < 30:
+        print(f"  Insufficient history — skipping forecasts")
         continue
-    fds = pd.DatetimeIndex(test["ds"])
-    for name, fn in [("prophet", lambda t, f: prophet_fit_predict(t, f, *best_cfg)),
-                     ("lightgbm", lightgbm_fit_predict)]:
+
+    for fc_type, horizon in [("rolling", ROLLING_WEEKS), ("roy", ROY_WEEKS)]:
+        print(f"\n  ── {fc_type} ({horizon}w) ──")
         try:
-            fc = fn(train, fds)
-            bt[name]["w"].append(mape(test["y"].values, fc["yhat"].values))
-            bt[name]["m"].append(monthly_mape(test, fc))
-            bt[name]["preds"].append((test.copy(), fc))
-        except Exception as exc:
-            print(f"[v2] backtest {name} @origin {o} failed: {exc}")
+            fc_df = forecast_slice(df_s, horizon, fc_type)
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            continue
+        if fc_df.empty:
+            continue
+        fc_df["product"]      = product_group
+        fc_df["sales_market"] = geo
+        fc_df["Actuals"]      = None
+        all_fc.append(fc_df)
 
-weekly_mape_by_model  = {k: float(np.mean(v["w"])) for k, v in bt.items() if v["w"]}
-monthly_mape_by_model = {k: float(np.mean(v["m"])) for k, v in bt.items() if v["m"]}
-assert weekly_mape_by_model, "All backtests failed — aborting before writing tables."
+actuals_pd  = pd.concat(all_actuals,  ignore_index=True) if all_actuals  else pd.DataFrame()
+forecast_pd = pd.concat(all_fc,       ignore_index=True) if all_fc       else pd.DataFrame()
+combined_pd = pd.concat([actuals_pd, forecast_pd], ignore_index=True)
+combined_pd["run_date"] = pd.Timestamp(RUN_DATE)
+combined_pd["ds"]       = pd.to_datetime(combined_pd["ds"]).dt.date
 
-# ── Learned ensemble weights: inverse out-of-sample weekly MAPE ───────────────
-inv = {k: 1.0 / max(v, 1e-6) for k, v in weekly_mape_by_model.items()}
-total_inv = sum(inv.values())
-ENS_WEIGHTS = {k: v / total_inv for k, v in inv.items()}
-
-# ensemble backtest MAPE from blended fold predictions
-ens_w, ens_m = [], []
-n_pair = min(len(bt["prophet"]["preds"]), len(bt["lightgbm"]["preds"]))
-for i in range(n_pair):
-    try:
-        test_p, fc_p = bt["prophet"]["preds"][i]
-        _,      fc_l = bt["lightgbm"]["preds"][i]
-        blend = fc_p[["ds"]].copy()
-        blend["yhat"] = (ENS_WEIGHTS.get("prophet", 0.5) * fc_p["yhat"].values
-                         + ENS_WEIGHTS.get("lightgbm", 0.5) * fc_l["yhat"].values)
-        ens_w.append(mape(test_p["y"].values, blend["yhat"].values))
-        ens_m.append(monthly_mape(test_p, blend))
-    except Exception:
-        pass
-weekly_mape_by_model["ensemble"]  = float(np.mean(ens_w)) if ens_w else min(weekly_mape_by_model.values())
-monthly_mape_by_model["ensemble"] = float(np.mean(ens_m)) if ens_m else min(monthly_mape_by_model.values())
-
-print(f"[v2] OUT-OF-SAMPLE weekly MAPE : {json.dumps(weekly_mape_by_model, indent=2)}")
-print(f"[v2] OUT-OF-SAMPLE monthly MAPE: {json.dumps(monthly_mape_by_model, indent=2)}")
-print(f"[v2] learned ensemble weights  : {json.dumps(ENS_WEIGHTS, indent=2)}")
+print(f"\nTotal output rows: {len(combined_pd)}")
+print(combined_pd.groupby(["product","sales_market","forecast_type"]).size().to_string())
 
 # COMMAND ----------
-# MAGIC %md ## Section 5 — Final fit on full history + 26-week forecast
+# MAGIC %md ## 9 — Write arr_forecast_v2
 
 # COMMAND ----------
+SCHEMA_FIELDS = StructType([
+    StructField("ds",            DateType(),   True),
+    StructField("product",       StringType(), True),
+    StructField("sales_market",  StringType(), True),
+    StructField("Actuals",       DoubleType(), True),
+    StructField("Most_Likely",   DoubleType(), True),
+    StructField("Worst_Case",    DoubleType(), True),
+    StructField("Best_Case",     DoubleType(), True),
+    StructField("arr_ets",       DoubleType(), True),
+    StructField("arr_prophet",   DoubleType(), True),
+    StructField("arr_lightgbm",  DoubleType(), True),
+    StructField("arr_chronos",   DoubleType(), True),
+    StructField("mape_ets",      DoubleType(), True),
+    StructField("mape_prophet",  DoubleType(), True),
+    StructField("mape_lightgbm", DoubleType(), True),
+    StructField("mape_chronos",  DoubleType(), True),
+    StructField("forecast_type", StringType(), True),
+    StructField("run_date",      DateType(),   True),
+])
 
-future_idx = pd.date_range(weekly["ds"].max() + pd.Timedelta(weeks=1),
-                           periods=HORIZON_WEEKS, freq="W-MON")
+for col in ["Actuals","Most_Likely","Worst_Case","Best_Case",
+            "arr_ets","arr_prophet","arr_lightgbm","arr_chronos",
+            "mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]:
+    if col in combined_pd.columns:
+        combined_pd[col] = pd.to_numeric(combined_pd[col], errors="coerce")
 
-fc_prophet  = prophet_fit_predict(weekly, future_idx, *best_cfg)
-fc_lightgbm = lightgbm_fit_predict(weekly, future_idx)
+out_sdf = spark.createDataFrame(combined_pd, schema=SCHEMA_FIELDS)
 
-fc_ensemble = fc_prophet[["ds"]].copy()
-for col in ["yhat", "yhat_lower", "yhat_upper"]:
-    fc_ensemble[col] = (ENS_WEIGHTS.get("prophet", 0.5) * fc_prophet[col].values
-                        + ENS_WEIGHTS.get("lightgbm", 0.5) * fc_lightgbm[col].values)
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {OUT_TABLE} (
+        ds            DATE,
+        product       STRING    COMMENT 'Total / UCC / ITSG',
+        sales_market  STRING    COMMENT 'Total / NA / EMEA / APAC / LATAM',
+        Actuals       DOUBLE    COMMENT 'Blended SFDC+MC actuals (null for future weeks)',
+        Most_Likely   DOUBLE    COMMENT 'MAPE-weighted ensemble median',
+        Worst_Case    DOUBLE    COMMENT 'Ensemble P20 lower bound',
+        Best_Case     DOUBLE    COMMENT 'Ensemble P80 upper bound',
+        arr_ets       DOUBLE    COMMENT 'ETS point forecast',
+        arr_prophet   DOUBLE    COMMENT 'Prophet point forecast',
+        arr_lightgbm  DOUBLE    COMMENT 'LightGBM Monte Carlo mean',
+        arr_chronos   DOUBLE    COMMENT 'Chronos-T5-Small median',
+        mape_ets      DOUBLE    COMMENT '8-week holdout MAPE — ETS',
+        mape_prophet  DOUBLE    COMMENT '8-week holdout MAPE — Prophet',
+        mape_lightgbm DOUBLE    COMMENT '8-week holdout MAPE — LightGBM',
+        mape_chronos  DOUBLE    COMMENT '8-week holdout MAPE — Chronos',
+        forecast_type STRING    COMMENT 'actuals | rolling | roy',
+        run_date      DATE      COMMENT 'Notebook run date'
+    )
+    USING DELTA
+    COMMENT 'ARR v2 5-model ensemble forecast. Sources: SFDC (in-flight month) + MC actuals (closed months). MAPE target < 15%.'
+    TBLPROPERTIES (
+        'delta.autoOptimize.optimizeWrite'='true',
+        'delta.autoOptimize.autoCompact'='true'
+    )
+""")
 
-best_model_key = min(weekly_mape_by_model, key=weekly_mape_by_model.get)
-monthly_best   = min(monthly_mape_by_model, key=monthly_mape_by_model.get)
-print(f"[v2] best weekly model: {best_model_key} ({weekly_mape_by_model[best_model_key]:.1f}%) | "
-      f"best monthly: {monthly_best} ({monthly_mape_by_model[monthly_best]:.1f}%)")
+spark.sql(f"DELETE FROM {OUT_TABLE} WHERE run_date = '{RUN_DATE}'")
+out_sdf.write.mode("append").saveAsTable(OUT_TABLE)
+print(f"✅  {out_sdf.count()} rows → {OUT_TABLE}")
 
 # COMMAND ----------
-# MAGIC %md ## Section 6 — Quarter-end attainment forecast (separate executive number)
-# MAGIC QTD actual + remaining-quarter forecast from the best MONTHLY model.
-# MAGIC Accuracy for this number is tracked by `monthly_best_mape` (out-of-sample).
+# MAGIC %md ## 10 — Leaderboard
 
 # COMMAND ----------
-
-today_ts = pd.Timestamp(date.today())
-q_start  = today_ts.to_period("Q").start_time.normalize()
-q_end    = today_ts.to_period("Q").end_time.normalize()
-
-qtd_actual = float(weekly.loc[weekly["ds"] >= q_start, "y"].sum())
-
-fc_for_q = {"prophet": fc_prophet, "lightgbm": fc_lightgbm,
-            "ensemble": fc_ensemble}[monthly_best]
-rem = fc_for_q[(fc_for_q["ds"] >= max(q_start, weekly["ds"].max() + pd.Timedelta(weeks=1)))
-               & (fc_for_q["ds"] <= q_end)]
-
-q_forecast_likely = qtd_actual + float(rem["yhat"].sum())
-q_forecast_low    = qtd_actual + float(rem["yhat_lower"].sum())
-q_forecast_high   = qtd_actual + float(rem["yhat_upper"].sum())
-
-print(f"[v2] Quarter-end ({q_end.date()}): QTD actual {qtd_actual:,.0f} | "
-      f"forecast {q_forecast_likely:,.0f} [{q_forecast_low:,.0f} – {q_forecast_high:,.0f}] "
-      f"via {monthly_best}")
-
-# COMMAND ----------
-# MAGIC %md ## Section 7 — Narrative / insights payload
-
-# COMMAND ----------
-
-recent4 = float(weekly["y"].tail(4).mean())
-prior4  = float(weekly["y"].iloc[-8:-4].mean()) if len(weekly) >= 8 else recent4
-mom_pct = ((recent4 - prior4) / prior4 * 100) if prior4 else 0.0
-momentum = "ACCELERATING" if mom_pct > 5 else ("DECELERATING" if mom_pct < -5 else "STABLE")
-
-best_mape_val = weekly_mape_by_model[best_model_key]
-risk_level = ("LOW RISK" if best_mape_val <= 15
-              else "MODERATE RISK" if best_mape_val <= 30 else "HIGH RISK")
-model_confidence = int(round(max(0.0, min(100.0, 100.0 - best_mape_val))))
-
-narrative = (
-    f"Out-of-sample backtest ({BACKTEST_FOLDS} folds × {BACKTEST_H} weeks): "
-    f"best weekly model is {best_model_key} at {best_mape_val:.1f}% MAPE; "
-    f"monthly totals are most accurate with {monthly_best} at "
-    f"{monthly_mape_by_model[monthly_best]:.1f}% MAPE. "
-    f"Recent 4-week Won ARR is {momentum.lower()} ({mom_pct:+.1f}% vs prior 4 weeks). "
-    f"Quarter-end projection: {q_forecast_likely/1e6:.1f}M "
-    f"(range {q_forecast_low/1e6:.1f}M–{q_forecast_high/1e6:.1f}M)."
+lb_pd = (
+    combined_pd[combined_pd["forecast_type"] != "actuals"]
+    .groupby(["product","sales_market"])
+    [["mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]]
+    .first()
+    .reset_index()
 )
+lb_pd["best_mape"]  = lb_pd[["mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]].min(axis=1)
+lb_pd["best_model"] = (lb_pd[["mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]]
+                       .idxmin(axis=1).str.replace("mape_","").str.title())
+lb_pd["run_date"]   = pd.Timestamp(RUN_DATE)
 
-key_drivers = json.dumps([
-    "Quarter-close pull-in effect (modeled via fiscal-week regressors)",
-    "Yearly + quarterly seasonality",
-    f"4-week momentum {mom_pct:+.1f}%",
-    "US holiday-week dip pattern",
-])
-executive_actions = json.dumps([
-    f"Treat the quarter-end range {q_forecast_low/1e6:.1f}M–{q_forecast_high/1e6:.1f}M as the planning envelope",
-    "Review pipeline coverage for forecast weeks where the lower bound dips below target pace",
-    "Re-run after any major pipeline reclassification — model retrains weekly",
-])
-downside_risks = json.dumps([
-    "Weekly Won ARR is spiky; single mega-deals move weeks outside the 80% band",
-    f"Weekly-level MAPE remains {best_mape_val:.0f}% — use monthly/quarterly views for commitments",
-])
-upside_opportunities = json.dumps([
-    "Quarter-end close window historically lifts weekly Won ARR above trend",
-])
+print("\n📊 MAPE Leaderboard")
+print(lb_pd.sort_values("best_mape").to_string(index=False))
 
-# COMMAND ----------
-# MAGIC %md ## Section 8 — Write Delta tables
-# MAGIC `arr_forecast_output` is overwritten with the latest run only (the app route
-# MAGIC reads the whole table). Leaderboard and insights are append-with-idempotent-delete
-# MAGIC so accuracy history accumulates run over run.
+lb_sdf = spark.createDataFrame(lb_pd)
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {LB_TABLE} (
+        product STRING, sales_market STRING,
+        mape_ets DOUBLE, mape_prophet DOUBLE, mape_lightgbm DOUBLE, mape_chronos DOUBLE,
+        best_mape DOUBLE, best_model STRING, run_date DATE
+    ) USING DELTA
+""")
+spark.sql(f"DELETE FROM {LB_TABLE} WHERE run_date = '{RUN_DATE}'")
+lb_sdf.write.mode("append").saveAsTable(LB_TABLE)
+print(f"✅  Leaderboard → {LB_TABLE}")
 
 # COMMAND ----------
+# MAGIC %md ## 11 — Update v2 Backend Routes to Read New Table
 
-from pyspark.sql import functions as F
-
-# ── arr_forecast_output: actuals + 3 model forecasts, LATEST RUN ONLY ─────────
-rows = []
-for _, r in weekly.iterrows():
-    rows.append((RUN_DATE, pd.Timestamp(r["ds"]).date().isoformat(), "actual", "actual",
-                 float(r["y"]), float(r["y"]), float(r["y"])))
-for model_name, fc in [("prophet", fc_prophet), ("lightgbm", fc_lightgbm),
-                       ("ensemble", fc_ensemble)]:
-    for _, r in fc.iterrows():
-        rows.append((RUN_DATE, pd.Timestamp(r["ds"]).date().isoformat(), model_name,
-                     "forecast", float(r["yhat"]), float(r["yhat_lower"]),
-                     float(r["yhat_upper"])))
-
-sdf_out = spark.createDataFrame(
-    rows, "run_date string, ds string, model string, forecast_type string, "
-          "yhat double, yhat_lower double, yhat_upper double"
-).withColumn("created_at", F.current_timestamp())
-
-# Route reads the whole table with no run_date filter → keep only this run.
-sdf_out.write.format("delta").mode("overwrite").option("overwriteSchema", "true") \
-    .saveAsTable(FORECAST_OUTPUT_TABLE)
-print(f"[v2] wrote {len(rows)} rows → {FORECAST_OUTPUT_TABLE} (overwrite)")
-
-# ── arr_model_leaderboard: weekly + monthly granularity, append history ───────
-lb_rows = []
-for k, v in weekly_mape_by_model.items():
-    lb_rows.append((RUN_DATE, k, float(v), "weekly", "backtest_3x13w"))
-for k, v in monthly_mape_by_model.items():
-    lb_rows.append((RUN_DATE, k, float(v), "monthly", "backtest_3x13w"))
-
-sdf_lb = spark.createDataFrame(
-    lb_rows, "run_date string, model string, mape double, granularity string, type string"
-).withColumn("created_at", F.current_timestamp())
-
-if spark.catalog.tableExists(FORECAST_LEADERBOARD_TABLE):
-    spark.sql(f"DELETE FROM {FORECAST_LEADERBOARD_TABLE} WHERE run_date = '{RUN_DATE}'")
-sdf_lb.write.format("delta").mode("append").saveAsTable(FORECAST_LEADERBOARD_TABLE)
-print(f"[v2] wrote {len(lb_rows)} rows → {FORECAST_LEADERBOARD_TABLE} (append, idempotent)")
-
-# ── arr_forecast_insights: run-level snapshot, append history ─────────────────
-ins_row = [(
-    RUN_DATE, momentum, risk_level, narrative, float(model_confidence),
-    f"Upper band quarter-end: {q_forecast_high/1e6:.1f}M",
-    f"Lower band quarter-end: {q_forecast_low/1e6:.1f}M",
-    monthly_best, float(monthly_mape_by_model[monthly_best]),
-    float(weekly_mape_by_model["ensemble"]),
-    float(q_forecast_likely), float(q_forecast_low), float(q_forecast_high),
-    key_drivers, executive_actions, downside_risks, upside_opportunities,
-)]
-ins_schema = ("run_date string, momentum string, risk_level string, narrative string, "
-              "model_confidence double, upside string, downside string, "
-              "best_model string, best_mape double, monthly_best_model string, "
-              "monthly_best_mape double, ensemble_mape double, "
-              "forecast_most_likely double, forecast_low double, forecast_high double, "
-              "key_drivers string, executive_actions string, downside_risks string, "
-              "upside_opportunities string")
-sdf_ins = spark.createDataFrame(ins_row, ins_schema) \
-    .withColumn("created_at", F.current_timestamp())
-
-if spark.catalog.tableExists(FORECAST_INSIGHTS_TABLE):
-    spark.sql(f"DELETE FROM {FORECAST_INSIGHTS_TABLE} WHERE run_date = '{RUN_DATE}'")
-sdf_ins.write.format("delta").mode("append").saveAsTable(FORECAST_INSIGHTS_TABLE)
-print(f"[v2] wrote insights snapshot → {FORECAST_INSIGHTS_TABLE}")
-
-print(f"\n[v2] DONE — {RUN_DATE}. App endpoints /api/forecast/arr, /insights, "
-      f"/leaderboard serve this run with no backend changes.")
+# COMMAND ----------
+# The backend route forecast_v2.py reads from:
+#   datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+#   filter: forecast_type IN ('rolling','roy') for forecast rows
+#           forecast_type = 'actuals'          for historical rows
+#   columns: ds → date, product, sales_market, Actuals, Most_Likely, Worst_Case, Best_Case
+#            arr_ets, arr_prophet, arr_lightgbm, arr_chronos
+#            mape_ets, mape_prophet, mape_lightgbm, mape_chronos, forecast_type
+#
+# GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+#   TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
+# GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
+#   TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
+print("Done. Run the GRANT statements above in a SQL cell after first job run.")

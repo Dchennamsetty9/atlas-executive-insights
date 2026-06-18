@@ -119,6 +119,63 @@ resources:
       timeout_seconds: 10800       # 3-hour hard limit
       max_concurrent_runs: 1
 
+    # ── ARR Forecast v2 (weekly — Total + Product + Geo, MC-blended actuals) ──
+    arr_forecast_v2:
+      name: "ARR Forecast v2 — Total+Product+Geo Ensemble (Weekly)"
+      description: >
+        Trains 5 models (ETS, Prophet, LightGBM, Chronos, Ensemble) on weekly Growth ARR.
+        Actuals: SFDC for in-flight month; MC reconciled for closed months.
+        Grain: (week x product x sales_market) + Total aggregates.
+        Writes to datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+        and datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard.
+
+      schedule:
+        quartz_cron_expression: "0 0 3 ? * MON"   # Monday 03:00 UTC (after v1 completes)
+        timezone_id: UTC
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: arr_v2_cluster
+          new_cluster:
+            spark_version: "15.4.x-cpu-ml-scala2.12"
+            node_type_id: m5d.xlarge    # 32 GB — Chronos needs ~2 GB headroom
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+            spark_env_vars:
+              TRANSFORMERS_CACHE: /dbfs/tmp/hf_cache
+              HF_HOME:            /dbfs/tmp/hf_cache
+
+      tasks:
+        - task_key: run_arr_forecast_v2
+          job_cluster_key: arr_v2_cluster
+          notebook_task:
+            # Upload first:
+            #   databricks workspace import notebooks/arr_forecast_v2.py \
+            #     /Users/gaim-team/arr_forecast_v2 --format SOURCE --language PYTHON --overwrite
+            notebook_path: /Users/gaim-team/arr_forecast_v2
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: prophet==1.1.5
+            - pypi:
+                package: lightgbm>=4.3.0
+            - pypi:
+                package: statsmodels>=0.14.0
+            - pypi:
+                package: transformers>=4.40.0
+            - pypi:
+                package: torch>=2.0.0
+
+      email_notifications:
+        on_failure:
+          - dileep.chennamsetty@goto.com
+        on_start: []
+
+      timeout_seconds: 14400       # 4-hour limit (11 slices × 2 horizon types)
+      max_concurrent_runs: 1
+
     # ── Job 1: Metrics Refresh (every 4 hours) ──────────────────────────────
     atlas_job1_metrics_refresh:
       name: "Atlas | Job1 — Metrics Refresh (4h)"
