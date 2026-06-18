@@ -273,6 +273,155 @@ async def get_model_leaderboard():
     return {"source": "live", "data": data}
 
 
+@router.get("/insights")
+async def get_forecast_insights():
+    """
+    Derive executive intelligence from arr_forecast_ensemble + arr_forecast_leaderboard.
+    Returns same shape as ForecastIntelligence.jsx expects:
+      run_date, momentum, risk_level, narrative, model_confidence,
+      upside, downside, best_model, best_mape, ensemble_mape,
+      forecast_most_likely, forecast_low, forecast_high,
+      key_drivers, executive_actions, downside_risks, upside_opportunities
+    """
+    if not _live_mode_available():
+        return {"source": "demo", "data": None, "live_mode_available": False}
+
+    # Pull 13-week totals per model from latest run
+    rows = await asyncio.to_thread(
+        execute_query,
+        f"""
+        SELECT
+            MAX(CAST(run_timestamp AS STRING))            AS run_date,
+            SUM(arr_ensemble)                             AS total_ensemble,
+            SUM(arr_ets)                                  AS total_ets,
+            SUM(arr_prophet)                              AS total_prophet,
+            SUM(arr_lightgbm)                             AS total_lgb,
+            SUM(arr_chronos)                              AS total_chronos,
+            AVG(mape_ets)                                 AS mape_ets,
+            AVG(mape_prophet)                             AS mape_prophet,
+            AVG(mape_lightgbm)                            AS mape_lgb,
+            AVG(mape_chronos)                             AS mape_chronos,
+            -- trend: compare first 4 weeks to last 4 weeks of forecast
+            AVG(CASE WHEN forecast_step <= 4  THEN arr_ensemble END) AS early_avg,
+            AVG(CASE WHEN forecast_step >= 10 THEN arr_ensemble END) AS late_avg
+        FROM {ENSEMBLE_TABLE}
+        WHERE run_timestamp = (SELECT MAX(run_timestamp) FROM {ENSEMBLE_TABLE})
+        """,
+    )
+
+    # Pull best model from leaderboard
+    lb_rows = await asyncio.to_thread(
+        execute_query,
+        f"""
+        SELECT best_model, MIN(best_mape) AS best_mape
+        FROM {LEADERBOARD_TABLE}
+        GROUP BY best_model
+        ORDER BY MIN(best_mape) ASC
+        LIMIT 1
+        """,
+    )
+
+    if not rows:
+        return {"source": "live", "data": None}
+
+    r = rows[0] or {}
+    lb = (lb_rows[0] if lb_rows else {}) or {}
+
+    total_ensemble = _to_float(r.get("total_ensemble"), 0)
+    total_ets      = _to_float(r.get("total_ets"), 0)
+    total_prophet  = _to_float(r.get("total_prophet"), 0)
+    total_lgb      = _to_float(r.get("total_lgb"), 0)
+    total_chronos  = _to_float(r.get("total_chronos"), 0)
+
+    # Forecast range: low = min of available models, high = max
+    model_totals = [v for v in [total_ets, total_prophet, total_lgb, total_chronos] if v > 0]
+    forecast_low  = min(model_totals) if model_totals else total_ensemble * 0.85
+    forecast_high = max(model_totals) if model_totals else total_ensemble * 1.15
+
+    # Momentum from trend
+    early = _to_float(r.get("early_avg"), 0)
+    late  = _to_float(r.get("late_avg"), 0)
+    if early > 0:
+        trend_pct = (late - early) / early * 100
+        if trend_pct > 5:
+            momentum = "ACCELERATING"
+        elif trend_pct < -5:
+            momentum = "DECELERATING"
+        else:
+            momentum = "STABLE"
+    else:
+        momentum = "STABLE"
+
+    # Risk from ensemble MAPE (use leaderboard best_mape or compute from mapes)
+    best_mape = _to_float(lb.get("best_mape"), 0)
+    if best_mape == 0:
+        mapes = [_to_float(r.get(k), 0) for k in ("mape_ets", "mape_prophet", "mape_lgb", "mape_chronos") if _to_float(r.get(k), 0) > 0]
+        best_mape = min(mapes) if mapes else 0
+
+    if best_mape < 20:
+        risk_level = "LOW RISK"
+        model_confidence = 85
+    elif best_mape < 35:
+        risk_level = "MODERATE RISK"
+        model_confidence = 70
+    else:
+        risk_level = "HIGH RISK"
+        model_confidence = 50
+
+    best_model = str(lb.get("best_model") or "Ensemble")
+    run_date   = str(r.get("run_date") or "")[:10]
+
+    # Upside / downside vs ensemble
+    upside_amt   = forecast_high - total_ensemble
+    downside_amt = total_ensemble - forecast_low
+
+    def fmt_m(v: float) -> str:
+        return f"+${v/1e6:.1f}M" if v >= 0 else f"-${abs(v)/1e6:.1f}M"
+
+    payload = {
+        "run_date":            run_date,
+        "momentum":            momentum,
+        "risk_level":          risk_level,
+        "model_confidence":    model_confidence,
+        "best_model":          best_model,
+        "best_mape":           round(best_mape, 2),
+        "ensemble_mape":       round(best_mape, 2),
+        "forecast_most_likely": round(total_ensemble, 0),
+        "forecast_low":        round(forecast_low, 0),
+        "forecast_high":       round(forecast_high, 0),
+        "upside":              fmt_m(upside_amt),
+        "downside":            fmt_m(-downside_amt),
+        "narrative": (
+            f"The {best_model} model (MAPE {best_mape:.1f}%) projects "
+            f"${total_ensemble/1e6:.1f}M in Growth ARR over the next 13 weeks. "
+            f"Trend is {momentum.lower()} with a "
+            f"${forecast_low/1e6:.1f}M–${forecast_high/1e6:.1f}M model range."
+        ),
+        "key_drivers": [
+            f"Ensemble forecast: ${total_ensemble/1e6:.1f}M over 13 weeks",
+            f"Best model: {best_model} at {best_mape:.1f}% MAPE",
+            f"Trend direction: {momentum}",
+        ],
+        "executive_actions": [
+            "Review per-product forecasts using the product filter above",
+            f"Focus on high-confidence products (MAPE < 20%)",
+            "Schedule pipeline reviews for weeks showing deceleration",
+        ],
+        "downside_risks": [
+            f"Model uncertainty range: ${downside_amt/1e6:.1f}M downside vs ensemble",
+            "Chronos zero-shot may diverge on products with thin history",
+            "Growth-only filter excludes renewal and expansion uplift",
+        ],
+        "upside_opportunities": [
+            f"Upside vs ensemble: ${upside_amt/1e6:.1f}M if high-model scenario plays out",
+            "Seasonal acceleration detected in late-horizon weeks" if momentum == "ACCELERATING" else "Stable pipeline velocity supports forecast reliability",
+            "Per-product leaderboard shows best-fit model per segment",
+        ],
+    }
+
+    return {"source": "live", "data": payload}
+
+
 @router.get("/health/tables")
 async def forecast_tables_health():
     tables = [ENSEMBLE_TABLE, LEADERBOARD_TABLE]
