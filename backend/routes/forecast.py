@@ -2,6 +2,13 @@
 routes/forecast.py
 Prophet-first, table-driven forecast endpoints for Atlas Executive Insights.
 
+DEPRECATED (V1 path):
+    /api/forecast/arr and /api/forecast/leaderboard read `forecast_prophet` which
+    has no scheduled writer. The live UI now reads from arr_forecast_v2 via
+    forecast_v2.py (/api/forecast/v2/*). This file is kept for the
+    /api/forecast/intelligence endpoint (AI Insights tab) only.
+    TODO: migrate intelligence to v2 tables and remove this file.
+
 Primary source table:
   datagroup_mdl.mdl_sales_analytics.forecast_prophet
 """

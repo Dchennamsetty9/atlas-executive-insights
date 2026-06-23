@@ -4,7 +4,10 @@ import FilterPanel from './components/FilterPanel';
 import EnhancedKPICard from './components/EnhancedKPICard';
 import ARRTrendChart from './components/ARRTrendChart';
 import PipelineChart from './components/PipelineChart';
-import ForecastChart from './components/charts/ForecastChart';
+// TODO(M1.1 V1 retired): ForecastChart removed — replaced by ForecastingPanel (V2 path).
+// Deprecated files: frontend/src/components/charts/ForecastChart.jsx, backend/routes/forecast.py
+// import ForecastChart from './components/charts/ForecastChart';
+import ForecastingPanel from './components/ForecastingPanel';
 import AIOrb from './components/ai/AIOrb';
 import AIChatPanel from './components/ai/AIChatPanel';
 import InsightPanel from './components/dashboard/InsightPanel';
@@ -453,8 +456,8 @@ function AppInner() {
 
           {activeView === 'forecast' && (
             <>
-              {/* Forecast + Forecast Intelligence (embedded within ForecastChart) */}
-              <ForecastChart />
+              {/* V2 Forecast panel — reads arr_forecast_v2 (scheduled Mondays 03:00 UTC) */}
+              <ForecastingPanel />
             </>
           )}
 

@@ -107,6 +107,47 @@ export const apiService = {
   // AI endpoints
   getInsights: () => api.get('/api/insights'),
 
+  // ── Forecast V2 endpoints — arr_forecast_v2 table (scheduled Mondays 03:00 UTC) ──
+  getForecastV2Weekly: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+    const params = { model, forecast_type: forecastType };
+    if (product && product !== 'All') params.product = product;
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/weekly', { params });
+  },
+  getForecastV2YTD: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+    const params = { forecast_type: forecastType };
+    if (product && product !== 'All') params.product = product;
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/ytd', { params });
+  },
+  getForecastV2Historical: (product = null, productLine = null, salesMarket = null) => {
+    const params = {};
+    if (product && product !== 'All') params.product = product;
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/historical', { params });
+  },
+  getForecastV2ByProduct: (forecastType = 'rolling', salesMarket = null) => {
+    const params = { forecast_type: forecastType };
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/by-product', { params });
+  },
+  getForecastV2Monthly: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+    const params = { forecast_type: forecastType };
+    if (product && product !== 'All') params.product = product;
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/monthly', { params });
+  },
+  getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
+  getForecastIntelligence: (metric = 'won_pipeline', model = 'prophet', productLine = null) => {
+    const params = { metric, model };
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    return api.get('/api/forecast/intelligence', { params });
+  },
+
   getRecommendations: () => api.get('/api/recommendations'),
 }
 

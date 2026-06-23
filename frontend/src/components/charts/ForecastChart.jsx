@@ -1,4 +1,10 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║  DEPRECATED — V1 forecast chart (forecast_prophet table, no scheduled
+// ║  writer). Superseded by ForecastingPanel (V2) wired in App.jsx.
+// ║  Do NOT delete until ForecastingPanel is confirmed stable in prod.
+// ║  TODO: delete after confirming V2 is working in production.
+// ╚══════════════════════════════════════════════════════════════════════╝
 import {
   ComposedChart,
   Line,
