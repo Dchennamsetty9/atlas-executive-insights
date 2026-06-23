@@ -33,7 +33,7 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "most_likely_col": "Most_Likely",
         "lower_col": "Worst_Case",
         "upper_col": "Best_Case",
-        "mape_field": "Prophet",
+        "mape_field": None,
         "has_forecast_type": False,
     },
     "ets": {
@@ -46,13 +46,13 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "has_forecast_type": True,
     },
     "prophet": {
-        "display_name": "Prophet (v2)",
-        "table": FC_TABLE,
-        "most_likely_col": "arr_prophet",
+        "display_name": "Prophet (Production / Sona)",
+        "table": PROPHET_PROD_TABLE,
+        "most_likely_col": "Most_Likely",
         "lower_col": "Worst_Case",
         "upper_col": "Best_Case",
-        "mape_field": "Prophet",
-        "has_forecast_type": True,
+        "mape_field": None,
+        "has_forecast_type": False,
     },
     "lightgbm": {
         "display_name": "LightGBM",
@@ -215,6 +215,8 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
 def _model_mape_for_row(row: Dict[str, Any], model: str) -> float | None:
     source = _model_source(model)
     field = source["mape_field"]
+    if not field:
+        return None
     value = row.get(field)
     parsed = _f(value, 999)
     return round(parsed, 1) if parsed < 999 else None

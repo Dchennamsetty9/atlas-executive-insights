@@ -504,6 +504,7 @@ const ForecastingPanel = () => {
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
+  const [modelRegistry, setModelRegistry] = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
@@ -513,13 +514,14 @@ const ForecastingPanel = () => {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [wk, yt, hs, bp, mo, lb] = await Promise.allSettled([
+      const [wk, yt, hs, bp, mo, lb, modelsRes] = await Promise.allSettled([
         apiService.getForecastV2Weekly(model, fcType, null, activePl),
         apiService.getForecastV2YTD(fcType, null, activePl),
         apiService.getForecastV2Historical(null, activePl),
         apiService.getForecastV2ByProduct(fcType),
         apiService.getForecastV2Monthly(fcType, null, activePl),
         apiService.getForecastV2Leaderboard(),
+        apiService.getForecastV2Models(),
       ]);
       if (wk.status === 'fulfilled') { setWeekly(wk.value?.rows ?? []); setSource(wk.value?.source ?? null); }
       if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
@@ -527,6 +529,7 @@ const ForecastingPanel = () => {
       if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
       if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
       if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
+      if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
       if (firstReject) setError(firstReject.reason?.message || 'Some endpoints failed to load');
@@ -550,6 +553,13 @@ const ForecastingPanel = () => {
       ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, Chronos: totalRow.Chronos }
       : {};
   }, [leaderboard]);
+
+  const activeModelMeta = useMemo(() => (
+    (modelRegistry || []).find((entry) => entry.key === model) || null
+  ), [modelRegistry, model]);
+
+  const activeModelDisplay = activeModelMeta?.display_name || (model.charAt(0).toUpperCase() + model.slice(1));
+  const activeModelFreshness = activeModelMeta?.freshness || activeModelMeta?.latest_refresh || null;
 
   const pill = (active, color) => ({
     padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700,
@@ -582,7 +592,7 @@ const ForecastingPanel = () => {
             </span>
           </div>
           <div style={{ fontSize: 10, color: '#475569', marginTop: 3 }}>
-            5-Model Ensemble · ETS · Prophet · LightGBM · Chronos · Growth ARR
+            {activeModelDisplay} · {activeModelFreshness ? `Updated ${activeModelFreshness}` : 'Refresh date unavailable'} · Growth ARR
           </div>
         </div>
         <button onClick={fetchAll} disabled={loading}

@@ -142,6 +142,7 @@ export const apiService = {
     return api.get('/api/forecast/v2/monthly', { params });
   },
   getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
+  getForecastV2Models: () => api.get('/api/forecast/v2/models'),
   getForecastIntelligence: (metric = 'won_pipeline', model = 'prophet', productLine = null) => {
     const params = { metric, model };
     if (productLine && productLine !== 'All') params.product_line = productLine;
