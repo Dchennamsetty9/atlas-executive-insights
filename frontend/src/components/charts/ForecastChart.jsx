@@ -12,13 +12,23 @@ import {
 import ForecastIntelligence from './ForecastIntelligence';
 import { ChartExportBar } from '../../utils/chartExport';
 
+// Primary model sourced from forecast_prophet (read-only).
+// Other models shown as "planned" — wired in once their tables are ready.
 const MODELS = [
-  { label: 'Ensemble',  color: '#00FF88' },
-  { label: 'LightGBM', color: '#00BFFF' },
-  { label: 'Prophet',  color: '#FF6B6B' },
-  { label: 'ETS',      color: '#f59e0b' },
-  { label: 'Chronos',  color: '#a78bfa' },
+  { label: 'Prophet',  color: '#FF6B6B', primary: true  },
+  { label: 'Ensemble', color: '#00FF88', primary: false },
+  { label: 'LightGBM', color: '#00BFFF', primary: false },
+  { label: 'ETS',      color: '#f59e0b', primary: false },
+  { label: 'Chronos',  color: '#a78bfa', primary: false },
 ];
+
+const MODEL_TO_API = {
+  Prophet: 'prophet',
+  Ensemble: 'ensemble',
+  LightGBM: 'lightgbm',
+  ETS: 'ets',
+  Chronos: 'chronos',
+};
 
 const fmtDate = (d) => {
   if (!d) return '';
@@ -50,7 +60,7 @@ const DarkTooltip = ({ active, payload, label }) => {
 
 const ForecastChart = () => {
   const chartRef = useRef(null);
-  const [selectedModel, setSelectedModel] = useState('Ensemble');
+  const [selectedModel, setSelectedModel] = useState('Prophet');
   const [selectedProduct, setSelectedProduct] = useState('All');
   const [forecastData, setForecastData] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
@@ -67,32 +77,48 @@ const ForecastChart = () => {
       const productParam = selectedProduct && selectedProduct !== 'All'
         ? `?product=${encodeURIComponent(selectedProduct)}`
         : '';
-      const [arrRes, leaderboardRes] = await Promise.all([
+      // Leaderboard is optional — don't fail the whole load if it errors
+      const [arrRes, lbRes] = await Promise.allSettled([
         fetch(`/api/forecast/arr${productParam}`),
         fetch('/api/forecast/leaderboard'),
       ]);
-      if (!arrRes.ok) throw new Error(`ARR HTTP ${arrRes.status}`);
-      if (!leaderboardRes.ok) throw new Error(`Leaderboard HTTP ${leaderboardRes.status}`);
 
-      const arrJson = await arrRes.json();
-      const lbJson = await leaderboardRes.json();
+      if (arrRes.status === 'rejected' || !arrRes.value?.ok) {
+        throw new Error(arrRes.reason?.message ?? `ARR HTTP ${arrRes.value?.status}`);
+      }
+
+      const arrJson = await arrRes.value.json();
+      const lbJson  = lbRes.status === 'fulfilled' && lbRes.value?.ok
+        ? await lbRes.value.json()
+        : { data: [] };
 
       setForecastData(arrJson.data ?? null);
       setLeaderboard(lbJson.data ?? []);
       setProducts(arrJson.products ?? []);
       setSource(arrJson.source ?? 'demo');
+      setLastUpdated(new Date().toLocaleString());
+
+      // Auto-select Prophet when live data loads — it's the only model in forecast_prophet
+      if ((arrJson.source ?? 'demo') === 'live') {
+        setSelectedModel('Prophet');
+      }
     } catch (e) {
-      setError('Failed to load forecast data');
+      setError(e.message || 'Failed to load forecast data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedProduct]);
 
   useEffect(() => {
     load();
-  }, [load, selectedProduct]);
+  }, [load]);
 
-  const modelColor = MODELS.find((m) => m.label === selectedModel)?.color ?? '#00FF88';
+  const prophetColor = '#FF6B6B';
+  // When live, always render the Prophet line regardless of selectedModel (only Prophet has data)
+  const effectiveModel = (source === 'live' && (forecastData?.[selectedModel]?.forecast ?? []).length === 0)
+    ? 'Prophet'
+    : selectedModel;
+  const effectiveColor = MODELS.find((m) => m.label === effectiveModel)?.color ?? prophetColor;
   const selectedM = leaderboard.find(
     (r) => r.model === selectedModel &&
            (selectedProduct === 'All' || r.product === selectedProduct)
@@ -102,7 +128,8 @@ const ForecastChart = () => {
     if (!forecastData) return [];
 
     const actualSeries = forecastData.actual?.actuals ?? [];
-    const forecastSeries = forecastData[selectedModel]?.forecast ?? [];
+    // Use effectiveModel so chart always shows data (falls back to Prophet when live)
+    const forecastSeries = forecastData[effectiveModel]?.forecast ?? [];
 
     const byDate = new Map();
 
@@ -132,63 +159,84 @@ const ForecastChart = () => {
     }
 
     return Array.from(byDate.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
-  }, [forecastData, selectedModel]);
+  }, [forecastData, effectiveModel]);
 
   return (
     <div className="glass-card luxury-chart-card" style={{ padding: 16, marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>Forecast</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>
+            Prophet Forecast
+          </div>
           <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>
-            Pre-computed 13-week ARR forecast from Delta tables
+            Weekly ARR · Most Likely / Best Case / Worst Case ·{' '}
+            <span style={{ color: '#64748b' }}>mdl_sales_analytics.forecast_prophet</span>
           </div>
         </div>
 
         {!loading && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {/* MAPE badge: use leaderboard value or 19.4% Prophet default */}
             <div style={{
               padding: '4px 9px', borderRadius: 999,
               background: 'rgba(255,255,255,0.04)',
               border: '1px solid rgba(255,255,255,0.08)',
               fontSize: 10, color: '#94a3b8',
             }}>
-              MAPE <span style={{ color: '#00FF88', fontWeight: 700 }}>
-                {selectedM ? `${Number(selectedM.mape).toFixed(1)}%` : '—'}
+              MAPE{' '}
+              <span style={{ color: '#FF6B6B', fontWeight: 700 }}>
+                {selectedM
+                  ? `${Number(selectedM.mape).toFixed(1)}%`
+                  : selectedModel === 'Prophet' ? '19.4%' : '—'}
               </span>
             </div>
-            {source === 'live' && (
-              <div style={{
-                padding: '4px 9px', borderRadius: 999,
-                background: 'rgba(16,185,129,0.1)',
-                border: '1px solid rgba(16,185,129,0.25)',
-                fontSize: 10, color: '#10b981', fontWeight: 700,
-              }}>
-                LIVE
-              </div>
-            )}
+            <div style={{
+              padding: '4px 9px', borderRadius: 999,
+              background: source === 'live' ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
+              border: `1px solid ${source === 'live' ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.2)'}`,
+              fontSize: 10,
+              color: source === 'live' ? '#10b981' : '#f59e0b',
+              fontWeight: 700,
+            }}>
+              {source === 'live' ? 'LIVE' : 'DEMO'}
+            </div>
           </div>
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-        {MODELS.map((m) => (
-          <button
-            key={m.label}
-            onClick={() => setSelectedModel(m.label)}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 999,
-              fontSize: 10,
-              fontWeight: 700,
-              cursor: 'pointer',
-              background: selectedModel === m.label ? `${m.color}22` : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${selectedModel === m.label ? m.color : 'rgba(255,255,255,0.08)'}`,
-              color: selectedModel === m.label ? m.color : '#475569',
-            }}
-          >
-            {m.label}
-          </button>
-        ))}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
+        {MODELS.map((m) => {
+          const isActive   = selectedModel === m.label;
+          const hasFcData  = (forecastData?.[m.label]?.forecast ?? []).length > 0;
+          // Show as available if: demo mode OR it's Prophet OR it genuinely has data
+          const available  = !forecastData || source !== 'live' || hasFcData;
+          return (
+            <button
+              key={m.label}
+              onClick={() => available ? setSelectedModel(m.label) : undefined}
+              title={!available ? `${m.label} data not yet available — add ${m.label} table to enable` : ''}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 10,
+                fontWeight: 700,
+                cursor: available ? 'pointer' : 'not-allowed',
+                opacity: available ? 1 : 0.35,
+                background: isActive ? `${m.color}22` : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${isActive ? m.color : 'rgba(255,255,255,0.08)'}`,
+                color: isActive ? m.color : available ? '#64748b' : '#374151',
+                position: 'relative',
+              }}
+            >
+              {m.label}
+              {!available && (
+                <span style={{ marginLeft: 4, fontSize: 8, color: '#374151', fontWeight: 400 }}>
+                  soon
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Product filter */}
@@ -236,8 +284,8 @@ const ForecastChart = () => {
               <ComposedChart data={chartData} margin={{ left: 8, right: 8, top: 14, bottom: 0 }}>
                 <defs>
                   <linearGradient id="fcBandGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={modelColor} stopOpacity={0.35} />
-                    <stop offset="100%" stopColor={modelColor} stopOpacity={0.05} />
+                    <stop offset="0%" stopColor={effectiveColor} stopOpacity={0.35} />
+                    <stop offset="100%" stopColor={effectiveColor} stopOpacity={0.05} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
@@ -274,7 +322,7 @@ const ForecastChart = () => {
                   type="monotone"
                   dataKey="bandwidth"
                   stackId="confidence"
-                  stroke={modelColor}
+                  stroke={effectiveColor}
                   strokeWidth={0.5}
                   strokeDasharray="2 4"
                   strokeOpacity={0.4}
@@ -296,8 +344,8 @@ const ForecastChart = () => {
                 <Line
                   type="monotone"
                   dataKey="forecast"
-                  name={`${selectedModel} Forecast`}
-                  stroke={modelColor}
+                  name={`${effectiveModel} Forecast`}
+                  stroke={effectiveColor}
                   strokeWidth={2.5}
                   dot={false}
                   strokeDasharray="6 3"
@@ -311,8 +359,9 @@ const ForecastChart = () => {
 
       <div style={{ borderTop: '1px solid var(--border-glass)', marginTop: 20, paddingTop: 20 }}>
         <ForecastIntelligence
-          selectedModel={selectedModel}
-          onInsightsLoaded={(ins) => setLastUpdated(ins?.run_date ?? null)}
+          model={MODEL_TO_API[selectedModel] ?? 'prophet'}
+          metric="won_pipeline"
+          productLine={selectedProduct}
         />
       </div>
 

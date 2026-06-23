@@ -1,5 +1,42 @@
 import { useState, useEffect, useCallback } from 'react';
 
+// ── Demo/fallback payload — shown when backend is unavailable ─────────────────
+const _demoPayload = () => ({
+  run_date:             '—',
+  momentum:             'STABLE',
+  risk_level:           'MODERATE RISK',
+  model_confidence:     72,
+  best_model:           'Prophet',
+  best_mape:            19.4,
+  forecast_most_likely: 17_200_000,
+  forecast_low:         14_620_000,
+  forecast_high:        19_780_000,
+  upside:               '+$2.6M',
+  downside:             '-$2.6M',
+  narrative: 'Prophet projects ~$17.2M in Growth ARR over the next 13 weeks (UCC + ITSG). ' +
+             'Scenario range: $14.6M–$19.8M. Connect to Databricks to see live figures.',
+  key_drivers: [
+    'Q2 QE surge (weeks 11–13) drives ~35% of quarterly ARR',
+    'UCC accounts for ~60% of Growth bookings by value',
+    'Pipeline created 4–8 weeks ago is the strongest leading indicator',
+  ],
+  executive_actions: [
+    'Prioritize QE pipeline velocity — week 11–13 close rates are 2× early-quarter',
+    'Review ITSG deals with push_counter > 2 (high slippage risk)',
+    'Refresh forecast after each week closes for latest Prophet output',
+  ],
+  downside_risks: [
+    'Q3 seasonal decline typically follows Q2 QE surge — plan for -15% reversion',
+    'High deal slippage in ITSG segment may compress Q2 close',
+    'Growth-only filter; renewal uplift not included in these figures',
+  ],
+  upside_opportunities: [
+    'Best-case scenario: $19.8M (+$2.6M vs most likely)',
+    'Marketing-influenced pipeline lag ~4–8 weeks — strong creation = near-term upside',
+    'APAC/EMEA expansion may outperform NA trend if headcount ramp holds',
+  ],
+});
+
 const TREND_META = {
   STABLE: { label: 'STABLE', color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
   ACCELERATING: { label: 'ACCELERATING', color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
@@ -54,7 +91,8 @@ const SkeletonRow = () => (
 );
 
 const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
-  const [data, setData] = useState(null);
+  // Pre-populate with demo so the UI never shows blank cards on mount
+  const [data, setData] = useState(_demoPayload);
   const [source, setSource] = useState('demo');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -64,13 +102,24 @@ const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
     setError(null);
     try {
       const res = await fetch('/api/forecast/insights');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const j = await res.json(); msg = j?.detail || j?.error || msg; } catch (_) {}
+        throw new Error(msg);
+      }
       const json = await res.json();
-      setSource(json.source ?? 'demo');
-      setData(json.data ?? null);
-      if (onInsightsLoaded) onInsightsLoaded(json.data ?? null);
+      const src  = json.source ?? 'demo';
+      const d    = json.data   ?? _demoPayload();
+      setSource(src);
+      setData(d);
+      if (onInsightsLoaded) onInsightsLoaded(d);
     } catch (e) {
+      // Network / parse error — show error banner but still render demo data
       setError(e.message);
+      const demo = _demoPayload();
+      setData(demo);
+      setSource('demo');
+      if (onInsightsLoaded) onInsightsLoaded(demo);
     } finally {
       setLoading(false);
     }
@@ -127,8 +176,19 @@ const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
       </div>
 
       {error && (
-        <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#ef4444' }}>
-          Failed to load intelligence: {error}
+        <div style={{
+          background: 'rgba(245,158,11,0.08)',
+          border: '1px solid rgba(245,158,11,0.2)',
+          borderRadius: 8,
+          padding: '8px 14px',
+          fontSize: 11,
+          color: '#f59e0b',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}>
+          <span>⚠</span>
+          <span>Live data unavailable — showing demo forecast. ({error})</span>
         </div>
       )}
 
@@ -220,9 +280,13 @@ const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
           <span style={{ fontSize: 11, color: '#64748b', background: 'var(--bg-glass)', padding: '2px 8px', borderRadius: 10 }}>
             MAPE {data?.best_mape != null ? `${Number(data.best_mape).toFixed(1)}%` : '—'}
           </span>
-          {source === 'live' && (
+          {source === 'live' ? (
             <span style={{ fontSize: 11, color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 10 }}>
               LIVE
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '2px 8px', borderRadius: 10 }}>
+              DEMO
             </span>
           )}
         </div>

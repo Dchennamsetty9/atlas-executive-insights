@@ -5,7 +5,6 @@ import EnhancedKPICard from './components/EnhancedKPICard';
 import ARRTrendChart from './components/ARRTrendChart';
 import PipelineChart from './components/PipelineChart';
 import ForecastChart from './components/charts/ForecastChart';
-import ForecastIntelligence from './components/charts/ForecastIntelligence';
 import AIOrb from './components/ai/AIOrb';
 import AIChatPanel from './components/ai/AIChatPanel';
 import InsightPanel from './components/dashboard/InsightPanel';
@@ -20,7 +19,6 @@ import { useDashboardData } from './hooks/useDashboardData';
 import { useUrlFilters } from './hooks/useUrlFilters';
 import { FilterProvider, useFilters } from './contexts/FilterContext';
 import NotificationBell from './components/NotificationBell';
-import ForecastingPanel from './components/ForecastingPanel';
 import './styles/futuristic-theme.css';
 import './App.css'
 
@@ -56,7 +54,6 @@ function AppInner() {
   const [activeInsightId, setActiveInsightId] = useState(null);
   const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
   const [aiOpen,        setAiOpen]          = useState(false);
-  const [forecastOpen,  setForecastOpen]    = useState(false);
   const [activeView,    setActiveView]      = useState('business');
   const [countdown,     setCountdown]       = useState(getQuarterCountdown);
   const [shareCopied,   setShareCopied]     = useState(false);
@@ -217,32 +214,6 @@ function AppInner() {
 
             {/* Notification bell */}
             <NotificationBell />
-
-            {/* ── Glowing Forecast button ── */}
-            <button
-              onClick={() => setForecastOpen(o => !o)}
-              title="ARR Forecast Panel"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '4px 12px',
-                background: forecastOpen
-                  ? 'rgba(0,255,136,0.15)'
-                  : 'rgba(0,255,136,0.07)',
-                border: `1px solid ${forecastOpen ? 'rgba(0,255,136,0.6)' : 'rgba(0,255,136,0.25)'}`,
-                borderRadius: 8,
-                color: '#00FF88',
-                fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                letterSpacing: '0.03em',
-                boxShadow: forecastOpen
-                  ? '0 0 12px rgba(0,255,136,0.4), 0 0 24px rgba(0,255,136,0.15)'
-                  : '0 0 8px rgba(0,255,136,0.2)',
-                animation: forecastOpen ? 'none' : 'forecastGlow 2.5s ease-in-out infinite',
-                transition: 'all 0.2s',
-              }}
-            >
-              <span style={{ fontSize: 13 }}>📊</span>
-              Forecast
-            </button>
 
             {/* Refresh button */}
             <button
@@ -524,17 +495,6 @@ function AppInner() {
 
       {/* ── First-visit onboarding tour ──────────────────────────────── */}
       <OnboardingTour onOpenAI={() => { setAiOpen(true); play('open'); }} />
-
-      {/* ── ARR Forecasting Panel ───────────────────────────────────── */}
-      <ForecastingPanel open={forecastOpen} onClose={() => setForecastOpen(false)} />
-
-      {/* Glowing pulse animation for the Forecast button */}
-      <style>{`
-        @keyframes forecastGlow {
-          0%, 100% { box-shadow: 0 0 6px rgba(0,255,136,0.15), 0 0 12px rgba(0,255,136,0.08); }
-          50%       { box-shadow: 0 0 14px rgba(0,255,136,0.45), 0 0 28px rgba(0,255,136,0.2); }
-        }
-      `}</style>
     </div>
   );
 }
