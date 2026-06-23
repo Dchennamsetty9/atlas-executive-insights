@@ -12,7 +12,7 @@ Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 """
 
 import asyncio, os, datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, HTTPException
 from services.databricks_connection import execute_query, token_available
@@ -23,14 +23,64 @@ GOLD      = (os.getenv("FORECAST_CATALOG", "datagroup_mdl") + "." +
              os.getenv("FORECAST_SCHEMA",  "mdl_sales_analytics"))
 FC_TABLE  = f"`{GOLD}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{GOLD}`.`arr_forecast_v2_leaderboard`"
+PROPHET_PROD_TABLE = f"`{GOLD}`.`forecast_prophet`"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
-VALID_MODEL_COLUMNS = {
-    "ets": "arr_ets",
-    "prophet": "arr_prophet",
-    "lightgbm": "arr_lightgbm",
-    "chronos": "arr_chronos",
-    "ensemble": "Most_Likely",
+MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
+    "prophet_prod": {
+        "display_name": "Prophet (Production / Sona)",
+        "table": PROPHET_PROD_TABLE,
+        "most_likely_col": "Most_Likely",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "Prophet",
+        "has_forecast_type": False,
+    },
+    "ets": {
+        "display_name": "ETS",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_ets",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "ETS",
+        "has_forecast_type": True,
+    },
+    "prophet": {
+        "display_name": "Prophet (v2)",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_prophet",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "Prophet",
+        "has_forecast_type": True,
+    },
+    "lightgbm": {
+        "display_name": "LightGBM",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_lightgbm",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "LightGBM",
+        "has_forecast_type": True,
+    },
+    "chronos": {
+        "display_name": "Chronos",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_chronos",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "Chronos",
+        "has_forecast_type": True,
+    },
+    "ensemble": {
+        "display_name": "Ensemble",
+        "table": FC_TABLE,
+        "most_likely_col": "Most_Likely",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "best_mape",
+        "has_forecast_type": True,
+    },
 }
 
 
@@ -50,9 +100,13 @@ def _validate_forecast_type(forecast_type: str) -> str:
 
 def _validate_model(model: str) -> str:
     key = (model or "").strip().lower()
-    if key not in VALID_MODEL_COLUMNS:
+    if key not in MODEL_SOURCES:
         raise HTTPException(status_code=400, detail="Invalid model")
     return key
+
+
+def _model_source(model: str) -> Dict[str, Any]:
+    return MODEL_SOURCES[_validate_model(model)]
 
 def _f(v, default: float = 0.0) -> float:
     try:
@@ -78,6 +132,94 @@ def _latest_run():
     return f"run_date = (SELECT MAX(run_date) FROM {FC_TABLE})"
 
 
+def _effective_forecast_type(model: str, forecast_type: str) -> str:
+    source = _model_source(model)
+    if source["has_forecast_type"]:
+        return forecast_type
+    # forecast_prophet has no forecast_type/roy split; use derived rolling rows.
+    return "actuals" if forecast_type == "actuals" else "rolling"
+
+
+def _normalized_forecast_sql(
+    model: str,
+    forecast_type: str,
+    product: Optional[str],
+    sales_market: Optional[str],
+) -> str:
+    source = _model_source(model)
+    table = source["table"]
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
+    pf = _product_filter(product)
+    gf = _geo_filter(sales_market)
+
+    if source["has_forecast_type"]:
+        return f"""
+            SELECT
+                CAST(ds AS STRING) AS ds,
+                '{model}' AS model,
+                CAST(forecast_type AS STRING) AS forecast_type,
+                COALESCE(CAST({value_col} AS DOUBLE), 0) AS value,
+                COALESCE(CAST({lower_col} AS DOUBLE), 0) AS lower,
+                COALESCE(CAST({upper_col} AS DOUBLE), 0) AS upper,
+                COALESCE(CAST(Actuals AS DOUBLE), 0) AS actual
+            FROM {table}
+            WHERE {_latest_run()}
+                            AND forecast_type = '{forecast_type}'
+              {pf} {gf}
+            ORDER BY ds
+        """
+
+    return f"""
+        SELECT
+            CAST(ds AS STRING) AS ds,
+            '{model}' AS model,
+            CASE
+                WHEN COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 AND CAST(ds AS DATE) < current_date() THEN 'actuals'
+                ELSE 'rolling'
+            END AS forecast_type,
+            COALESCE(CAST({value_col} AS DOUBLE), 0) AS value,
+            COALESCE(CAST({lower_col} AS DOUBLE), 0) AS lower,
+            COALESCE(CAST({upper_col} AS DOUBLE), 0) AS upper,
+            COALESCE(CAST(Actuals AS DOUBLE), 0) AS actual
+        FROM {table}
+        WHERE 1=1
+                    AND CASE
+                                WHEN COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 AND CAST(ds AS DATE) < current_date() THEN 'actuals'
+                                ELSE 'rolling'
+                            END = '{forecast_type}'
+          {pf} {gf}
+        ORDER BY ds
+    """
+
+
+def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        ds = str(row.get("ds") or "")[:10]
+        if not ds:
+            continue
+        normalized.append({
+            "ds": ds,
+            "model": model,
+            "forecast_type": str(row.get("forecast_type") or "rolling"),
+            "value": _f(row.get("value")),
+            "lower": _f(row.get("lower")),
+            "upper": _f(row.get("upper")),
+            "actual": _f(row.get("actual")),
+        })
+    return normalized
+
+
+def _model_mape_for_row(row: Dict[str, Any], model: str) -> float | None:
+    source = _model_source(model)
+    field = source["mape_field"]
+    value = row.get(field)
+    parsed = _f(value, 999)
+    return round(parsed, 1) if parsed < 999 else None
+
+
 # ── GET /weekly ─────────────────────────────────────────────────────────────────
 @router.get("/weekly")
 async def get_weekly(
@@ -95,67 +237,36 @@ async def get_weekly(
 
     forecast_type = _validate_forecast_type(forecast_type)
     model = _validate_model(model)
-    model_col = VALID_MODEL_COLUMNS[model]
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    pf = _product_filter(product)
-    gf = _geo_filter(sales_market)
-
-    # Historical actuals (last 78 weeks)
-    act_sql = f"""
-        SELECT
-            CAST(ds AS STRING) AS date,
-            SUM(Actuals)       AS arr_actual
-        FROM {FC_TABLE}
-        WHERE forecast_type = 'actuals'
-          AND {_latest_run()}
-          AND ds >= dateadd(WEEK, -78, current_date())
-          {pf} {gf}
-        GROUP BY ds
-        ORDER BY ds
-    """
-
-    # Forecast rows
-    fc_sql = f"""
-        SELECT
-            CAST(ds AS STRING) AS date,
-            SUM({model_col})   AS arr_model,
-            SUM(Most_Likely)   AS arr_likely,
-            SUM(Worst_Case)    AS arr_worst,
-            SUM(Best_Case)     AS arr_best
-        FROM {FC_TABLE}
-        WHERE forecast_type = '{forecast_type}'
-          AND {_latest_run()}
-          {pf} {gf}
-        GROUP BY ds
-        ORDER BY ds
-    """
-
-    act_rows, fc_rows = await asyncio.gather(
-        asyncio.to_thread(execute_query, act_sql),
-        asyncio.to_thread(execute_query, fc_sql),
+    actual_rows_raw, forecast_rows_raw = await asyncio.gather(
+        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market)),
+        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market)),
     )
+    actual_rows = _normalise_rows(actual_rows_raw, model)
+    forecast_rows = _normalise_rows(forecast_rows_raw, model)
 
     rows = []
-    for r in act_rows:
+    for r in actual_rows:
         rows.append({
-            "date": str(r.get("date") or "")[:10],
+            "date": r["ds"],
             "type": "actual",
-            "arr_actual": _f(r.get("arr_actual")),
+            "arr_actual": r["actual"],
             "arr_worst": None, "arr_likely": None, "arr_best": None,
         })
-    for r in fc_rows:
+    for r in forecast_rows:
         rows.append({
-            "date":       str(r.get("date") or "")[:10],
+            "date":       r["ds"],
             "type":       "forecast",
             "arr_actual": None,
-            "arr_model":  _f(r.get("arr_model")),
-            "arr_likely": _f(r.get("arr_likely")),
-            "arr_worst":  _f(r.get("arr_worst")),
-            "arr_best":   _f(r.get("arr_best")),
+            "arr_model":  r["value"],
+            "arr_likely": r["value"],
+            "arr_worst":  r["lower"],
+            "arr_best":   r["upper"],
         })
 
     rows.sort(key=lambda x: x["date"])
-    return {"source": "live", "model": model, "forecast_type": forecast_type, "rows": rows}
+    return {"source": "live", "model": model, "forecast_type": eff_forecast_type, "rows": rows}
 
 
 # ── GET /monthly ────────────────────────────────────────────────────────────────
@@ -305,6 +416,7 @@ async def get_ytd(
 # ── GET /by-product ─────────────────────────────────────────────────────────────
 @router.get("/by-product")
 async def get_by_product(
+    model:         str = Query("ensemble"),
     forecast_type: str = Query("rolling"),
     sales_market:  Optional[str] = Query(None),
 ):
@@ -312,42 +424,57 @@ async def get_by_product(
     if not _live():
         return _demo("data")
 
+    model = _validate_model(model)
     forecast_type = _validate_forecast_type(forecast_type)
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    gf = _geo_filter(sales_market)
+    lb_rows_raw = await asyncio.to_thread(execute_query, f"""
+        SELECT product, sales_market, mape_ets, mape_prophet, mape_lightgbm, mape_chronos, best_mape, best_model
+        FROM {LB_TABLE}
+        WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
+    """)
+    lb_rows = {
+        (str(r.get("product") or ""), str(r.get("sales_market") or "")): r
+        for r in lb_rows_raw
+    }
 
-    # Per product group (UCC / ITSG), geo = Total
+    source = _model_source(model)
+    table = source["table"]
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
+
+    where_parts = []
+    if source["has_forecast_type"]:
+        where_parts.append(f"forecast_type = '{eff_forecast_type}'")
+        where_parts.append(_latest_run())
+    else:
+        where_parts.append("COALESCE(CAST(Actuals AS DOUBLE), 0) = 0")
+
     prod_sql = f"""
         SELECT
             product,
-            SUM(Worst_Case)  AS arr_worst,
-            SUM(Most_Likely) AS arr_likely,
-            SUM(Best_Case)   AS arr_best,
-            AVG(mape_ets)    AS mape_ets,
-            AVG(mape_prophet) AS mape_prophet,
-            AVG(mape_lightgbm) AS mape_lightgbm,
-            AVG(mape_chronos)  AS mape_chronos
-        FROM {FC_TABLE}
-        WHERE forecast_type = '{forecast_type}'
+            SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
+        FROM {table}
+        WHERE {' AND '.join(where_parts)}
           AND sales_market = 'Total'
           AND product IN ('UCC','ITSG')
-          AND {_latest_run()}
         GROUP BY product
         ORDER BY product
     """
 
-    # Per geo (Total across products)
     geo_sql = f"""
         SELECT
             sales_market,
-            SUM(Worst_Case)  AS arr_worst,
-            SUM(Most_Likely) AS arr_likely,
-            SUM(Best_Case)   AS arr_best
-        FROM {FC_TABLE}
-        WHERE forecast_type = '{forecast_type}'
+            SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
+        FROM {table}
+        WHERE {' AND '.join(where_parts)}
           AND product = 'Total'
           AND sales_market IN ('NA','EMEA','APAC','LATAM')
-          AND {_latest_run()}
         GROUP BY sales_market
         ORDER BY arr_likely DESC
     """
@@ -357,19 +484,13 @@ async def get_by_product(
         asyncio.to_thread(execute_query, geo_sql),
     )
 
-    def mape_min(r):
-        vals = [_f(r.get(c), 999) for c in
-                ["mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]]
-        valid = [v for v in vals if v < 999]
-        return round(min(valid), 1) if valid else None
-
     by_product = [{
         "product":     str(r.get("product") or ""),
         "product_line": str(r.get("product") or ""),
         "arr_worst":   _f(r.get("arr_worst")),
         "arr_likely":  _f(r.get("arr_likely")),
         "arr_best":    _f(r.get("arr_best")),
-        "best_mape":   mape_min(r),
+        "best_mape":   _model_mape_for_row(lb_rows.get((str(r.get("product") or ""), "Total"), {}), model),
     } for r in prod_rows]
 
     by_geo = [{
@@ -381,6 +502,42 @@ async def get_by_product(
 
     return {"source": "live", "by_product": by_product,
             "by_product_line": by_product, "by_geo": by_geo}
+
+
+@router.get("/models")
+async def get_models():
+    """Return registry-backed forecast models with source table and freshness metadata."""
+    if not _live():
+        return {"source": "demo", "models": []}
+
+    freshness_cache: Dict[str, Optional[str]] = {}
+    for key, source in MODEL_SOURCES.items():
+        table = source["table"]
+        if table in freshness_cache:
+            continue
+        freshness_sql = (
+            f"SELECT MAX(CAST(run_date AS STRING)) AS freshness FROM {table}"
+            if source["has_forecast_type"]
+            else f"SELECT MAX(CAST(ds AS STRING)) AS freshness FROM {table}"
+        )
+        try:
+            rows = await asyncio.to_thread(execute_query, freshness_sql)
+            freshness_cache[table] = str((rows[0] if rows else {}).get("freshness") or "")[:10] or None
+        except Exception:
+            freshness_cache[table] = None
+
+    models = []
+    for key, source in MODEL_SOURCES.items():
+        models.append({
+            "key": key,
+            "display_name": source["display_name"],
+            "source_table": source["table"].replace('`', ''),
+            "latest_refresh": freshness_cache.get(source["table"]),
+            "has_forecast_type": source["has_forecast_type"],
+            "supported_forecast_types": ["actuals", "rolling", "roy"] if source["has_forecast_type"] else ["actuals", "rolling"],
+        })
+
+    return {"source": "live", "models": models}
 
 
 # ── GET /historical ─────────────────────────────────────────────────────────────
