@@ -14,7 +14,7 @@ Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 import asyncio, os, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from services.databricks_connection import execute_query, token_available
 
 router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
@@ -24,12 +24,35 @@ GOLD      = (os.getenv("FORECAST_CATALOG", "datagroup_mdl") + "." +
 FC_TABLE  = f"`{GOLD}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{GOLD}`.`arr_forecast_v2_leaderboard`"
 
+VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
+VALID_MODEL_COLUMNS = {
+    "ets": "arr_ets",
+    "prophet": "arr_prophet",
+    "lightgbm": "arr_lightgbm",
+    "chronos": "arr_chronos",
+    "ensemble": "Most_Likely",
+}
+
 
 def _live() -> bool:
     return token_available() and (
-        bool(os.getenv("DATABRICKS_HOST")) or
+        bool(os.getenv("DATABRICKS_HOST") or os.getenv("DATABRICKS_SERVER_HOSTNAME")) or
         os.getenv("FORCE_LIVE_DATA", "").lower() == "true"
     )
+
+
+def _validate_forecast_type(forecast_type: str) -> str:
+    ft = (forecast_type or "").strip().lower()
+    if ft not in VALID_FORECAST_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid forecast_type")
+    return ft
+
+
+def _validate_model(model: str) -> str:
+    key = (model or "").strip().lower()
+    if key not in VALID_MODEL_COLUMNS:
+        raise HTTPException(status_code=400, detail="Invalid model")
+    return key
 
 def _f(v, default: float = 0.0) -> float:
     try:
@@ -70,11 +93,9 @@ async def get_weekly(
     if not _live():
         return _demo("rows")
 
-    model_col = {
-        "ets": "arr_ets", "prophet": "arr_prophet",
-        "lightgbm": "arr_lightgbm", "chronos": "arr_chronos",
-        "ensemble": "Most_Likely",
-    }.get(model, "Most_Likely")
+    forecast_type = _validate_forecast_type(forecast_type)
+    model = _validate_model(model)
+    model_col = VALID_MODEL_COLUMNS[model]
 
     pf = _product_filter(product)
     gf = _geo_filter(sales_market)
@@ -147,6 +168,8 @@ async def get_monthly(
     """Monthly Actuals + Worst/Most Likely/Best for Monthly table."""
     if not _live():
         return _demo("months")
+
+    forecast_type = _validate_forecast_type(forecast_type)
 
     pf = _product_filter(product)
     gf = _geo_filter(sales_market)
@@ -221,6 +244,8 @@ async def get_ytd(
     if not _live():
         return _demo("rows")
 
+    forecast_type = _validate_forecast_type(forecast_type)
+
     year = datetime.date.today().year
     pf   = _product_filter(product)
     gf   = _geo_filter(sales_market)
@@ -286,6 +311,8 @@ async def get_by_product(
     """Total forecast per product group (UCC/ITSG) + by sales_market."""
     if not _live():
         return _demo("data")
+
+    forecast_type = _validate_forecast_type(forecast_type)
 
     gf = _geo_filter(sales_market)
 

@@ -20,7 +20,7 @@ GOLD_CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 GOLD_SCHEMA = os.getenv("DATABRICKS_SCHEMA", "mdl_sales_analytics")
 FORECAST_OUTPUT_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`forecast_prophet`"
 FORECAST_INSIGHTS_TABLE = FORECAST_OUTPUT_TABLE
-FORECAST_LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`forecast_prophet_leaderboard`"
+FORECAST_LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_leaderboard`"
 
 
 def _live_mode_available() -> bool:
@@ -68,7 +68,7 @@ def _base_forecast_sql(product: Optional[str], product_line: Optional[str]) -> s
             SUM(COALESCE(CAST(Worst_Case AS DOUBLE), CAST(worst_case AS DOUBLE), CAST(yhat_lower AS DOUBLE), 0)) AS arr_worst,
             SUM(COALESCE(CAST(Best_Case AS DOUBLE), CAST(best_case AS DOUBLE), CAST(yhat_upper AS DOUBLE), 0)) AS arr_best
         FROM {FORECAST_OUTPUT_TABLE}
-        WHERE {_run_date_filter(FORECAST_OUTPUT_TABLE)}
+                WHERE 1=1
           {_product_clause(product, product_line)}
         GROUP BY ds
         ORDER BY ds
@@ -79,7 +79,7 @@ def _products_sql() -> str:
     return f"""
         SELECT DISTINCT COALESCE(CAST(product_line AS STRING), CAST(product AS STRING)) AS product
         FROM {FORECAST_OUTPUT_TABLE}
-        WHERE {_run_date_filter(FORECAST_OUTPUT_TABLE)}
+                WHERE 1=1
           AND COALESCE(CAST(product_line AS STRING), CAST(product AS STRING)) IS NOT NULL
           AND LOWER(COALESCE(CAST(product_line AS STRING), CAST(product AS STRING))) NOT IN ('all', 'total')
         ORDER BY product
@@ -279,9 +279,9 @@ async def get_leaderboard():
     sql = f"""
         SELECT
             COALESCE(CAST(product_line AS STRING), CAST(product AS STRING), 'All') AS product,
-            COALESCE(CAST(mape_prophet AS DOUBLE), CAST(mape AS DOUBLE), 19.4) AS mape
+            COALESCE(CAST(mape_prophet AS DOUBLE), CAST(best_mape AS DOUBLE), CAST(mape AS DOUBLE), 19.4) AS mape
         FROM {FORECAST_LEADERBOARD_TABLE}
-        WHERE {_run_date_filter(FORECAST_LEADERBOARD_TABLE)}
+        WHERE 1=1
         ORDER BY product
     """
 
@@ -339,13 +339,13 @@ async def get_forecast_insights(
 
     summary_sql = f"""
         SELECT
-            MAX(CAST(run_date AS STRING)) AS run_date,
+            MAX(CAST(ds AS STRING)) AS run_date,
             SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0)) AS most_likely,
             SUM(COALESCE(CAST(Best_Case AS DOUBLE), CAST(best_case AS DOUBLE), CAST(yhat_upper AS DOUBLE), 0)) AS best_case,
             SUM(COALESCE(CAST(Worst_Case AS DOUBLE), CAST(worst_case AS DOUBLE), CAST(yhat_lower AS DOUBLE), 0)) AS worst_case,
             AVG(COALESCE(CAST(mape_prophet AS DOUBLE), CAST(mape AS DOUBLE), 19.4)) AS mape
         FROM {FORECAST_INSIGHTS_TABLE}
-        WHERE {_run_date_filter(FORECAST_INSIGHTS_TABLE)}
+        WHERE 1=1
           {_product_clause(product, product_line)}
           AND COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0) > 0
     """
@@ -355,7 +355,7 @@ async def get_forecast_insights(
             CAST(ds AS STRING) AS date,
             SUM(COALESCE(CAST(Actuals AS DOUBLE), CAST(actuals AS DOUBLE), 0)) AS value
         FROM {FORECAST_INSIGHTS_TABLE}
-        WHERE {_run_date_filter(FORECAST_INSIGHTS_TABLE)}
+        WHERE 1=1
           {_product_clause(product, product_line)}
           AND COALESCE(CAST(Actuals AS DOUBLE), CAST(actuals AS DOUBLE), 0) > 0
         GROUP BY ds
@@ -367,7 +367,7 @@ async def get_forecast_insights(
             COALESCE(CAST(product_line AS STRING), CAST(product AS STRING), 'Unknown') AS product,
             SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0)) AS likely
         FROM {FORECAST_INSIGHTS_TABLE}
-        WHERE {_run_date_filter(FORECAST_INSIGHTS_TABLE)}
+                WHERE 1=1
           {_product_clause(product, product_line)}
           AND COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0) > 0
         GROUP BY COALESCE(CAST(product_line AS STRING), CAST(product AS STRING), 'Unknown')

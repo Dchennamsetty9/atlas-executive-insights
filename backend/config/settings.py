@@ -51,6 +51,10 @@ class Settings(BaseSettings):
             host = host.rstrip("/")
             if host not in origins:
                 origins.append(host)
+
+        app_host = os.getenv("APP_URL", "").rstrip("/")
+        if app_host and app_host not in origins:
+            origins.append(app_host)
         return origins
     
     # Forecasting

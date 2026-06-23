@@ -176,7 +176,7 @@ const ForecastChart = () => {
 
         {!loading && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            {/* MAPE badge: use leaderboard value or 19.4% Prophet default */}
+            {/* MAPE badge: display live leaderboard value when available */}
             <div style={{
               padding: '4px 9px', borderRadius: 999,
               background: 'rgba(255,255,255,0.04)',
@@ -187,7 +187,7 @@ const ForecastChart = () => {
               <span style={{ color: '#FF6B6B', fontWeight: 700 }}>
                 {selectedM
                   ? `${Number(selectedM.mape).toFixed(1)}%`
-                  : selectedModel === 'Prophet' ? '19.4%' : '—'}
+                  : '—'}
               </span>
             </div>
             <div style={{
