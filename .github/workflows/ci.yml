@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Explicit read permission for checkout — required when the org default workflow
+# token is restricted. Harmless if permissions are already open.
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Backend — lint + tests + import smoke
