@@ -148,13 +148,13 @@ resources:
               HF_HOME:            /dbfs/tmp/hf_cache
 
       tasks:
-        - task_key: run_arr_forecast_v2
+        - task_key: run_arr_forecast_v2_main
           job_cluster_key: arr_v2_cluster
           notebook_task:
             # Upload first:
-            #   databricks workspace import notebooks/arr_forecast_v2.py \
-            #     /Users/gaim-team/arr_forecast_v2 --format SOURCE --language PYTHON --overwrite
-            notebook_path: /Users/gaim-team/arr_forecast_v2
+            #   databricks workspace import notebooks/arr_forecast_v2_main.py \
+            #     /Users/gaim-team/arr_forecast_v2_main --format SOURCE --language PYTHON --overwrite
+            notebook_path: /Users/gaim-team/arr_forecast_v2_main
             source: WORKSPACE
           libraries:
             - pypi:
@@ -163,6 +163,20 @@ resources:
                 package: lightgbm>=4.3.0
             - pypi:
                 package: statsmodels>=0.14.0
+
+        - task_key: run_arr_forecast_v2_chronos
+          depends_on:
+            - task_key: run_arr_forecast_v2_main
+          job_cluster_key: arr_v2_cluster
+          notebook_task:
+            # Upload first:
+            #   databricks workspace import notebooks/arr_forecast_v2_chronos.py \
+            #     /Users/gaim-team/arr_forecast_v2_chronos --format SOURCE --language PYTHON --overwrite
+            notebook_path: /Users/gaim-team/arr_forecast_v2_chronos
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: chronos-forecasting>=1.3.2
             - pypi:
                 package: transformers>=4.40.0
             - pypi:

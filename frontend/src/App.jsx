@@ -24,6 +24,13 @@ import ForecastingPanel from './components/ForecastingPanel';
 import './styles/futuristic-theme.css';
 import './App.css'
 
+const MAIN_VIEWS = [
+  { id: 'business', label: 'Business Performance', icon: '📈' },
+  { id: 'kpi', label: 'Key Performance Indicators', icon: '🎯' },
+  { id: 'forecast', label: 'Forecast', icon: '📊' },
+  { id: 'extended', label: 'Extended Analysis', icon: '✨' },
+];
+
 // ── Quarter-end countdown helper ──────────────────────────────────────────────
 function getQuarterCountdown() {
   const now = new Date();
@@ -50,6 +57,7 @@ function AppInner() {
   const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
   const [aiOpen,        setAiOpen]          = useState(false);
   const [forecastOpen,  setForecastOpen]    = useState(false);
+  const [activeView,    setActiveView]      = useState('business');
   const [countdown,     setCountdown]       = useState(getQuarterCountdown);
   const [shareCopied,   setShareCopied]     = useState(false);
   const { enabled: soundEnabled, toggle: toggleSound, play } = useUISound();
@@ -311,124 +319,180 @@ function AppInner() {
         {/* Main */}
         <main style={{ flex: 1, padding: '24px 0 24px 20px', minWidth: 0 }}>
 
-          {/* Business Performance summary — status, counts, alert bar */}
-          <BusinessPerformancePanel kpis={kpis} filters={filters} />
-
-          {/* AI narrative summary */}
-          <InsightBanner filters={filters} />
-
-          {/* AI Hidden Insights cards */}
-          <InsightPanel kpis={kpis} filters={filters} />
-
-          {/* KPI Section header */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-                Key Performance Indicators
-              </h2>
-              <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-secondary)' }}>
-                Click{' '}
-                <span style={{ fontSize: 12 }}>📊</span>
-                {' '}on any card for detailed charts
-                {(filters.geo !== 'All' || filters.channel !== 'All' || filters.product !== 'All') && (
-                  <span style={{ marginLeft: 8, color: '#3b82f6', fontWeight: 600 }}>• Filtered</span>
-                )}
-              </p>
-            </div>
-            {isLoadingKpis && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#3b82f6' }}>
-                <div style={{
-                  width: 10, height: 10, borderRadius: '50%',
-                  border: '2px solid #3b82f6', borderTopColor: 'transparent',
-                  animation: 'spin 0.7s linear infinite',
-                }} />
-                Updating…
-              </div>
-            )}
+          {/* Top-level dashboard tabs */}
+          <div style={{
+            display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16,
+            padding: 8, borderRadius: 14,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            backdropFilter: 'blur(12px)',
+          }}>
+            {MAIN_VIEWS.map(view => {
+              const isActive = activeView === view.id;
+              return (
+                <button
+                  key={view.id}
+                  onClick={() => setActiveView(view.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 7,
+                    padding: '10px 14px',
+                    borderRadius: 10,
+                    border: `1px solid ${isActive ? 'rgba(0,255,136,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                    background: isActive
+                      ? 'linear-gradient(135deg, rgba(0,255,136,0.15), rgba(59,130,246,0.14))'
+                      : 'rgba(255,255,255,0.03)',
+                    color: isActive ? '#d1fae5' : '#94a3b8',
+                    boxShadow: isActive
+                      ? '0 0 14px rgba(0,255,136,0.18), 0 10px 24px rgba(0,0,0,0.18)'
+                      : 'none',
+                    fontSize: 12,
+                    fontWeight: isActive ? 700 : 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.16s ease',
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>{view.icon}</span>
+                  {view.label}
+                </button>
+              );
+            })}
           </div>
 
-          {/* KPI Grid */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-            gap: 12, marginBottom: 28,
-          }}>
-            {kpiError && kpis.length === 0 ? (
-              <div style={{
-                gridColumn: '1 / -1',
-                padding: '28px 24px',
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border-glass)',
-                borderRadius: 12,
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-              }}>
+          {activeView === 'business' && (
+            <>
+              {/* Business Performance summary — status, counts, alert bar */}
+              <BusinessPerformancePanel kpis={kpis} filters={filters} />
+
+              {/* AI narrative summary */}
+              <InsightBanner filters={filters} />
+
+              {/* AI Hidden Insights cards */}
+              <InsightPanel kpis={kpis} filters={filters} />
+
+              {/* Charts section */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div className="glass-card" style={{ padding: 16 }}>
+                  <ARRTrendChart kpis={kpis} />
+                </div>
+                <div className="glass-card" style={{ padding: 16 }}>
+                  <PipelineChart kpis={kpis} />
+                </div>
+              </div>
+            </>
+          )}
+
+          {activeView === 'kpi' && (
+            <>
+              {/* KPI Section header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                 <div>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                    {kpiError === 'timeout'
-                      ? '⏳ Databricks warehouse is warming up…'
-                      : '⚠️ Could not load KPI data'}
-                  </p>
-                  <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
-                    {kpiError === 'timeout'
-                      ? 'Cold starts can take 60–90 s. Data will appear once the warehouse is ready.'
-                      : 'Check that the backend is running and DATABRICKS_TOKEN is set.'}
+                  <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Key Performance Indicators
+                  </h2>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-secondary)' }}>
+                    Click{' '}
+                    <span style={{ fontSize: 12 }}>📊</span>
+                    {' '}on any card for detailed charts
+                    {(filters.geo !== 'All' || filters.channel !== 'All' || filters.product !== 'All') && (
+                      <span style={{ marginLeft: 8, color: '#3b82f6', fontWeight: 600 }}>• Filtered</span>
+                    )}
                   </p>
                 </div>
-                <button onClick={() => loadKpis()} style={{
-                  padding: '7px 16px', fontSize: 12, fontWeight: 600,
-                  background: 'rgba(59,130,246,0.12)', color: '#3b82f6',
-                  border: '1px solid rgba(59,130,246,0.35)', borderRadius: 8, cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}>
-                  Retry
-                </button>
-              </div>
-            ) : (kpis.length > 0 ? kpis : Array.from({ length: 8 })).map((kpi, idx) => (
-              <div key={kpi?.id ?? idx} style={{ position: 'relative' }}>
-                <EnhancedKPICard
-                  kpi={kpi}
-                  insights={kpiInsights[kpi?.id]}
-                  loading={!kpi}
-                  compact
-                  activeInsightId={activeInsightId}
-                  onInsightToggle={handleInsightToggle}
-                />
-                {/* Detail modal trigger */}
-                {kpi && (
-                  <button
-                    onClick={() => handleKpiCardClick(kpi)}
-                    title="View detailed chart"
-                    style={{
-                      position: 'absolute', top: 8, right: 8,
-                      background: 'rgba(59,130,246,0.15)',
-                      border: '1px solid rgba(59,130,246,0.2)',
-                      borderRadius: 6, padding: '2px 5px',
-                      fontSize: 12, cursor: 'pointer', lineHeight: 1,
-                      color: '#3b82f6',
-                    }}
-                  >📊</button>
+                {isLoadingKpis && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#3b82f6' }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: '50%',
+                      border: '2px solid #3b82f6', borderTopColor: 'transparent',
+                      animation: 'spin 0.7s linear infinite',
+                    }} />
+                    Updating…
+                  </div>
                 )}
               </div>
-            ))}
-          </div>
 
-          {/* Revenue gap decomposition waterfall — only renders when gap exists */}
-          <ImpactWaterfall filters={filters} />
+              {/* KPI Grid */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                gap: 12, marginBottom: 28,
+              }}>
+                {kpiError && kpis.length === 0 ? (
+                  <div style={{
+                    gridColumn: '1 / -1',
+                    padding: '28px 24px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-glass)',
+                    borderRadius: 12,
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                  }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {kpiError === 'timeout'
+                          ? '⏳ Databricks warehouse is warming up…'
+                          : '⚠️ Could not load KPI data'}
+                      </p>
+                      <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
+                        {kpiError === 'timeout'
+                          ? 'Cold starts can take 60–90 s. Data will appear once the warehouse is ready.'
+                          : 'Check that the backend is running and DATABRICKS_TOKEN is set.'}
+                      </p>
+                    </div>
+                    <button onClick={() => loadKpis()} style={{
+                      padding: '7px 16px', fontSize: 12, fontWeight: 600,
+                      background: 'rgba(59,130,246,0.12)', color: '#3b82f6',
+                      border: '1px solid rgba(59,130,246,0.35)', borderRadius: 8, cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      Retry
+                    </button>
+                  </div>
+                ) : (kpis.length > 0 ? kpis : Array.from({ length: 8 })).map((kpi, idx) => (
+                  <div key={kpi?.id ?? idx} style={{ position: 'relative' }}>
+                    <EnhancedKPICard
+                      kpi={kpi}
+                      insights={kpiInsights[kpi?.id]}
+                      loading={!kpi}
+                      compact
+                      activeInsightId={activeInsightId}
+                      onInsightToggle={handleInsightToggle}
+                    />
+                    {/* Detail modal trigger */}
+                    {kpi && (
+                      <button
+                        onClick={() => handleKpiCardClick(kpi)}
+                        title="View detailed chart"
+                        style={{
+                          position: 'absolute', top: 8, right: 8,
+                          background: 'rgba(59,130,246,0.15)',
+                          border: '1px solid rgba(59,130,246,0.2)',
+                          borderRadius: 6, padding: '2px 5px',
+                          fontSize: 12, cursor: 'pointer', lineHeight: 1,
+                          color: '#3b82f6',
+                        }}
+                      >📊</button>
+                    )}
+                  </div>
+                ))}
+              </div>
 
-          {/* Charts section */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-            <div className="glass-card" style={{ padding: 16 }}>
-              <ARRTrendChart kpis={kpis} />
-            </div>
-            <div className="glass-card" style={{ padding: 16 }}>
-              <PipelineChart kpis={kpis} />
-            </div>
-          </div>
-          {/* Forecast + Forecast Intelligence (embedded within ForecastChart) */}
-          <ForecastChart />
+              {/* Revenue gap decomposition waterfall — only renders when gap exists */}
+              <ImpactWaterfall filters={filters} />
+            </>
+          )}
 
-          {/* ── Extended Analytics — 5 tabs ──────────────────────── */}
-          <AnalyticsTabs />
+          {activeView === 'forecast' && (
+            <>
+              {/* Forecast + Forecast Intelligence (embedded within ForecastChart) */}
+              <ForecastChart />
+            </>
+          )}
+
+          {activeView === 'extended' && (
+            <>
+              {/* ── Extended Analytics — 5 tabs ──────────────────────── */}
+              <AnalyticsTabs />
+            </>
+          )}
 
           {/* Footer */}
           <div style={{

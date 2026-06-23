@@ -11,6 +11,8 @@
  *   exportChartCsv(data, ['month', 'arr', 'target'], 'arr-trend');
  */
 
+import { createElement } from 'react';
+
 /**
  * Export a chart container's SVG as a PNG download.
  * @param {React.RefObject} containerRef - ref attached to the chart wrapper div
@@ -95,28 +97,44 @@ export function exportChartCsv(data, columns, filename = 'chart-data') {
  *   style        — optional style overrides
  */
 export function ChartExportBar({ containerRef, data, columns, filename, style }) {
-  return (
-    <div style={{
-      display: 'flex', gap: 6, justifyContent: 'flex-end',
-      marginBottom: 6, ...style,
-    }}>
-      <button
-        onClick={() => exportChartPng(containerRef, filename)}
-        title="Download chart as PNG"
-        style={exportBtnStyle}
-      >
-        ⬇ PNG
-      </button>
-      {data && (
-        <button
-          onClick={() => exportChartCsv(data, columns, filename)}
-          title="Download data as CSV"
-          style={exportBtnStyle}
-        >
-          ⬇ CSV
-        </button>
-      )}
-    </div>
+  const children = [
+    createElement(
+      'button',
+      {
+        onClick: () => exportChartPng(containerRef, filename),
+        title: 'Download chart as PNG',
+        style: exportBtnStyle,
+      },
+      '⬇ PNG'
+    ),
+  ];
+
+  if (data) {
+    children.push(
+      createElement(
+        'button',
+        {
+          onClick: () => exportChartCsv(data, columns, filename),
+          title: 'Download data as CSV',
+          style: exportBtnStyle,
+        },
+        '⬇ CSV'
+      )
+    );
+  }
+
+  return createElement(
+    'div',
+    {
+      style: {
+        display: 'flex',
+        gap: 6,
+        justifyContent: 'flex-end',
+        marginBottom: 6,
+        ...style,
+      },
+    },
+    ...children
   );
 }
 

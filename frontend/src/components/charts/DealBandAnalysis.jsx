@@ -87,9 +87,6 @@ const DealBandAnalysis = () => {
           {['yoy', 'prior_quarter'].map(c => (
             <button key={c} onClick={() => setCompare(c)} style={{
               padding: '3px 9px', borderRadius: 16, fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                            padding: '4px 9px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
               background: compare === c ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${compare === c ? '#f59e0b' : 'rgba(255,255,255,0.08)'}`,
               color: compare === c ? '#f59e0b' : '#475569',
