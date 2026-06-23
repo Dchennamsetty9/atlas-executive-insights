@@ -17,7 +17,7 @@ import uvicorn
 
 import pandas as pd
 from config.settings import settings
-from auth import require_debug_access
+from auth import require_debug_access, require_authenticated_user
 from bootstrap import (
     app,
     data_fetcher,
@@ -296,7 +296,12 @@ async def get_kpis(
 
 
 @app.post("/api/cache/refresh")
-async def force_cache_refresh(geo: str = "All", channel: str = "All", product: str = "All"):
+async def force_cache_refresh(
+    geo: str = "All",
+    channel: str = "All",
+    product: str = "All",
+    _user: str = Depends(require_authenticated_user),
+):
     """
     Force-invalidate the KPI cache so the next /api/kpis call re-queries Databricks.
     Called by the frontend "Refresh Now" button.

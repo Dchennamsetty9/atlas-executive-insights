@@ -3,11 +3,9 @@
 # Schedule: every 4 hours
 # Writes: atlas.metrics_summary, atlas.metrics_history, atlas.revenue_gap_decomposition,
 #         atlas.extended_analytics (all tabs)
-# Reads:  datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot
-#         federated.sales.metis_won_opps_fact
-#         federated.sales.metis_opened_opps_fact
-#         federated.sales.metis_targets_summary
-#         datagroup_mdl.mdl_sales_analytics.gaim_snapshot_pipeline_created_cq_daily
+# Reads:  datagroup.datalake_transform.cds_sfdc_opp_products_latest  (won + opened opps)
+#         datagroup_mdl.mdl_sales_analytics.gaim_pipeline_daily_snapshot  (active pipeline)
+#         federated.sales.metis_targets_summary  (paced targets)
 
 # COMMAND ----------
 # MAGIC %md ## Atlas Job 1 — Metrics Refresh
@@ -28,6 +26,9 @@ GOLD_SCHEMA   = "atlas"
 MDL_SCHEMA    = "mdl_sales_analytics"
 FED_CATALOG   = "federated"
 FED_SCHEMA    = "sales"
+# Official KPI source (cds_sfdc_opp_products_latest lives under datagroup, not datagroup_mdl)
+SRC_CATALOG   = "datagroup"
+SRC_TABLE     = f"{SRC_CATALOG}.datalake_transform.cds_sfdc_opp_products_latest"
 
 GOLD          = f"{CATALOG}.{GOLD_SCHEMA}"
 MDL           = f"{CATALOG}.{MDL_SCHEMA}"
@@ -62,13 +63,22 @@ if pipeline_snap.count() == 0:
         .filter(F.col("snapshot_date") == F.lit(latest_snap_date))
     )
 
-won_opps       = spark.table(f"{FED}.metis_won_opps_fact")
-opened_opps    = spark.table(f"{FED}.metis_opened_opps_fact")
+# ── Official KPI source: cds_sfdc_opp_products_latest ───────────────────────
+# Base filters applied once; win/open split is done inside compute_kpis_for_group.
+# purchase_type_rollup = 'Growth' and sales_channel exclusions align with standard reporting.
+opps_base = (
+    spark.table(SRC_TABLE)
+    .filter(
+        (F.col("purchase_type_rollup") == "Growth") &
+        (F.col("is_opp_amount_zero") == False) &
+        (~F.lower(F.col("sales_channel")).isin("ecomm", "care", ""))
+    )
+)
+
 targets_raw    = spark.table(f"{FED}.metis_targets_summary")
 
 print(f"[Job1] Source row counts — pipeline_snap: {pipeline_snap.count()}, "
-      f"won_opps: {won_opps.count()}, opened_opps: {opened_opps.count()}, "
-      f"targets: {targets_raw.count()}")
+      f"opps_base: {opps_base.count()}, targets: {targets_raw.count()}")
 
 # COMMAND ----------
 # MAGIC %md ### Step 2 — Determine current quarter bounds
@@ -105,46 +115,48 @@ print(f"[Job1] Quarter: {Q_START} → {Q_END} | Elapsed: {ELAPSED_DAYS}/{TOTAL_D
 def compute_kpis_for_group(geo="All", channel="All", product="All"):
     """
     Returns a dict of {metric_key: value} for the given dimension filters.
-    Applies filters to source DataFrames before aggregating.
+    Source: cds_sfdc_opp_products_latest (base filters already applied in opps_base).
+    Dimension columns: sales_market (geo), sales_channel (channel), product_family (product).
     """
-    # ── Filter won opps ──────────────────────────────────────────────────────
-    won_filt = won_opps.filter(
+    # ── Filter won opps  (is_won = 'True', date = close_date) ────────────────
+    won_filt = opps_base.filter(
+        (F.col("is_won") == "True") &
         (F.col("close_date") >= F.lit(Q_START)) &
         (F.col("close_date") <= F.lit(Q_END))
     )
-    if geo     != "All": won_filt = won_filt.filter(F.col("geo") == geo)
-    if channel != "All": won_filt = won_filt.filter(F.col("channel") == channel)
+    if geo     != "All": won_filt = won_filt.filter(F.col("sales_market") == geo)
+    if channel != "All": won_filt = won_filt.filter(F.col("sales_channel") == channel)
     if product != "All": won_filt = won_filt.filter(F.col("product_family") == product)
 
     won_agg = won_filt.agg(
-        F.sum("arr_amount").alias("won_pipeline"),
-        F.count("opportunity_id").alias("won_volume")
+        F.sum("amount_towards_plan").alias("won_pipeline"),
+        F.countDistinct("opportunities_created_ids").alias("won_volume")
     ).collect()[0]
 
-    # ── Filter opened opps ───────────────────────────────────────────────────
-    opp_filt = opened_opps.filter(
-        (F.col("created_date") >= F.lit(Q_START)) &
-        (F.col("created_date") <= F.lit(Q_END))
+    # ── Filter opened opps  (no is_won filter, date = pipeline_entered_date) ─
+    opp_filt = opps_base.filter(
+        (F.col("pipeline_entered_date") >= F.lit(Q_START)) &
+        (F.col("pipeline_entered_date") <= F.lit(Q_END))
     )
-    if geo     != "All": opp_filt = opp_filt.filter(F.col("geo") == geo)
-    if channel != "All": opp_filt = opp_filt.filter(F.col("channel") == channel)
+    if geo     != "All": opp_filt = opp_filt.filter(F.col("sales_market") == geo)
+    if channel != "All": opp_filt = opp_filt.filter(F.col("sales_channel") == channel)
     if product != "All": opp_filt = opp_filt.filter(F.col("product_family") == product)
 
     opp_agg = opp_filt.agg(
-        F.sum("arr_amount").alias("created_pipeline"),
-        F.count("opportunity_id").alias("opps_created")
+        F.sum("amount_towards_plan").alias("created_pipeline"),
+        F.countDistinct("opportunities_created_ids").alias("opps_created")
     ).collect()[0]
 
-    # ── Filter active pipeline ───────────────────────────────────────────────
+    # ── Filter active pipeline (still sourced from MDL snapshot) ───────────
     pipe_filt = pipeline_snap
-    if geo     != "All": pipe_filt = pipe_filt.filter(F.col("geo") == geo)
-    if channel != "All": pipe_filt = pipe_filt.filter(F.col("channel") == channel)
+    if geo     != "All": pipe_filt = pipe_filt.filter(F.col("sales_market") == geo)
+    if channel != "All": pipe_filt = pipe_filt.filter(F.col("sales_channel") == channel)
     if product != "All": pipe_filt = pipe_filt.filter(F.col("product_family") == product)
 
     pipe_agg = pipe_filt.agg(
-        F.sum("arr_amount").alias("active_pipeline"),
+        F.sum("amount_towards_plan").alias("active_pipeline"),
         F.sum("mql_count").alias("mql"),
-        F.countDistinct("opportunity_id").alias("pipe_count")
+        F.countDistinct("opportunities_created_ids").alias("pipe_count")
     ).collect()[0]
 
     # ── Derived metrics ──────────────────────────────────────────────────────
@@ -219,14 +231,13 @@ DIMENSION_COMBOS = [
     # ("All", "Partner", "All"),
 ]
 
-# Optionally: drive from distinct values in source table
+# Optionally: drive from distinct values in source table.
+# Column names from cds_sfdc_opp_products_latest: sales_market, sales_channel
 geo_values = (
-    [row["geo"] for row in pipeline_snap.select("geo").distinct().collect()]
-    if "geo" in pipeline_snap.columns else []
+    [row["sales_market"] for row in opps_base.select("sales_market").distinct().collect()]
 )
 channel_values = (
-    [row["channel"] for row in pipeline_snap.select("channel").distinct().collect()]
-    if "channel" in pipeline_snap.columns else []
+    [row["sales_channel"] for row in opps_base.select("sales_channel").distinct().collect()]
 )
 
 # Add single-dimension combos only (skip multi-dimension cross products)
@@ -400,18 +411,20 @@ import json
 ext_rows = []
 
 # ── Tab: deal_bands ───────────────────────────────────────────────────────────
-deal_bands = won_opps.filter(
+# Uses amount_towards_plan and opportunities_created_ids per official KPI spec
+deal_bands = opps_base.filter(
+    (F.col("is_won") == "True") &
     (F.col("close_date") >= F.lit(Q_START)) & (F.col("close_date") <= F.lit(Q_END))
 ).withColumn(
     "deal_band",
-    F.when(F.col("arr_amount") <  10_000, "< $10K")
-     .when(F.col("arr_amount") <  50_000, "$10K-$50K")
-     .when(F.col("arr_amount") < 100_000, "$50K-$100K")
-     .when(F.col("arr_amount") < 250_000, "$100K-$250K")
+    F.when(F.col("amount_towards_plan") <  10_000, "< $10K")
+     .when(F.col("amount_towards_plan") <  50_000, "$10K-$50K")
+     .when(F.col("amount_towards_plan") < 100_000, "$50K-$100K")
+     .when(F.col("amount_towards_plan") < 250_000, "$100K-$250K")
      .otherwise("> $250K")
 ).groupBy("deal_band").agg(
-    F.sum("arr_amount").alias("metric_value"),
-    F.count("opportunity_id").alias("secondary_value")
+    F.sum("amount_towards_plan").alias("metric_value"),
+    F.countDistinct("opportunities_created_ids").alias("secondary_value")
 )
 
 for row in deal_bands.collect():
@@ -430,43 +443,45 @@ for row in deal_bands.collect():
     })
 
 # ── Tab: pipeline_segments ────────────────────────────────────────────────────
+# Standard categorical column for geo is sales_market per KPI spec
 pipe_by_geo = (
-    pipeline_snap.groupBy("geo").agg(
-        F.sum("arr_amount").alias("metric_value"),
-        F.count("opportunity_id").alias("secondary_value")
+    pipeline_snap.groupBy("sales_market").agg(
+        F.sum("amount_towards_plan").alias("metric_value"),
+        F.countDistinct("opportunities_created_ids").alias("secondary_value")
     )
 )
 
 for row in pipe_by_geo.collect():
     ext_rows.append({
         "tab_name":        "pipeline_segments",
-        "dimension_key":   "geo",
-        "dimension_value": str(row["geo"] or "Unknown"),
+        "dimension_key":   "sales_market",
+        "dimension_value": str(row["sales_market"] or "Unknown"),
         "metric_key":      "active_pipeline",
         "metric_value":    float(row["metric_value"] or 0),
         "secondary_value": float(row["secondary_value"] or 0),
         "period_start":    Q_START,
-        "geo":             str(row["geo"] or "Unknown"),
+        "geo":             str(row["sales_market"] or "Unknown"),
         "channel":         "All",
         "metadata_json":   None,
         "refreshed_at":    datetime.utcnow(),
     })
 
 # ── Tab: largest_deals ────────────────────────────────────────────────────────
+# Open active pipeline ranked by amount_towards_plan; uses sales_market + sales_channel
 top_deals = (
     pipeline_snap
-    .orderBy(F.col("arr_amount").desc())
+    .orderBy(F.col("amount_towards_plan").desc())
     .limit(25)
     .select(
-        "opportunity_id", "account_name", "arr_amount", "stage",
-        "close_date", "geo", "channel", "days_in_stage",
+        "opportunities_created_ids", "account_name", "amount_towards_plan", "stage",
+        "close_date", "sales_market", "sales_channel", "days_in_stage",
         "owner_name", "product_family"
     )
 )
 
 for row in top_deals.collect():
     meta = {
-        "opportunity_id": row["opportunity_id"],
+        "opportunity_id": str(row["opportunities_created_ids"] or ""),
         "account_name":   str(row["account_name"] or ""),
         "stage":          str(row["stage"] or ""),
         "close_date":     str(row["close_date"] or ""),
@@ -477,13 +492,13 @@ for row in top_deals.collect():
     ext_rows.append({
         "tab_name":        "largest_deals",
         "dimension_key":   "opportunity_id",
-        "dimension_value": row["opportunity_id"],
+        "dimension_value": str(row["opportunities_created_ids"] or ""),
         "metric_key":      "deal_arr",
-        "metric_value":    float(row["arr_amount"] or 0),
+        "metric_value":    float(row["amount_towards_plan"] or 0),
         "secondary_value": float(row["days_in_stage"] or 0),
         "period_start":    Q_START,
-        "geo":             str(row["geo"] or "All"),
-        "channel":         str(row["channel"] or "All"),
+        "geo":             str(row["sales_market"] or "All"),
+        "channel":         str(row["sales_channel"] or "All"),
         "metadata_json":   json.dumps(meta),
         "refreshed_at":    datetime.utcnow(),
     })

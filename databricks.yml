@@ -65,18 +65,15 @@ resources:
     arr_forecast_ensemble:
       name: "ARR Forecast — 4-Model Ensemble (Weekly)"
       description: >
-        Trains ETS, Prophet, LightGBM, and Chronos-T5-Small on weekly Growth ARR
-        per product_genus from datalake_transform.cds_sfdc_opp_products_latest.
-        Writes pre-computed 13-week forecasts to
-        datagroup_mdl.mdl_sales_analytics.arr_forecast_ensemble and
-        datagroup_mdl.mdl_sales_analytics.arr_forecast_leaderboard.
-        The atlas-executive-insights FastAPI reads directly from those Delta tables.
+        PAUSED: no backend route currently reads arr_forecast_ensemble or
+        arr_forecast_leaderboard. Re-enable when ForecastingPanel is wired to
+        /api/forecast/v2/* which reads arr_forecast_v2 (not this table).
 
-      # ── Schedule: every Monday at 02:00 UTC ──────────────────────────────
+      # ── Schedule: paused — outputs are not consumed by the app ──────────────
       schedule:
         quartz_cron_expression: "0 0 2 ? * MON"
         timezone_id: UTC
-        pause_status: UNPAUSED
+        pause_status: PAUSED
 
       # ── Cluster: ML runtime (prophet, lightgbm, torch/chronos) ───────────
       job_clusters:

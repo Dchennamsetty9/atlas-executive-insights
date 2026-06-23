@@ -9,10 +9,11 @@ GET  /api/genie/suggested-questions  — context-aware starter questions
 GET  /api/genie/conversation/{id}    — check conversation state (lightweight)
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from auth import require_authenticated_user
 from services.genie_service import genie_service
 
 router = APIRouter(prefix="/api/genie", tags=["genie"])
@@ -25,7 +26,7 @@ class GenieQuestion(BaseModel):
 
 
 @router.post("/ask")
-async def ask_genie(request: GenieQuestion):
+async def ask_genie(request: GenieQuestion, _user: str = Depends(require_authenticated_user)):
     """
     Ask the Metis Genie Space a natural-language question about sales KPIs.
 

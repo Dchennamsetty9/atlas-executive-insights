@@ -8,10 +8,11 @@ Endpoints:
   POST /api/insights/ask                 — answer a free-form executive question
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 
+from auth import require_authenticated_user
 from services.insight_engine import insight_engine
 from services.gaim_data_service import get_current_kpi_data
 from services.openai_insight_service import (
@@ -72,7 +73,7 @@ class ExecutiveQuestion(BaseModel):
 
 
 @router.post("/ask")
-async def ask_executive_question(body: ExecutiveQuestion):
+async def ask_executive_question(body: ExecutiveQuestion, _user: str = Depends(require_authenticated_user)):
     """
     Answer a free-form executive question grounded in live KPI data.
     Uses Azure OpenAI with the GAIM system prompt; falls back to a plain message

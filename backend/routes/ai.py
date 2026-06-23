@@ -30,9 +30,10 @@ Filter dimensions supported by federated tables:
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from auth import require_authenticated_user
 from services.ai_service import ai_service
 from services.gaim_data_service import GAIMDataService
 
@@ -198,7 +199,7 @@ async def chart_annotation(req: ChartAnnotationRequest):
 # ── Feature 7: Ask AI Chat (Text-to-SQL) ─────────────────────────────────────
 
 @router.post("/ask")
-async def ask_ai(req: AskAIRequest):
+async def ask_ai(req: AskAIRequest, _user: str = Depends(require_authenticated_user)):
     """
     Full text-to-SQL → execute → interpret pipeline.
     Returns {answer, sql, data, visualization_hint, fallback_used}.

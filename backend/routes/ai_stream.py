@@ -27,9 +27,11 @@ import logging
 import os
 from typing import AsyncGenerator, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from auth import require_authenticated_user
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +297,7 @@ async def _generate_stream(
 # -- Endpoint ------------------------------------------------------------------
 
 @router.post("/ask/stream")
-async def ask_ai_stream(req: AskStreamRequest):
+async def ask_ai_stream(req: AskStreamRequest, _user: str = Depends(require_authenticated_user)):
     """
     Unified streaming Ask AI endpoint with intent routing.
     Returns a server-sent event (SSE) stream.

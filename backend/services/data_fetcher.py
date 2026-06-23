@@ -213,13 +213,14 @@ class DataFetcher:
     def _build_filter_mdl(self, filters: Dict[str, str]) -> str:
         """AND-prefixed WHERE fragment for datagroup_mdl MDL snapshot tables.
         Columns: market, smoothed_channel, product_genus.
+        Values validated against whitelists to prevent SQL injection.
         """
         parts: list = []
         geo = filters.get("geo", "")
-        if geo and geo != "All":
+        if geo and geo != "All" and geo in self._VALID_GEO:
             parts.append(f"AND market = '{geo}'")
         channel = filters.get("channel", "")
-        if channel and channel != "All":
+        if channel and channel != "All" and channel in self._VALID_CHANNEL:
             parts.append(f"AND smoothed_channel = '{channel}'")
         product = filters.get("product", "")
         if product and product != "All":
