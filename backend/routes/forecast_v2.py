@@ -11,11 +11,13 @@ Reads from:  datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
 Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 """
 
-import asyncio, os, datetime
+import asyncio, os, datetime, logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, HTTPException
 from services.databricks_connection import execute_query, token_available
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 
@@ -114,9 +116,9 @@ def _f(v, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-def _demo(key: str):
+def _demo(key: str, error: str = "Databricks unavailable"):
     return {"source": "demo", "live_mode_available": False,
-            "error": "Databricks unavailable", key: []}
+            "error": error, key: []}
 
 def _product_filter(product, col="product"):
     if not product or product == "All":
@@ -241,10 +243,14 @@ async def get_weekly(
     model = _validate_model(model)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    actual_rows_raw, forecast_rows_raw = await asyncio.gather(
-        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market)),
-        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market)),
-    )
+    try:
+        actual_rows_raw, forecast_rows_raw = await asyncio.gather(
+            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market)),
+            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market)),
+        )
+    except Exception as exc:
+        logger.warning("[forecast/weekly] query failed for model=%s: %s", model, exc)
+        return _demo("rows", error=str(exc))
     actual_rows = _normalise_rows(actual_rows_raw, model)
     forecast_rows = _normalise_rows(forecast_rows_raw, model)
 
@@ -319,10 +325,14 @@ async def get_monthly(
         ORDER BY yr, mth
     """
 
-    act_rows, fc_rows = await asyncio.gather(
-        asyncio.to_thread(execute_query, act_sql),
-        asyncio.to_thread(execute_query, fc_sql),
-    )
+    try:
+        act_rows, fc_rows = await asyncio.gather(
+            asyncio.to_thread(execute_query, act_sql),
+            asyncio.to_thread(execute_query, fc_sql),
+        )
+    except Exception as exc:
+        logger.warning("[forecast/monthly] query failed: %s", exc)
+        return _demo("months", error=str(exc))
 
     act_map = {
         (int(_f(r.get("yr"))), int(_f(r.get("mth")))): _f(r.get("arr_actual"))
@@ -386,10 +396,14 @@ async def get_ytd(
         GROUP BY ds ORDER BY ds
     """
 
-    act_rows, fc_rows = await asyncio.gather(
-        asyncio.to_thread(execute_query, act_sql),
-        asyncio.to_thread(execute_query, fc_sql),
-    )
+    try:
+        act_rows, fc_rows = await asyncio.gather(
+            asyncio.to_thread(execute_query, act_sql),
+            asyncio.to_thread(execute_query, fc_sql),
+        )
+    except Exception as exc:
+        logger.warning("[forecast/ytd] query failed: %s", exc)
+        return _demo("rows", error=str(exc))
 
     act_map = {str(r.get("d") or "")[:10]: _f(r.get("arr")) for r in act_rows}
     fc_map  = {str(r.get("d") or "")[:10]: r for r in fc_rows}
@@ -430,11 +444,15 @@ async def get_by_product(
     forecast_type = _validate_forecast_type(forecast_type)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    lb_rows_raw = await asyncio.to_thread(execute_query, f"""
-        SELECT product, sales_market, mape_ets, mape_prophet, mape_lightgbm, mape_chronos, best_mape, best_model
-        FROM {LB_TABLE}
-        WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
-    """)
+    try:
+        lb_rows_raw = await asyncio.to_thread(execute_query, f"""
+            SELECT product, sales_market, mape_ets, mape_prophet, mape_lightgbm, mape_chronos, best_mape, best_model
+            FROM {LB_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
+        """)
+    except Exception as exc:
+        logger.warning("[forecast/by-product] leaderboard fetch failed (continuing): %s", exc)
+        lb_rows_raw = []
     lb_rows = {
         (str(r.get("product") or ""), str(r.get("sales_market") or "")): r
         for r in lb_rows_raw
@@ -481,10 +499,14 @@ async def get_by_product(
         ORDER BY arr_likely DESC
     """
 
-    prod_rows, geo_rows = await asyncio.gather(
-        asyncio.to_thread(execute_query, prod_sql),
-        asyncio.to_thread(execute_query, geo_sql),
-    )
+    try:
+        prod_rows, geo_rows = await asyncio.gather(
+            asyncio.to_thread(execute_query, prod_sql),
+            asyncio.to_thread(execute_query, geo_sql),
+        )
+    except Exception as exc:
+        logger.warning("[forecast/by-product] query failed for model=%s: %s", model, exc)
+        return _demo("data", error=str(exc))
 
     by_product = [{
         "product":     str(r.get("product") or ""),
@@ -570,7 +592,11 @@ async def get_historical(
         ORDER BY ds
     """
 
-    rows_raw = await asyncio.to_thread(execute_query, sql)
+    try:
+        rows_raw = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/historical] query failed: %s", exc)
+        return _demo("rows", error=str(exc))
     rows = [{
         "date":     str(r.get("date") or "")[:10],
         "year":     int(_f(r.get("year"))),
@@ -599,7 +625,11 @@ async def get_leaderboard():
         ORDER BY best_mape
     """
 
-    rows_raw = await asyncio.to_thread(execute_query, sql)
+    try:
+        rows_raw = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/leaderboard] query failed: %s", exc)
+        return _demo("data", error=str(exc))
     data = [{
         "product":        str(r.get("product") or ""),
         "sales_market":   str(r.get("sales_market") or ""),
