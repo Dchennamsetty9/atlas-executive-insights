@@ -36,10 +36,15 @@ env:
   - name: DATABRICKS_SQL_WAREHOUSE_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
   
+  # Force live Databricks queries even outside the Databricks hostname check.
+  # Safe to set on Databricks Apps — token_available() still guards the connection.
+  - name: FORCE_LIVE_DATA
+    value: "true"
+
   # Application settings
   - name: ENVIRONMENT
     value: "production"
-  
+
   - name: DEBUG
     value: "False"
 

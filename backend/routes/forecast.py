@@ -184,30 +184,30 @@ def _insight_defaults() -> dict:
 
 
 def _demo_insights(metric: str = "won_pipeline") -> dict:
+    """
+    Demo fallback — always returns {source, data} shape matching ForecastIntelligence.jsx.
+    """
     defaults = _insight_defaults()
-    return {
-        "source": "demo",
-        "model_used": "prophet",
-        "model_name": "Prophet",
-        "model_confidence": 0.84,
-        "trend_status": "stable",
-        "risk_level": "moderate",
-        "growth_rate": 0.041,
-        "forecast_90d": {
-            "most_likely": 19600000,
-            "best_case": 20900000,
-            "worst_case": 18300000,
-        },
-        "upside_dollar": 1300000,
-        "downside_dollar": -1300000,
-        "mape": 19.4,
-        "rmse": 0.0,
-        "description": "Prophet baseline indicates steady ARR momentum with moderate uncertainty over the next 90 days.",
-        "metric": metric,
-        "history_days": 84,
-        "run_date": datetime.utcnow().strftime("%Y-%m-%d"),
+    data_payload = {
+        "run_date":             "—",
+        "momentum":             "STABLE",
+        "risk_level":           "MODERATE RISK",
+        "model_confidence":     72,
+        "best_model":           "Prophet",
+        "best_mape":            19.4,
+        "ensemble_mape":        19.4,
+        "forecast_most_likely": 17_200_000,
+        "forecast_low":         14_620_000,
+        "forecast_high":        19_780_000,
+        "upside":               "+$2.6M",
+        "downside":             "-$2.6M",
+        "narrative": (
+            "Prophet projects ~$17.2M in Growth ARR over the next 13 weeks "
+            "(UCC + ITSG). Connect to Databricks to see live figures."
+        ),
         **defaults,
     }
+    return {"source": "demo", "data": data_payload}
 
 
 @router.get("/arr")
@@ -399,7 +399,7 @@ async def get_forecast_insights(
         top_products = [str(r.get("product") or "").strip() for r in product_rows if r.get("product")]
         if top_products:
             defaults["key_drivers"][0] = (
-                "Primary contribution mix in this run: " + ", ".join(top_products)
+                "Primary product mix: " + ", ".join(top_products)
             )
 
         if risk_level == "high":
@@ -409,36 +409,59 @@ async def get_forecast_insights(
         if trend_status == "decelerating":
             defaults["downside_risks"][0] = "Decelerating actuals can compress outcomes toward worst-case"
 
-        description = (
-            "Prophet baseline from mdl_sales_analytics.forecast_prophet indicates "
-            f"a {trend_status} trajectory with {risk_level} uncertainty for the next 90 days."
+        # ── Map field names to match ForecastIntelligence.jsx expectations ───
+        # momentum: "STABLE" | "ACCELERATING" | "DECELERATING"
+        momentum_map = {"stable": "STABLE", "accelerating": "ACCELERATING",
+                        "decelerating": "DECELERATING", "volatile": "STABLE"}
+        momentum = momentum_map.get(trend_status, "STABLE")
+
+        # risk_level: "LOW RISK" | "MODERATE RISK" | "HIGH RISK"
+        risk_map = {"low": "LOW RISK", "moderate": "MODERATE RISK", "high": "HIGH RISK"}
+        risk_label = risk_map.get(risk_level, "MODERATE RISK")
+
+        # model_confidence: integer 0-100
+        model_confidence_pct = round(confidence * 100)
+
+        upside_amt   = best_case - most_likely
+        downside_amt = worst_case - most_likely   # negative
+
+        def _fmt_m(v: float) -> str:
+            sign = "+" if v >= 0 else ""
+            return f"{sign}${abs(v) / 1_000_000:.1f}M"
+
+        narrative = (
+            f"Prophet projects ${most_likely / 1_000_000:.1f}M ARR "
+            f"(best: ${best_case / 1_000_000:.1f}M · worst: ${worst_case / 1_000_000:.1f}M). "
+            f"Trend is {momentum.lower()}. MAPE {mape:.1f}% on holdout."
         )
 
-        return {
-            "source": "live",
-            "model_used": "prophet",
-            "model_name": "Prophet",
-            "model_confidence": confidence,
-            "trend_status": trend_status,
-            "risk_level": risk_level,
-            "growth_rate": growth_rate,
-            "forecast_90d": {
-                "most_likely": most_likely,
-                "best_case": best_case,
-                "worst_case": worst_case,
-            },
-            "upside_dollar": round(best_case - most_likely, 0),
-            "downside_dollar": round(worst_case - most_likely, 0),
-            "mape": mape,
-            "rmse": 0.0,
-            "description": description,
-            "metric": metric,
-            "history_days": len(actuals),
-            "run_date": run_date,
+        # Wrap in {source, data} shape that ForecastIntelligence.jsx reads
+        data_payload = {
+            "run_date":             run_date,
+            "momentum":             momentum,
+            "risk_level":           risk_label,
+            "model_confidence":     model_confidence_pct,
+            "best_model":           "Prophet",
+            "best_mape":            mape,
+            "ensemble_mape":        mape,
+            "forecast_most_likely": most_likely,
+            "forecast_low":         worst_case,
+            "forecast_high":        best_case,
+            "upside":               _fmt_m(upside_amt),
+            "downside":             _fmt_m(downside_amt),
+            "narrative":            narrative,
             **defaults,
         }
-    except Exception:
-        return _demo_insights(metric)
+
+        return {"source": "live", "data": data_payload}
+
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        # Never 500 — fall back to demo shape so UI always renders
+        demo = _demo_insights(metric)
+        demo["source"] = "demo"
+        demo["error"] = str(exc)
+        return demo
 
 
 @router.get("/intelligence")

@@ -109,7 +109,34 @@ const ForecastIntelligence = ({ selectedModel, onInsightsLoaded }) => {
       }
       const json = await res.json();
       const src  = json.source ?? 'demo';
-      const d    = json.data   ?? _demoPayload();
+      // Backend wraps payload in {source, data:{...}}.
+      // If data key is missing (flat response from older deploy), use top-level object
+      // but remap legacy field names to what this component reads.
+      let d = json.data ?? null;
+      if (!d && json.forecast_most_likely != null) {
+        // Flat legacy shape — remap to expected shape
+        d = {
+          run_date:             json.run_date,
+          momentum:             json.momentum ?? (json.trend_status ? json.trend_status.toUpperCase() : 'STABLE'),
+          risk_level:           json.risk_level ?? 'MODERATE RISK',
+          model_confidence:     json.model_confidence != null
+                                  ? (json.model_confidence <= 1 ? Math.round(json.model_confidence * 100) : json.model_confidence)
+                                  : 72,
+          best_model:           json.best_model ?? json.model_name ?? 'Prophet',
+          best_mape:            json.best_mape ?? json.mape ?? 19.4,
+          forecast_most_likely: json.forecast_most_likely ?? json.forecast_90d?.most_likely,
+          forecast_low:         json.forecast_low ?? json.forecast_90d?.worst_case,
+          forecast_high:        json.forecast_high ?? json.forecast_90d?.best_case,
+          upside:               json.upside ?? (json.upside_dollar != null ? `+$${(json.upside_dollar/1e6).toFixed(1)}M` : '—'),
+          downside:             json.downside ?? (json.downside_dollar != null ? `$${(json.downside_dollar/1e6).toFixed(1)}M` : '—'),
+          narrative:            json.narrative ?? json.description ?? '',
+          key_drivers:          json.key_drivers ?? [],
+          executive_actions:    json.executive_actions ?? [],
+          downside_risks:       json.downside_risks ?? [],
+          upside_opportunities: json.upside_opportunities ?? [],
+        };
+      }
+      d = d ?? _demoPayload();
       setSource(src);
       setData(d);
       if (onInsightsLoaded) onInsightsLoaded(d);
