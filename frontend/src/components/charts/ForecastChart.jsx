@@ -166,7 +166,7 @@ const ForecastChart = () => {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9', letterSpacing: -0.3 }}>
-            Prophet Forecast
+            Forecast
           </div>
           <div style={{ fontSize: 10, color: '#475569', marginTop: 4, lineHeight: 1.45 }}>
             Weekly ARR · Most Likely / Best Case / Worst Case ·{' '}
