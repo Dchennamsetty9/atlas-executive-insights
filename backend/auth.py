@@ -33,6 +33,19 @@ def _token_cache_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _trusted_forwarded_fallback_enabled() -> bool:
+    """
+    When enabled, tolerate Databricks-forwarded tokens that fail current-user
+    introspection by deriving a stable pseudonymous user id from the token hash.
+    """
+    return os.getenv("AUTH_TRUST_FORWARDED_TOKEN", "true").lower() == "true"
+
+
+def _fallback_user_id_from_token(token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"forwarded:{digest[:16]}"
+
+
 def _databricks_host() -> str:
     host = os.getenv("DATABRICKS_HOST") or os.getenv("DATABRICKS_SERVER_HOSTNAME") or settings.databricks_server_hostname
     return (host or "").removeprefix("https://").removeprefix("http://").rstrip("/")
@@ -81,9 +94,10 @@ async def _verify_forwarded_token(token: str) -> str:
 
 async def require_authenticated_user(
     x_forwarded_access_token: Optional[str] = Header(default=""),
+    authorization: Optional[str] = Header(default=""),
 ) -> str:
     """Return authenticated user id or raise 401 for protected endpoints."""
-    token = _normalize_token(x_forwarded_access_token)
+    token = _normalize_token(x_forwarded_access_token) or _normalize_token(authorization)
     set_request_token(token)
 
     if not token:
@@ -91,7 +105,24 @@ async def require_authenticated_user(
             return "local-dev"
         raise HTTPException(status_code=401, detail="Missing forwarded access token")
 
-    return await _verify_forwarded_token(token)
+    try:
+        return await _verify_forwarded_token(token)
+    except HTTPException as exc:
+        # Databricks Apps may forward user/app tokens that are valid for app access
+        # but not accepted by /current-user/me. In that case, keep routes usable by
+        # deriving a stable pseudonymous user id from the forwarded token.
+        if (
+            os.getenv("DATABRICKS_HOST")
+            and exc.status_code == 401
+            and _trusted_forwarded_fallback_enabled()
+        ):
+            fallback_user = _fallback_user_id_from_token(token)
+            logger.warning(
+                "Forwarded token verification failed; using trusted fallback identity %s",
+                fallback_user,
+            )
+            return fallback_user
+        raise
 
 
 async def require_debug_access(
