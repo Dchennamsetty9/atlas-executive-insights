@@ -334,6 +334,66 @@ resources:
 
       max_concurrent_runs: 1
 
+    # ── KPI Daily Refresh + AI Insights (daily 7 AM ET) ──────────────────────
+    atlas_kpi_daily:
+      name: "Atlas | KPI Daily — Refresh + AI Insights (7 AM ET)"
+      description: >
+        Task 1 (kpi_refresh): reads federated.sales.metis_* + gaim_pipeline_daily_snapshot
+        + gaim_mql_daily_snapshot, computes all 15 sales KPIs, and writes/merges to
+        datagroup_mdl.mdl_sales_analytics.kpi_daily_summary (company grain) and
+        kpi_daily_by_segment (geo × product × channel grain).
+        Task 2 (kpi_ai_insights): reads the latest kpi_daily_summary row, calls
+        databricks-claude-sonnet-4-6 to generate 5-7 executive insights, and writes
+        them to kpi_ai_insights_log. Only runs if Task 1 succeeds.
+        Upload notebooks before deploying:
+          databricks workspace import notebooks/kpi_daily_refresh.py \
+            /Users/gaim-team/kpi_daily_refresh --language PYTHON --overwrite
+          databricks workspace import notebooks/kpi_ai_insights.py \
+            /Users/gaim-team/kpi_ai_insights --language PYTHON --overwrite
+
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"   # 7:00 AM Eastern every day
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      max_concurrent_runs: 1
+
+      job_clusters:
+        - job_cluster_key: kpi_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: i3.xlarge
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+
+      tasks:
+        - task_key: kpi_refresh
+          job_cluster_key: kpi_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/kpi_daily_refresh
+            source: WORKSPACE
+          timeout_seconds: 900
+          max_retries: 2
+          retry_on_timeout: false
+
+        - task_key: kpi_ai_insights
+          depends_on:
+            - task_key: kpi_refresh
+          job_cluster_key: kpi_cluster
+          notebook_task:
+            notebook_path: /Users/gaim-team/kpi_ai_insights
+            source: WORKSPACE
+          timeout_seconds: 300
+          max_retries: 1
+          retry_on_timeout: false
+
+      email_notifications:
+        on_failure:
+          - dchennamsetty@goto.com
+        no_alert_for_skipped_runs: true
+
 targets:
   dev:
     mode: development

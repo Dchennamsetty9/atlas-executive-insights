@@ -1,0 +1,52 @@
+{
+  "name": "atlas_kpi_daily",
+  "description": "Daily sales KPI refresh + AI insights. Task 2 runs only after Task 1 succeeds.",
+  "tags": { "team": "gaim", "domain": "sales-kpi" },
+  "schedule": {
+    "quartz_cron_expression": "0 0 7 * * ?",
+    "timezone_id": "America/New_York",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "email_notifications": {
+    "on_failure": ["analytics@goto.com"],
+    "no_alert_for_skipped_runs": true
+  },
+  "job_clusters": [
+    {
+      "job_cluster_key": "kpi_cluster",
+      "new_cluster": {
+        "spark_version": "15.4.x-scala2.12",
+        "node_type_id": "i3.xlarge",
+        "num_workers": 1,
+        "data_security_mode": "SINGLE_USER",
+        "spark_conf": { "spark.databricks.delta.preview.enabled": "true" }
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_key": "kpi_refresh",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/gaim-team/kpi_daily_refresh",
+        "source": "WORKSPACE"
+      },
+      "job_cluster_key": "kpi_cluster",
+      "timeout_seconds": 900,
+      "max_retries": 2,
+      "retry_on_timeout": false
+    },
+    {
+      "task_key": "kpi_ai_insights",
+      "depends_on": [ { "task_key": "kpi_refresh" } ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/gaim-team/kpi_ai_insights",
+        "source": "WORKSPACE"
+      },
+      "job_cluster_key": "kpi_cluster",
+      "timeout_seconds": 300,
+      "max_retries": 1,
+      "retry_on_timeout": false
+    }
+  ]
+}
