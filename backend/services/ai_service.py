@@ -770,12 +770,32 @@ class AIService:
             )
         except Exception as exc:
             logger.warning("SQL execution failed: %s", exc)
+            # If generated SQL fails (common: federated UC permissions),
+            # route to Databricks Genie so users still get an answer.
+            try:
+                from services.genie_service import genie_service
+
+                genie_result = await asyncio.wait_for(
+                    genie_service.ask_kpi_question(question),
+                    timeout=45.0,
+                )
+                return {
+                    "answer": genie_result.get("answer") or "Genie returned no answer.",
+                    "sql": genie_result.get("sql") or generated_sql,
+                    "data": genie_result.get("data") or [],
+                    "visualization_hint": viz_hint,
+                    "fallback_used": True,
+                    "source": "genie",
+                }
+            except Exception as genie_exc:
+                logger.warning("Genie fallback failed: %s", genie_exc)
             return {
                 "answer": f"Query generated but failed to execute: {exc}",
                 "sql":    generated_sql,
                 "data":   [],
                 "visualization_hint": viz_hint,
                 "fallback_used": True,
+                "source": "sql-error",
             }
 
         # Step 3: Interpret results
@@ -794,6 +814,7 @@ class AIService:
             "data":               rows,
             "visualization_hint": viz_hint,
             "fallback_used":      False,
+            "source":             "statement-execution",
         }
 
 
