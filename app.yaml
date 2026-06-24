@@ -41,6 +41,13 @@ env:
   - name: FORCE_LIVE_DATA
     value: "true"
 
+  # Model-serving endpoints used by backend/services/ai_service.py
+  - name: DATABRICKS_AI_PRIMARY_ENDPOINT
+    value: "databricks-claude-sonnet-4-5"
+
+  - name: DATABRICKS_AI_FALLBACK_ENDPOINT
+    value: "databricks-gemini-3-1-flash-lite"
+
   # Application settings
   - name: ENVIRONMENT
     value: "production"

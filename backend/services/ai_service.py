@@ -40,8 +40,8 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 # ── Endpoint names ─────────────────────────────────────────────────────────────
-_PRIMARY_ENDPOINT  = "databricks-claude-sonnet-4-6"
-_FALLBACK_ENDPOINT = "databricks-gemini-3-1-flash-lite"
+_PRIMARY_ENDPOINT  = os.getenv("DATABRICKS_AI_PRIMARY_ENDPOINT", "databricks-claude-sonnet-4-6")
+_FALLBACK_ENDPOINT = os.getenv("DATABRICKS_AI_FALLBACK_ENDPOINT", "databricks-gemini-3-1-flash-lite")
 _MAX_TOKENS        = 150   # ~3-4 sentences; executive summary only
 _DEFAULT_WAREHOUSE_ID = "c24ee33594e13e93"
 

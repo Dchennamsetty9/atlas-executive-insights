@@ -223,9 +223,10 @@ async def ask_ai(req: AskAIRequest, _user: str = Depends(require_authenticated_u
 
 @router.get("/health")
 async def ai_health():
+    import os
     return {
         "status":        "ok",
-        "primary_model": "databricks-claude-sonnet-4",
-        "fallback_model": "databricks-gemini-2-5-flash",
+        "primary_model": os.getenv("DATABRICKS_AI_PRIMARY_ENDPOINT", "databricks-claude-sonnet-4-6"),
+        "fallback_model": os.getenv("DATABRICKS_AI_FALLBACK_ENDPOINT", "databricks-gemini-3-1-flash-lite"),
         "features":      [1, 2, 3, 4, 5, 6, 7],
     }
