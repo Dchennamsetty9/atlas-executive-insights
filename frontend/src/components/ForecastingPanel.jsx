@@ -668,6 +668,7 @@ const ForecastingPanel = () => {
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
       if (firstReject) {
+        setSource('demo');
         setError(firstReject.reason?.message || 'Some endpoints failed to load');
       }
     } catch (e) {
@@ -695,7 +696,7 @@ const ForecastingPanel = () => {
     color:       active ? (color ?? '#f1f5f9') : '#475569',
   });
 
-  const isDemo  = source === 'demo';
+  const isDemo  = source !== 'live';
   const demoPayload = useMemo(() => {
     const dWeekly = _buildDemoWeekly(fcType);
     return {
