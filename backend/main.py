@@ -60,6 +60,9 @@ async def health_check():
         connection_error  = str(e)
 
     
+    has_pat = bool(os.getenv("DATABRICKS_TOKEN") or os.getenv("DATABRICKS_ACCESS_TOKEN"))
+    has_oauth = bool(os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_CLIENT_SECRET"))
+
     return {
         "service": "Atlas Executive Insights API",
         "status": "running",
@@ -71,7 +74,9 @@ async def health_check():
         "databricks_connection": connection_status,
         "connection_error": connection_error,
         "databricks_host": settings.databricks_server_hostname[:50] if settings.databricks_server_hostname else "not set",
-        "has_token": bool(os.getenv("DATABRICKS_TOKEN") or os.getenv("DATABRICKS_ACCESS_TOKEN")),
+        "has_token": has_pat,
+        "has_oauth_credentials": has_oauth,
+        "has_databricks_auth": has_pat or has_oauth,
         "catalog": settings.databricks_catalog,
         "schema": settings.databricks_schema
     }

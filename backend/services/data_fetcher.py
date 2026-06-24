@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import asyncio
-from services.databricks_connection import token_available
+from services.databricks_connection import token_available, get_connection as get_databricks_connection
 
 try:
     from databricks import sql as databricks_sql
@@ -83,18 +83,9 @@ class DataFetcher:
         it manages its own thread-safe connection pool internally.
         """
         if self.use_databricks:
-            token = os.getenv("DATABRICKS_TOKEN") or settings.databricks_access_token
-            if not token:
-                raise RuntimeError(
-                    "DATABRICKS_TOKEN is not set. "
-                    "Export your Personal Access Token before starting the backend."
-                )
-            return databricks_sql.connect(
-                server_hostname=settings.databricks_server_hostname,
-                http_path=settings.databricks_http_path,
-                access_token=token,
-                _socket_timeout=10,
-            )
+            # Centralize Databricks auth handling (PAT, forwarded user token, OAuth M2M)
+            # in services.databricks_connection to keep behavior consistent across routes.
+            return get_databricks_connection()
         else:
             if not self.engine:
                 conn_url = f"mssql+pyodbc:///?odbc_connect={self.connection_string}"

@@ -3,10 +3,10 @@ databricks_connection.py
 Lightweight connection module for Databricks SQL Warehouse.
 Shared by data_fetcher and gaim_data_service.
 
-Token priority (first non-empty wins):
-  1. DATABRICKS_TOKEN   — injected automatically by Databricks Apps at runtime
-  2. DATABRICKS_ACCESS_TOKEN — set in local .env for development
-  3. settings.databricks_access_token — populated by pydantic-settings from .env
+Auth priority (first usable wins):
+    1. Request/user token via x-forwarded-access-token
+    2. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
+    3. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
 import logging
@@ -74,9 +74,14 @@ def _resolve_token() -> str:
     return token or ""
 
 
+def _oauth_m2m_available() -> bool:
+    """Return True when service-principal OAuth credentials are configured."""
+    return bool(os.environ.get("DATABRICKS_CLIENT_ID") and os.environ.get("DATABRICKS_CLIENT_SECRET"))
+
+
 def token_available() -> bool:
-    """Return True if any Databricks token source is configured."""
-    return DATABRICKS_AVAILABLE and bool(_resolve_token())
+    """Return True if PAT/user-token auth or OAuth M2M auth is configured."""
+    return DATABRICKS_AVAILABLE and (bool(_resolve_token()) or _oauth_m2m_available())
 
 
 def get_connection():
@@ -96,18 +101,29 @@ def get_connection():
         )
 
     token = _resolve_token()
-    if not token:
-        raise RuntimeError(
-            "No Databricks token found. Set DATABRICKS_TOKEN (production) or "
-            "DATABRICKS_ACCESS_TOKEN in backend/.env (local dev)."
+    if token:
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            access_token=token,
+            _socket_timeout=5,                       # 5 s per socket op — fail fast locally
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 12 s total retry budget
         )
 
-    return sql.connect(
-        server_hostname=HOST,
-        http_path=HTTP_PATH,
-        access_token=token,
-        _socket_timeout=5,                       # 5 s per socket op — fail fast locally
-        _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 12 s total retry budget
+    if _oauth_m2m_available():
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            auth_type="oauth-m2m",
+            oauth_client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
+            oauth_client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
+            _socket_timeout=5,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    raise RuntimeError(
+        "No Databricks credentials found. Set DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN "
+        "or DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET."
     )
 
 
