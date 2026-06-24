@@ -33,7 +33,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from config.settings import settings
 from query_loader import load_query
+from services.data_fetcher import DataFetcher
 from services.databricks_connection import DATABRICKS_AVAILABLE, execute_query, token_available
 
 # ── Whitelists ────────────────────────────────────────────────────────────────
@@ -271,6 +273,7 @@ class PerformanceHubService:
         _on_databricks = bool(os.getenv("DATABRICKS_HOST"))
         _force_live    = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
         self.available = DATABRICKS_AVAILABLE and token_available() and (_on_databricks or _force_live)
+        self._data_fetcher = DataFetcher()
 
     # ── Public async API ──────────────────────────────────────────────────────
 
@@ -284,7 +287,7 @@ class PerformanceHubService:
         if self.available:
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(self._query_kpi_dashboard, filters),
+                    asyncio.to_thread(self.get_kpi_summary_from_table, filters),
                     timeout=20.0,
                 )
             except asyncio.TimeoutError:
@@ -434,6 +437,119 @@ class PerformanceHubService:
         return AI_INSIGHT_PROMPT.format(**safe)
 
     # ── Blocking query implementations (run in thread pool) ───────────────────
+
+    def _execute_table_query(
+        self,
+        query: str,
+        params: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        with self._data_fetcher.get_connection() as connection:
+            with connection.cursor() as cursor:
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+
+    def _status_from_pct(self, value: Optional[float]) -> str:
+        pct = float(value or 0)
+        if pct >= 100:
+            return "Exceeding Target"
+        if pct >= 85:
+            return "Watch Closely"
+        return "Action Required"
+
+    def _coverage_status_from_ratio(self, value: Optional[float]) -> str:
+        ratio = float(value or 0)
+        if ratio >= 1:
+            return "Exceeding Target"
+        if ratio >= 0.85:
+            return "Watch Closely"
+        return "Action Required"
+
+    def _map_kpi_summary_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        won_acv_qtr = float(row.get("won_acv_qtr") or 0)
+        deals_won_qtr = int(row.get("deals_won_qtr") or 0)
+        total_quota = float(row.get("total_quota") or 0)
+        full_quota = float(row.get("full_quota") or 0)
+        attainment_pct = float(row.get("attainment_pct") or 0)
+        pipeline_acv = float(row.get("pipeline_acv") or 0)
+        pipeline_opps = int(row.get("pipeline_opps") or 0)
+        pipeline_coverage_ratio = float(row.get("pipeline_coverage_ratio") or 0)
+        pipeline_attainment_pct = float(row.get("pipeline_attainment_pct") or 0)
+        created_pipeline_qtr = float(row.get("created_pipeline_qtr") or 0)
+        opps_created_qtr = int(row.get("opps_created_qtr") or 0)
+        win_rate_pct = float(row.get("win_rate_pct") or 0)
+        close_rate_dollar_pct = float(row.get("close_rate_dollar_pct") or 0)
+        close_rate_vol_pct = float(row.get("close_rate_vol_pct") or 0)
+
+        target_pipeline_amount = 0.0
+        if pipeline_acv and pipeline_attainment_pct:
+            target_pipeline_amount = pipeline_acv / (pipeline_attainment_pct / 100.0)
+
+        mapped = dict(row)
+        mapped.update({
+            "won_amount": won_acv_qtr,
+            "target_won_amount": total_quota,
+            "full_won_amount": full_quota,
+            "won_amount_attainment": attainment_pct / 100.0,
+            "won_amount_attainment_pct": attainment_pct,
+            "won_amount_status": self._status_from_pct(attainment_pct),
+            "won_opps_count": deals_won_qtr,
+            "target_won_opps": None,
+            "won_opps_attainment": None,
+            "won_opps_status": self._status_from_pct(attainment_pct),
+            "avg_deal_size": float(row.get("avg_deal_size") or 0),
+            "target_avg_deal_size": None,
+            "opened_opps_count": opps_created_qtr,
+            "target_opened_opps": None,
+            "opened_opps_attainment": None,
+            "opened_opps_status": self._status_from_pct(attainment_pct),
+            "pipeline_amount": pipeline_acv,
+            "target_pipeline_amount": target_pipeline_amount,
+            "pipeline_opps_count": pipeline_opps,
+            "pipeline_attainment": pipeline_attainment_pct / 100.0,
+            "pipeline_attainment_pct": pipeline_attainment_pct,
+            "pipeline_status": self._status_from_pct(pipeline_attainment_pct),
+            "avg_opp_size": float(row.get("avg_opp_size") or 0),
+            "target_avg_opp_size": None,
+            "close_rate_opps": close_rate_vol_pct / 100.0,
+            "close_rate_vol_pct": close_rate_vol_pct,
+            "target_close_rate_opps": None,
+            "close_rate_dollar": close_rate_dollar_pct / 100.0,
+            "close_rate_dollar_pct": close_rate_dollar_pct,
+            "target_close_rate_dollar": None,
+            "coverage_ratio": pipeline_coverage_ratio,
+            "coverage_status": self._coverage_status_from_ratio(pipeline_coverage_ratio),
+            "win_rate": win_rate_pct / 100.0,
+            "win_rate_pct": win_rate_pct,
+            "revenue_gap": float(row.get("revenue_gap") or 0),
+            "mql_count": row.get("mql_count"),
+            "avg_days_to_close": row.get("avg_days_to_close"),
+            "data_as_of": row.get("report_date"),
+        })
+        return mapped
+
+    def get_kpi_summary_from_table(
+        self,
+        filters: Optional[PerformanceFilters] = None,
+    ) -> Dict[str, Any]:
+        table = (
+            f"{settings.atlas_catalog}.{settings.atlas_schema}."
+            f"{settings.atlas_kpi_table_prefix}_daily_summary"
+        )
+        sql = f"""
+        SELECT *
+        FROM {table}
+        WHERE report_date = CURRENT_DATE()
+        LIMIT 1
+        """
+        rows = self._execute_table_query(sql)
+        if rows:
+            return self._map_kpi_summary_row(rows[0])
+        return self._query_kpi_dashboard(filters or PerformanceFilters())
 
     def _query_kpi_dashboard(self, filters: PerformanceFilters) -> Dict[str, Any]:
         start, end, qs = _resolve_period(filters)

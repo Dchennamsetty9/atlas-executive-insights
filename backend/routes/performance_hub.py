@@ -33,6 +33,7 @@ Common query parameters (all GET endpoints except /filters)
 from fastapi import APIRouter, Query
 from typing import Any, Dict, List, Optional
 
+from config.settings import settings
 from services.performance_hub_service import (
     PerformanceFilters,
     PerformanceHubService,
@@ -45,9 +46,11 @@ from services.performance_hub_service import (
     _VALID_PLAN_VERSION,
 )
 from services.ai_service import ai_service
+from services.data_fetcher import DataFetcher
 
 router  = APIRouter(prefix="/api/performance", tags=["performance"])
 _svc    = PerformanceHubService()
+_tables = DataFetcher()
 
 
 # ── Shared parameter extraction ───────────────────────────────────────────────
@@ -78,6 +81,33 @@ def _get_filters(
     )
 
 
+def _escape_sql_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _query_atlas_table(table_name: str, where_clauses: Optional[List[str]] = None, order_by: Optional[str] = None) -> List[Dict[str, Any]]:
+    table = f"{settings.atlas_catalog}.{settings.atlas_schema}.{table_name}"
+    where_sql = "\n          ".join(where_clauses or [])
+    order_sql = f"\n        ORDER BY {order_by}" if order_by else ""
+    sql = f"""
+        SELECT *
+        FROM {table}
+        WHERE report_date = CURRENT_DATE()
+          {where_sql}
+        {order_sql}
+    """
+    try:
+        with _tables.get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+    except Exception as exc:
+        print(f"[PerformanceHub] atlas table query failed for {table_name}: {exc}")
+        return []
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/kpis", summary="All 12 KPI actuals, paced targets, attainment %, and RAG status")
@@ -99,6 +129,34 @@ async def get_kpi_dashboard(
         fuel_source, plan_version,
     )
     return await _svc.fetch_kpi_dashboard(filters)
+
+
+@router.get("/by-rep", summary="Rep-level daily KPI summary from materialized Atlas tables")
+async def get_rep_performance(
+    territory: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="Optional atlas_kpi_daily_by_rep status_indicator filter"),
+) -> Dict[str, Any]:
+    where_clauses: List[str] = []
+    if territory:
+        where_clauses.append(f"AND territory = '{_escape_sql_literal(territory)}'")
+    if status:
+        where_clauses.append(f"AND status_indicator = '{_escape_sql_literal(status)}'")
+
+    rows = _query_atlas_table(
+        "atlas_kpi_daily_by_rep",
+        where_clauses=where_clauses,
+        order_by="status_indicator ASC, rep_name ASC",
+    )
+    return {"rows": rows, "count": len(rows), "report_date": rows[0].get("report_date") if rows else None}
+
+
+@router.get("/by-territory", summary="Territory daily KPI summary from materialized Atlas tables")
+async def get_territory_performance() -> Dict[str, Any]:
+    rows = _query_atlas_table(
+        "atlas_kpi_daily_by_territory",
+        order_by="territory ASC",
+    )
+    return {"rows": rows, "count": len(rows), "report_date": rows[0].get("report_date") if rows else None}
 
 
 @router.get("/revenue-gap", summary="Dollarized revenue gap decomposition — two-funnel model")

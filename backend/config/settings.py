@@ -90,7 +90,8 @@ class Settings(BaseSettings):
 
     # ── Gold Layer (pre-computed Delta tables) ────────────────────────────────
     atlas_catalog: str = os.getenv("ATLAS_CATALOG", "datagroup_mdl")
-    atlas_schema: str = os.getenv("ATLAS_SCHEMA", "atlas")
+    atlas_schema: str = os.getenv("ATLAS_SCHEMA", "mdl_sales_analytics")
+    atlas_kpi_table_prefix: str = os.getenv("ATLAS_KPI_TABLE_PREFIX", "atlas_kpi")
 
     # ── AWS SES (email notifications via Amazon SES) ──────────────────────────
     # When ses_region is set, SES is preferred over SMTP.

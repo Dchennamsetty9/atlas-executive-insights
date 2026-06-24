@@ -10,17 +10,64 @@ Endpoints:
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from auth import require_authenticated_user
+from config.settings import settings
 from services.insight_engine import insight_engine
 from services.gaim_data_service import get_current_kpi_data
-from services.openai_insight_service import (
-    generate_insight_narrative,
-    answer_executive_question,
-)
+from services.openai_insight_service import answer_executive_question
+from services.data_fetcher import DataFetcher
 
 router = APIRouter(prefix="/api/insights", tags=["insights"])
+_tables = DataFetcher()
+
+
+def _severity_from_kpi_status(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized == "action required":
+        return "high"
+    if normalized == "watch closely":
+        return "medium"
+    if normalized == "exceeding target":
+        return "low"
+    return "low"
+
+
+def _load_cached_insights() -> List[Dict[str, Any]]:
+    table = f"{settings.atlas_catalog}.{settings.atlas_schema}.atlas_insights_cache"
+    sql = f"""
+        SELECT insight_id, insight_type, kpi_name, kpi_status, headline, narrative,
+               recommendation, expires_at, report_date
+        FROM {table}
+        WHERE report_date = CURRENT_DATE()
+          AND expires_at > NOW()
+        ORDER BY insight_type ASC, insight_id ASC
+    """
+    with _tables.get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+
+    insights: List[Dict[str, Any]] = []
+    for row in rows:
+        record = dict(zip(columns, row))
+        action = record.get("recommendation")
+        insights.append({
+            "id": record.get("insight_id"),
+            "type": record.get("insight_type"),
+            "title": record.get("headline"),
+            "description": record.get("narrative"),
+            "action": action,
+            "recommendation": action,
+            "severity": _severity_from_kpi_status(record.get("kpi_status")),
+            "metric": record.get("kpi_name"),
+            "kpi_status": record.get("kpi_status"),
+            "expires_at": record.get("expires_at"),
+            "report_date": record.get("report_date"),
+        })
+    return insights
 
 
 @router.get("/hidden-patterns")
@@ -37,15 +84,24 @@ async def get_hidden_insights(
     Pass include_narrative=true to also get an OpenAI-generated executive summary
     (requires AZURE_OPENAI_KEY + AZURE_OPENAI_ENDPOINT env vars).
     """
-    kpi_data = await get_current_kpi_data(
-        product=product, quarter=quarter, geo=geo, channel=channel
-    )
-    insights = insight_engine.generate_all_insights(kpi_data)
+    try:
+        insights = _load_cached_insights()
+    except Exception as exc:
+        print(f"[Insights] cached insights query failed: {exc} — falling back to generated insights")
+        kpi_data = await get_current_kpi_data(
+            product=product, quarter=quarter, geo=geo, channel=channel
+        )
+        insights = insight_engine.generate_all_insights(kpi_data)
 
     result = {"insights": insights, "count": len(insights)}
 
     if include_narrative:
-        result["narrative"] = await generate_insight_narrative(kpi_data, insights)
+        first = insights[0] if insights else None
+        result["narrative"] = (
+            f"{first.get('title')}: {first.get('description')}"
+            if first and first.get("description")
+            else (first.get("title") if first else "")
+        )
 
     return result
 
