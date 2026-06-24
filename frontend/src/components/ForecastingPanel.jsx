@@ -523,7 +523,13 @@ const ForecastingPanel = () => {
         apiService.getForecastV2Leaderboard(),
         apiService.getForecastV2Models(),
       ]);
-      if (wk.status === 'fulfilled') { setWeekly(wk.value?.rows ?? []); setSource(wk.value?.source ?? null); }
+      if (wk.status === 'fulfilled') {
+        setWeekly(wk.value?.rows ?? []);
+        setSource(wk.value?.source ?? null);
+        if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
+          setError(`Forecast data fallback: ${wk.value.error}`);
+        }
+      }
       if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
       if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
       if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
@@ -532,7 +538,9 @@ const ForecastingPanel = () => {
       if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
-      if (firstReject) setError(firstReject.reason?.message || 'Some endpoints failed to load');
+      if (firstReject) {
+        setError(firstReject.reason?.message || 'Some endpoints failed to load');
+      }
     } catch (e) {
       setError(e.message);
     } finally {
