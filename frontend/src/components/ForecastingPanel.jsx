@@ -492,6 +492,135 @@ const MODELS     = ['ensemble', 'prophet', 'lightgbm', 'ets', 'chronos'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
 const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
 
+const _toIsoDate = (d) => {
+  const dt = new Date(d);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const _buildDemoWeekly = (forecastType) => {
+  const now = new Date();
+  const rows = [];
+  const actualWeeks = 14;
+  const forecastWeeks = forecastType === 'roy' ? 18 : 13;
+  const base = 11_500_000;
+
+  for (let i = actualWeeks - 1; i >= 0; i -= 1) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - i * 7);
+    const val = base + (actualWeeks - i) * 110_000 + (Math.sin(i / 2) * 150_000);
+    rows.push({
+      date: _toIsoDate(d),
+      arr_actual: Math.round(val),
+      arr_worst: null,
+      arr_likely: null,
+      arr_best: null,
+    });
+  }
+
+  const fcBase = rows.length ? rows[rows.length - 1].arr_actual : base;
+  for (let i = 1; i <= forecastWeeks; i += 1) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() + i * 7);
+    const likely = fcBase + i * 130_000 + (Math.sin(i / 3) * 120_000);
+    rows.push({
+      date: _toIsoDate(d),
+      arr_actual: null,
+      arr_worst: Math.round(likely * 0.93),
+      arr_likely: Math.round(likely),
+      arr_best: Math.round(likely * 1.08),
+    });
+  }
+
+  return rows;
+};
+
+const _buildDemoYtd = (weeklyRows) => {
+  let ytdActual = 0;
+  let ytdWorst = 0;
+  let ytdLikely = 0;
+  let ytdBest = 0;
+
+  return weeklyRows.map((r) => {
+    if (r.arr_actual != null) ytdActual += r.arr_actual;
+    if (r.arr_worst != null) ytdWorst += r.arr_worst;
+    if (r.arr_likely != null) ytdLikely += r.arr_likely;
+    if (r.arr_best != null) ytdBest += r.arr_best;
+    return {
+      date: r.date,
+      ytd_actual: r.arr_actual != null ? Math.round(ytdActual) : null,
+      ytd_worst: r.arr_worst != null ? Math.round(ytdWorst) : null,
+      ytd_likely: r.arr_likely != null ? Math.round(ytdLikely) : null,
+      ytd_best: r.arr_best != null ? Math.round(ytdBest) : null,
+    };
+  });
+};
+
+const _buildDemoMonthly = () => {
+  const months = [
+    { year: 2026, quarter: 2, month: 6, month_name: 'June' },
+    { year: 2026, quarter: 3, month: 7, month_name: 'July' },
+    { year: 2026, quarter: 3, month: 8, month_name: 'August' },
+    { year: 2026, quarter: 3, month: 9, month_name: 'September' },
+  ];
+  return months.map((m, idx) => ({
+    ...m,
+    arr_actual: idx === 0 ? 44_200_000 : null,
+    arr_worst: 40_500_000 + idx * 1_050_000,
+    arr_likely: 43_100_000 + idx * 1_180_000,
+    arr_best: 46_000_000 + idx * 1_260_000,
+  }));
+};
+
+const _buildDemoHistorical = () => {
+  const rows = [];
+  const years = [2024, 2025, 2026];
+  years.forEach((y, yi) => {
+    for (let w = 1; w <= 52; w += 1) {
+      const seasonal = Math.sin((w / 52) * Math.PI * 2) * 1_400_000;
+      const trend = yi * 900_000;
+      rows.push({
+        date: `${y}-${String(Math.min(12, Math.ceil(w / 4))).padStart(2, '0')}-01`,
+        year: y,
+        iso_week: w,
+        quarter: Math.ceil(w / 13),
+        arr: Math.round(31_000_000 + seasonal + trend),
+      });
+    }
+  });
+  return rows;
+};
+
+const _buildDemoByProduct = () => ({
+  by_product: [
+    { product: 'ITSG', product_line: 'ITSG', arr_worst: 122_000_000, arr_likely: 136_000_000, arr_best: 147_000_000, best_mape: 12.4 },
+    { product: 'UCC', product_line: 'UCC', arr_worst: 108_000_000, arr_likely: 121_000_000, arr_best: 133_000_000, best_mape: 11.1 },
+  ],
+  by_product_line: [
+    { product: 'ITSG', product_line: 'ITSG', arr_worst: 122_000_000, arr_likely: 136_000_000, arr_best: 147_000_000, best_mape: 12.4 },
+    { product: 'UCC', product_line: 'UCC', arr_worst: 108_000_000, arr_likely: 121_000_000, arr_best: 133_000_000, best_mape: 11.1 },
+  ],
+  by_geo: [
+    { sales_market: 'NA', arr_worst: 88_000_000, arr_likely: 99_000_000, arr_best: 109_000_000 },
+    { sales_market: 'EMEA', arr_worst: 55_000_000, arr_likely: 63_000_000, arr_best: 70_000_000 },
+    { sales_market: 'APAC', arr_worst: 44_000_000, arr_likely: 49_000_000, arr_best: 55_000_000 },
+    { sales_market: 'LATAM', arr_worst: 29_000_000, arr_likely: 33_000_000, arr_best: 38_000_000 },
+  ],
+});
+
+const _buildDemoLeaderboard = () => [
+  { product: 'Total', sales_market: 'Total', ETS: 19.8, Prophet: 16.2, LightGBM: 12.7, Chronos: 23.1, best_mape: 12.7, best_model: 'LightGBM' },
+  { product: 'UCC', sales_market: 'Total', ETS: 17.1, Prophet: 14.2, LightGBM: 11.1, Chronos: 22.4, best_mape: 11.1, best_model: 'LightGBM' },
+  { product: 'ITSG', sales_market: 'Total', ETS: 18.4, Prophet: 15.3, LightGBM: 12.4, Chronos: 24.0, best_mape: 12.4, best_model: 'LightGBM' },
+  { product: 'Total', sales_market: 'NA', ETS: 18.6, Prophet: 15.9, LightGBM: 12.5, Chronos: 22.3, best_mape: 12.5, best_model: 'LightGBM' },
+  { product: 'Total', sales_market: 'EMEA', ETS: 20.2, Prophet: 16.4, LightGBM: 13.2, Chronos: 24.1, best_mape: 13.2, best_model: 'LightGBM' },
+  { product: 'Total', sales_market: 'APAC', ETS: 21.3, Prophet: 17.9, LightGBM: 14.1, Chronos: 25.8, best_mape: 14.1, best_model: 'LightGBM' },
+  { product: 'Total', sales_market: 'LATAM', ETS: 22.0, Prophet: 18.7, LightGBM: 15.0, Chronos: 26.5, best_mape: 15.0, best_model: 'LightGBM' },
+  { product: 'UCC', sales_market: 'NA', ETS: 16.9, Prophet: 13.8, LightGBM: 10.8, Chronos: 21.9, best_mape: 10.8, best_model: 'LightGBM' },
+];
+
 const ForecastingPanel = () => {
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
@@ -551,17 +680,6 @@ const ForecastingPanel = () => {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // Per-model MAPE for pill badges (Total/All slice)
-  const modelMapes = useMemo(() => {
-    const totalRow = (leaderboard || []).find(r =>
-      (r.product === 'Total' || r.product === 'All') &&
-      (r.sales_market === 'Total' || r.sales_market === 'All')
-    );
-    return totalRow
-      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, Chronos: totalRow.Chronos }
-      : {};
-  }, [leaderboard]);
-
   const activeModelMeta = useMemo(() => (
     (modelRegistry || []).find((entry) => entry.key === model) || null
   ), [modelRegistry, model]);
@@ -578,7 +696,37 @@ const ForecastingPanel = () => {
   });
 
   const isDemo  = source === 'demo';
-  const isEmpty = !loading && weekly !== null && weekly.length === 0;
+  const demoPayload = useMemo(() => {
+    const dWeekly = _buildDemoWeekly(fcType);
+    return {
+      weekly: dWeekly,
+      ytd: _buildDemoYtd(dWeekly),
+      monthly: _buildDemoMonthly(),
+      historical: _buildDemoHistorical(),
+      byProduct: _buildDemoByProduct(),
+      leaderboard: _buildDemoLeaderboard(),
+    };
+  }, [fcType]);
+
+  const weeklyView = (weekly && weekly.length > 0) ? weekly : (isDemo ? demoPayload.weekly : []);
+  const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
+  const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
+  const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
+  const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
+  const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : (isDemo ? demoPayload.leaderboard : []);
+
+  // Per-model MAPE for pill badges (Total/All slice)
+  const modelMapes = useMemo(() => {
+    const totalRow = (leaderboardView || []).find(r =>
+      (r.product === 'Total' || r.product === 'All') &&
+      (r.sales_market === 'Total' || r.sales_market === 'All')
+    );
+    return totalRow
+      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, Chronos: totalRow.Chronos }
+      : {};
+  }, [leaderboardView]);
+
+  const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 
   return (
     <div style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
@@ -702,15 +850,15 @@ const ForecastingPanel = () => {
                 ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
-                : weekly && weekly.length > 0 && (() => {
-                    const fc = weekly.filter(r => r.arr_likely != null);
+                : weeklyView && weeklyView.length > 0 && (() => {
+                    const fc = weeklyView.filter(r => r.arr_likely != null);
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                         {[
                           { label: 'Most Likely', val: fc.reduce((s,r)=>s+r.arr_likely,0), color: '#f1f5f9', sub: 'Planning center'    },
                           { label: 'Best Case',   val: fc.reduce((s,r)=>s+r.arr_best,0),   color: '#10b981', sub: '~20% probability'  },
                           { label: 'Worst Case',  val: fc.reduce((s,r)=>s+r.arr_worst,0),  color: '#ef4444', sub: '~15% probability'  },
-                          { label: 'Actuals YTD', val: weekly.filter(r=>r.arr_actual).reduce((s,r)=>s+r.arr_actual,0), color: '#f59e0b', sub: 'Realized YTD' },
+                          { label: 'Actuals YTD', val: weeklyView.filter(r=>r.arr_actual).reduce((s,r)=>s+r.arr_actual,0), color: '#f59e0b', sub: 'Realized YTD' },
                         ].map(({ label, val, color, sub }) => (
                           <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
                             <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
@@ -732,12 +880,12 @@ const ForecastingPanel = () => {
                   <span><span style={{ color: '#10b981' }}>- -</span> Best Case</span>
                   <span style={{ color: '#3b82f6' }}>▒ Confidence band</span>
                 </div>
-                {loading ? <Skeleton height={260} /> : weekly && weekly.length > 0 ? <WeeklyChart rows={weekly} /> : <EmptyState />}
+                {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
 
               <CardWrap>
                 <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
-                {loading ? <Skeleton height={200} /> : ytd && ytd.length > 0 ? <RunningTotalsChart rows={ytd} /> : <EmptyState />}
+                {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
             </div>
           )}
@@ -749,13 +897,13 @@ const ForecastingPanel = () => {
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                   {Object.entries(YEAR_COLORS).map(([yr,c]) => <span key={yr}><span style={{ color: c }}>─</span> {yr}</span>)}
                 </div>
-                {loading ? <Skeleton height={260} /> : historical && historical.length > 0 ? <MultiYearChart rows={historical} /> : <EmptyState />}
+                {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
               </CardWrap>
               <CardWrap>
                 <SectionTitle>Historical Weekly Trend</SectionTitle>
                 {loading ? <Skeleton height={220} /> : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={historical || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                    <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
                       <XAxis dataKey="date" tickFormatter={d=>d?.slice(0,7)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} interval={12} />
                       <YAxis tickFormatter={v=>fmtM(v)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} width={58} />
@@ -772,9 +920,9 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
-                {loading ? <Skeleton height={200} /> : byProduct ? <ByProductChart byProduct={byProduct.by_product} byLine={byProduct.by_product_line} /> : <EmptyState />}
+                {loading ? <Skeleton height={200} /> : byProductView ? <ByProductChart byProduct={byProductView.by_product} byLine={byProductView.by_product_line} /> : <EmptyState />}
               </CardWrap>
-              {!loading && byProduct?.by_product && (
+              {!loading && byProductView?.by_product && (
                 <CardWrap>
                   <SectionTitle>Product Forecast Summary</SectionTitle>
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
@@ -787,7 +935,7 @@ const ForecastingPanel = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {byProduct.by_product.map((p,i)=>(
+                      {byProductView.by_product.map((p,i)=>(
                         <tr key={i} style={{ borderBottom:'1px solid rgba(255,255,255,0.03)', background:i%2===0?'rgba(255,255,255,0.01)':'transparent' }}>
                           <td style={{ padding:'6px 12px', color:'#f1f5f9' }}>{p.product}</td>
                           <td style={{ padding:'6px 12px', color:p.product_line==='UCC'?'#3b82f6':'#10b981', fontWeight:600 }}>{p.product_line}</td>
@@ -809,7 +957,7 @@ const ForecastingPanel = () => {
           {tab === 'Monthly' && (
             <CardWrap>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
-              {loading ? <Skeleton height={300} /> : monthly && monthly.length > 0 ? <MonthlyTable months={monthly} /> : <EmptyState />}
+              {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
             </CardWrap>
           )}
 
@@ -824,7 +972,7 @@ const ForecastingPanel = () => {
               </div>
               <CardWrap>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
-                {loading ? <Skeleton height={240} /> : leaderboard && leaderboard.length > 0 ? <AccuracyTable data={leaderboard} /> : <EmptyState />}
+                {loading ? <Skeleton height={240} /> : leaderboardView && leaderboardView.length > 0 ? <AccuracyTable data={leaderboardView} /> : <EmptyState />}
               </CardWrap>
             </div>
           )}
