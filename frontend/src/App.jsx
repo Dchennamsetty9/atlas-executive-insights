@@ -1,6 +1,5 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Volume2, VolumeX, Sun, Moon, Share2 } from 'lucide-react';
-import FilterPanel from './components/FilterPanel';
 import EnhancedKPICard from './components/EnhancedKPICard';
 import ARRTrendChart from './components/ARRTrendChart';
 import PipelineChart from './components/PipelineChart';
@@ -285,13 +284,8 @@ function AppInner() {
       {/* ── Body ─────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', maxWidth: 1600, margin: '0 auto', padding: '0 16px' }}>
 
-        {/* Sidebar */}
-        <aside style={{ width: 210, flexShrink: 0, paddingTop: 24 }}>
-          <FilterPanel onFilterChange={handleFilterChange} appliedFilters={filters} />
-        </aside>
-
         {/* Main */}
-        <main style={{ flex: 1, padding: '24px 0 24px 20px', minWidth: 0 }}>
+        <main style={{ flex: 1, padding: '24px 0', minWidth: 0 }}>
 
           {/* Top-level dashboard tabs */}
           <div style={{

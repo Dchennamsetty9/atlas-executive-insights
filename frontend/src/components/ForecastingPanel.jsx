@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback, useMemo, Component } from 'react';
 import {
   ComposedChart, BarChart, LineChart,
   Area, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
+  ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import { apiService } from '../services/api';
 
@@ -121,40 +121,111 @@ const SectionTitle = ({ children }) => (
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  // Find the split date where actuals end and forecast begins
+  const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
+  const splitDate = lastActual?.date ?? null;
+
+  // Build unified dataset — band uses stacking trick: floor (transparent) + range (colored)
+  const data = combined.map(r => ({
+    date: r.date,
+    actual: r.arr_actual ?? null,
+    likely: r.arr_likely ?? null,
+    worst:  r.arr_worst  ?? null,
+    best:   r.arr_best   ?? null,
+    bandFloor: r.arr_worst ?? null,
+    bandRange: (r.arr_best != null && r.arr_worst != null)
+      ? Math.max(0, r.arr_best - r.arr_worst) : null,
+  }));
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const d = payload[0]?.payload || {};
+    return (
+      <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
+                    padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
+        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
+        {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
+        {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
+        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Best Case: <b>{fmtM(d.best)}</b></div>}
+        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Worst Case: <b>{fmtM(d.worst)}</b></div>}
+      </div>
+    );
+  };
+
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <ComposedChart data={combined} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+    <ResponsiveContainer width="100%" height={360}>
+      <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
+          </linearGradient>
+          <linearGradient id="bandFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.04} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
         <XAxis dataKey="date" tickFormatter={fmtDate}
-               tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }}
-               axisLine={false} tickLine={false} width={58} />
-        <Tooltip content={<DarkTip />} />
-        <Area type="monotone" dataKey="arr_worst"  name="__floor"   stroke="none" fill="transparent" legendType="none" isAnimationActive connectNulls />
-        <Area type="monotone" dataKey="arr_best"   name="Best Case" stroke="rgba(59,130,246,0.35)" strokeWidth={0.5} fill="rgba(59,130,246,0.08)" isAnimationActive connectNulls />
-        <Line type="monotone" dataKey="arr_worst"  name="Worst Case"  stroke="#ef4444" strokeWidth={1} strokeDasharray="4 3" dot={false} isAnimationActive connectNulls />
-        <Line type="monotone" dataKey="arr_likely" name="Most Likely" stroke="#ffffff" strokeWidth={2.5} dot={false} isAnimationActive connectNulls />
-        <Line type="monotone" dataKey="arr_best"   name="Best Case"   stroke="#10b981" strokeWidth={1} strokeDasharray="4 3" dot={false} isAnimationActive connectNulls />
-        <Line type="monotone" dataKey="arr_actual" name="Actuals" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
+               tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false}
+               interval="preserveStartEnd" />
+        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} width={64} />
+        <Tooltip content={<CustomTooltip />} />
+        {splitDate && (
+          <ReferenceLine x={splitDate} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4"
+            label={{ value: 'Today →', position: 'insideTopLeft', fill: '#475569', fontSize: 10 }} />
+        )}
+        {/* Confidence band: transparent floor stacked under colored band */}
+        <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
+              legendType="none" connectNulls dot={false} />
+        <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)"
+              legendType="none" connectNulls dot={false} />
+        {/* Actuals — gradient fill area */}
+        <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
+              fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
+        {/* Forecast lines */}
+        <Line type="monotone" dataKey="worst"  name="Worst Case"  stroke="#ef4444"
+              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
+        <Line type="monotone" dataKey="likely" name="Most Likely" stroke="#e2e8f0"
+              strokeWidth={3} dot={false} connectNulls />
+        <Line type="monotone" dataKey="best"   name="Best Case"   stroke="#10b981"
+              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
       </ComposedChart>
     </ResponsiveContainer>
   );
 };
 
-const RunningTotalsChart = ({ rows }) => (
-  <ResponsiveContainer width="100%" height={200}>
-    <ComposedChart data={rows} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-      <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-      <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} />
-      <Tooltip content={<DarkTip />} />
-      <Line type="monotone" dataKey="ytd_worst"  name="Worst Case"  stroke="#ef4444" strokeWidth={1} strokeDasharray="5 3" dot={false} isAnimationActive connectNulls />
-      <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#ffffff" strokeWidth={2}   dot={false} isAnimationActive connectNulls />
-      <Line type="monotone" dataKey="ytd_best"   name="Best Case"   stroke="#10b981" strokeWidth={1} strokeDasharray="5 3" dot={false} isAnimationActive connectNulls />
-      <Line type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b" strokeWidth={2}   dot={false} isAnimationActive={false} connectNulls={false} />
-    </ComposedChart>
-  </ResponsiveContainer>
-);
+const RunningTotalsChart = ({ rows }) => {
+  const data = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <ComposedChart data={data} margin={{ top: 16, right: 20, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id="ytdActualFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
+            <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+        <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} interval="preserveStartEnd" />
+        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} width={64} />
+        <Tooltip content={<DarkTip />} />
+        <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
+              strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
+        <Line type="monotone" dataKey="ytd_worst"  name="Worst Case"  stroke="#ef4444"
+              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
+              strokeWidth={2.5} dot={false} connectNulls />
+        <Line type="monotone" dataKey="ytd_best"   name="Best Case"   stroke="#10b981"
+              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+};
+
 
 const MultiYearChart = ({ rows }) => {
   const years = [...new Set(rows.map(r => r.year))].sort();
@@ -714,7 +785,7 @@ const ForecastingPanel = () => {
   const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
-  const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : (isDemo ? demoPayload.leaderboard : []);
+  const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
   // Per-model MAPE for pill badges (Total/All slice)
   const modelMapes = useMemo(() => {
@@ -852,7 +923,11 @@ const ForecastingPanel = () => {
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
                 : weeklyView && weeklyView.length > 0 && (() => {
+                    const currentYear = new Date().getFullYear().toString();
                     const fc = weeklyView.filter(r => r.arr_likely != null);
+                    const ytdActual = weeklyView
+                      .filter(r => r.arr_actual != null && r.date?.startsWith(currentYear))
+                      .reduce((s, r) => s + r.arr_actual, 0);
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                         {[
