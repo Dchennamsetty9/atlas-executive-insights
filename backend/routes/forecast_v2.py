@@ -120,10 +120,28 @@ def _product_filter(product, col="product"):
     effective = product if (product and product not in ("All", "all")) else "Total"
     return f"AND {col} = '{effective.replace(chr(39), chr(39)*2)}'"
 
+
+def _normalize_market_value(value: Optional[str]) -> str:
+    raw = (value or "").strip()
+    if not raw or raw.lower() == "all":
+        return "Total"
+    if raw.upper() == "UNKNOWN":
+        return "Unknown"
+    return raw
+
+
+def _normalized_market_expr(col: str = "sales_market") -> str:
+    return (
+        f"CASE WHEN UPPER(TRIM(CAST({col} AS STRING))) = 'UNKNOWN' "
+        f"THEN 'Unknown' ELSE TRIM(CAST({col} AS STRING)) END"
+    )
+
+
 def _geo_filter(geo, col="sales_market"):
-    # When no geo selected, default to Total to avoid double-counting
-    effective = geo if (geo and geo not in ("All", "all")) else "Total"
-    return f"AND {col} = '{effective.replace(chr(39), chr(39)*2)}'"
+    # When no geo selected, default to Total to avoid double-counting.
+    # Normalize UNKNOWN/Unknown into a canonical 'Unknown' bucket at query time.
+    effective = _normalize_market_value(geo)
+    return f"AND {_normalized_market_expr(col)} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 def _latest_run():
     return f"run_date = (SELECT MAX(run_date) FROM {FC_TABLE})"
@@ -211,6 +229,31 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
     return normalized
 
 
+def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
+    most_likely = 0.0
+    worst_case = 0.0
+    best_case = 0.0
+    ytd_actuals = 0.0
+    current_year = datetime.date.today().year
+
+    for row in rows:
+        ftype = str(row.get("forecast_type") or "").strip().lower()
+        ds_val = str(row.get("ds") or "")[:10]
+        if ftype in ("rolling", "roy"):
+            most_likely += _f(row.get("Most_Likely"))
+            worst_case += _f(row.get("Worst_Case"))
+            best_case += _f(row.get("Best_Case"))
+        if ftype == "actuals" and ds_val[:4].isdigit() and int(ds_val[:4]) == current_year:
+            ytd_actuals += _f(row.get("Actuals"))
+
+    return {
+        "most_likely": round(most_likely, 0),
+        "worst_case": round(worst_case, 0),
+        "best_case": round(best_case, 0),
+        "ytd_actuals": round(ytd_actuals, 0),
+    }
+
+
 def _model_mape_for_row(row: Dict[str, Any], model: str) -> float | None:
     source = _model_source(model)
     field = source["mape_field"]
@@ -241,15 +284,26 @@ async def get_weekly(
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
     try:
-        actual_rows_raw, forecast_rows_raw = await asyncio.gather(
+        kpi_sql = f"""
+            SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+            FROM {FC_TABLE}
+            WHERE {_latest_run()}
+              {_product_filter(product)} {_geo_filter(sales_market)}
+              AND forecast_type IN ('actuals', 'rolling', 'roy')
+            ORDER BY ds
+        """
+        actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
             asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market)),
             asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market)),
+            asyncio.to_thread(execute_query, kpi_sql),
         )
     except Exception as exc:
         logger.warning("[forecast/weekly] query failed for model=%s: %s", model, exc)
         return _demo("rows", error=str(exc))
+
     actual_rows = _normalise_rows(actual_rows_raw, model)
     forecast_rows = _normalise_rows(forecast_rows_raw, model)
+    kpis = _summary_kpis(kpi_rows_raw)
 
     rows = []
     for r in actual_rows:
@@ -271,7 +325,13 @@ async def get_weekly(
         })
 
     rows.sort(key=lambda x: x["date"])
-    return {"source": "live", "model": model, "forecast_type": eff_forecast_type, "rows": rows}
+    return {
+        "source": "live",
+        "model": model,
+        "forecast_type": eff_forecast_type,
+        "rows": rows,
+        "kpis": kpis,
+    }
 
 
 # ── GET /monthly ────────────────────────────────────────────────────────────────
@@ -482,17 +542,18 @@ async def get_by_product(
         ORDER BY product
     """
 
-    geo_sql = f"""
+        norm_geo_expr = _normalized_market_expr("sales_market")
+        geo_sql = f"""
         SELECT
-            sales_market,
+                        {norm_geo_expr} AS sales_market,
             SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
             SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE {' AND '.join(where_parts)}
           AND product = 'Total'
-          AND sales_market IN ('NA','EMEA','APAC','LATAM')
-        GROUP BY sales_market
+                    AND {norm_geo_expr} IN ('NA','EMEA','APAC','LATAM','Unknown')
+                GROUP BY {norm_geo_expr}
         ORDER BY arr_likely DESC
     """
 
@@ -515,7 +576,7 @@ async def get_by_product(
     } for r in prod_rows]
 
     by_geo = [{
-        "sales_market": str(r.get("sales_market") or ""),
+        "sales_market": _normalize_market_value(str(r.get("sales_market") or "")),
         "arr_worst":    _f(r.get("arr_worst")),
         "arr_likely":   _f(r.get("arr_likely")),
         "arr_best":     _f(r.get("arr_best")),
@@ -628,11 +689,17 @@ async def get_leaderboard():
 
     sql = f"""
         SELECT
-            product, sales_market,
-            mape_ets, mape_prophet, mape_lightgbm, mape_chronos,
-            best_mape, best_model
+            product,
+            {_normalized_market_expr('sales_market')} AS sales_market,
+            AVG(CAST(mape_ets AS DOUBLE)) AS mape_ets,
+            AVG(CAST(mape_prophet AS DOUBLE)) AS mape_prophet,
+            AVG(CAST(mape_lightgbm AS DOUBLE)) AS mape_lightgbm,
+            AVG(CAST(mape_chronos AS DOUBLE)) AS mape_chronos,
+            AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
+            MAX(best_model) AS best_model
         FROM {LB_TABLE}
         WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
+        GROUP BY product, {_normalized_market_expr('sales_market')}
         ORDER BY best_mape
     """
 
@@ -643,7 +710,7 @@ async def get_leaderboard():
         return _demo("data", error=str(exc))
     data = [{
         "product":        str(r.get("product") or ""),
-        "sales_market":   str(r.get("sales_market") or ""),
+        "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
         "ETS":            _f(r.get("mape_ets"),    999),
         "Prophet":        _f(r.get("mape_prophet"), 999),
         "LightGBM":       _f(r.get("mape_lightgbm"),999),

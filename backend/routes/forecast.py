@@ -361,7 +361,7 @@ async def get_forecast_insights(
             AVG(COALESCE(CAST(mape_prophet AS DOUBLE), 19.4)) AS mape
         FROM {FORECAST_INSIGHTS_TABLE}
         WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
-          AND forecast_type = 'rolling'
+          AND forecast_type IN ('rolling', 'roy')
           {_insights_product_clause(product, product_line)}
           AND COALESCE(CAST(Most_Likely AS DOUBLE), 0) > 0
     """
@@ -385,7 +385,7 @@ async def get_forecast_insights(
             SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS likely
         FROM {FORECAST_INSIGHTS_TABLE}
         WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
-          AND forecast_type = 'rolling'
+                    AND forecast_type IN ('rolling', 'roy')
           {_insights_product_clause(product, product_line)}
           AND COALESCE(CAST(Most_Likely AS DOUBLE), 0) > 0
         GROUP BY COALESCE(CAST(product AS STRING), 'Unknown')
@@ -506,7 +506,7 @@ async def list_models():
         "models": {
             "prophet": {
                 "name": "Prophet",
-                "description": "Primary live model from forecast_prophet table",
+                "description": "Primary live model from arr_forecast_v2 table",
                 "status": "live",
             },
             "ensemble": {
@@ -530,7 +530,7 @@ async def list_models():
                 "status": "soon",
             },
         },
-        "source_table": f"{GOLD_CATALOG}.{GOLD_SCHEMA}.forecast_prophet",
+        "source_table": f"{GOLD_CATALOG}.{GOLD_SCHEMA}.arr_forecast_v2",
     }
 
 
