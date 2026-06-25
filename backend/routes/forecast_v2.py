@@ -9,6 +9,8 @@ Reads from:  datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
            forecast_type (actuals|rolling|roy), run_date
 
 Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
+
+All values are constrained to the Growth-bookings-aligned v2 tables.
 """
 
 import asyncio, os, datetime, logging
@@ -26,19 +28,9 @@ FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
-PROPHET_PROD_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
-    "prophet_prod": {
-        "display_name": "Prophet (Production / Sona)",
-        "table": PROPHET_PROD_TABLE,
-        "most_likely_col": "Most_Likely",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
-        "mape_field": None,
-        "has_forecast_type": False,
-    },
     "ets": {
         "display_name": "ETS",
         "table": FC_TABLE,
@@ -49,13 +41,13 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "has_forecast_type": True,
     },
     "prophet": {
-        "display_name": "Prophet (Production / Sona)",
-        "table": PROPHET_PROD_TABLE,
-        "most_likely_col": "Most_Likely",
+        "display_name": "Prophet",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_prophet",
         "lower_col": "Worst_Case",
         "upper_col": "Best_Case",
-        "mape_field": None,
-        "has_forecast_type": False,
+        "mape_field": "Prophet",
+        "has_forecast_type": True,
     },
     "lightgbm": {
         "display_name": "LightGBM",
@@ -141,7 +133,7 @@ def _effective_forecast_type(model: str, forecast_type: str) -> str:
     source = _model_source(model)
     if source["has_forecast_type"]:
         return forecast_type
-    # forecast_prophet has no forecast_type/roy split; use derived rolling rows.
+    # Backward-compat fallback if a model source does not expose forecast_type.
     return "actuals" if forecast_type == "actuals" else "rolling"
 
 
@@ -199,11 +191,6 @@ def _normalized_forecast_sql(
         ORDER BY ds
     """
 
-
-
-def _three_year_filter():
-    """Limit forecast_prophet actuals to last 3 years to avoid 5-year chart noise."""
-    return "AND CAST(ds AS DATE) >= DATE_SUB(current_date(), 3 * 365)"
 
 
 def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, Any]]:
@@ -544,6 +531,17 @@ async def get_models():
     if not _live():
         return {"source": "demo", "models": []}
 
+    # Canonical panel freshness is the arr_forecast_v2 run_date (the table the UI is based on).
+    canonical_refresh: Optional[str] = None
+    try:
+        canonical_rows = await asyncio.to_thread(
+            execute_query,
+            f"SELECT MAX(CAST(run_date AS STRING)) AS freshness FROM {FC_TABLE}",
+        )
+        canonical_refresh = str((canonical_rows[0] if canonical_rows else {}).get("freshness") or "")[:10] or None
+    except Exception:
+        canonical_refresh = None
+
     freshness_cache: Dict[str, Optional[str]] = {}
     for key, source in MODEL_SOURCES.items():
         table = source["table"]
@@ -562,11 +560,14 @@ async def get_models():
 
     models = []
     for key, source in MODEL_SOURCES.items():
+        table_refresh = freshness_cache.get(source["table"])
         models.append({
             "key": key,
             "display_name": source["display_name"],
             "source_table": source["table"].replace('`', ''),
-            "latest_refresh": freshness_cache.get(source["table"]),
+            # Keep a single "Updated <date>" across model switches in the header.
+            "latest_refresh": canonical_refresh or table_refresh,
+            "table_latest_refresh": table_refresh,
             "has_forecast_type": source["has_forecast_type"],
             "supported_forecast_types": ["actuals", "rolling", "roy"] if source["has_forecast_type"] else ["actuals", "rolling"],
         })

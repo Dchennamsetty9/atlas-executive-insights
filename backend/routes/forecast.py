@@ -10,7 +10,7 @@ DEPRECATED (V1 path):
     TODO: migrate intelligence to v2 tables and remove this file.
 
 Primary source table:
-  datagroup_mdl.mdl_sales_analytics.forecast_prophet
+    datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
 """
 
 import os
@@ -26,8 +26,8 @@ router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 GOLD_CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 GOLD_SCHEMA = os.getenv("DATABRICKS_SCHEMA", "mdl_sales_analytics")
 FORECAST_OUTPUT_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`forecast_prophet`"
-FORECAST_INSIGHTS_TABLE = FORECAST_OUTPUT_TABLE
-FORECAST_LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_leaderboard`"
+FORECAST_INSIGHTS_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_v2`"
+FORECAST_LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_v2_leaderboard`"
 
 
 def _live_mode_available() -> bool:
@@ -66,6 +66,14 @@ def _product_clause(product: Optional[str], product_line: Optional[str]) -> str:
     )
 
 
+def _insights_product_clause(product: Optional[str], product_line: Optional[str]) -> str:
+    selected = product_line if product_line not in (None, "", "All") else product
+    if selected in (None, "", "All"):
+        return ""
+    escaped = _q(selected)
+    return f"AND COALESCE(CAST(product AS STRING), 'All') = '{escaped}'"
+
+
 def _base_forecast_sql(product: Optional[str], product_line: Optional[str]) -> str:
     return f"""
         SELECT
@@ -76,7 +84,7 @@ def _base_forecast_sql(product: Optional[str], product_line: Optional[str]) -> s
             SUM(COALESCE(CAST(Best_Case AS DOUBLE), CAST(best_case AS DOUBLE), CAST(yhat_upper AS DOUBLE), 0)) AS arr_best
         FROM {FORECAST_OUTPUT_TABLE}
                 WHERE 1=1
-          {_product_clause(product, product_line)}
+                    {_product_clause(product, product_line)}
         GROUP BY ds
         ORDER BY ds
     """
@@ -168,7 +176,7 @@ def _risk_from_band(most_likely: float, best_case: float, worst_case: float) -> 
 def _insight_defaults() -> dict:
     return {
         "key_drivers": [
-            "Prophet captures seasonality and trend directly from forecast_prophet",
+            "V2 ensemble blends ETS, Prophet, LightGBM, and Chronos signals",
             "Current run uses latest Databricks refresh for executive planning",
             "Recent actuals anchor near-term forecast shape",
         ],
@@ -332,7 +340,7 @@ async def get_forecast_insights(
     product_line: Optional[str] = Query(None),
 ):
     """
-    Derive executive forecast intelligence from forecast_prophet.
+    Derive executive forecast intelligence from arr_forecast_v2.
     This endpoint is resilient and always returns a usable payload.
     """
     model_used = _normalize_model_name(model)
@@ -346,38 +354,41 @@ async def get_forecast_insights(
 
     summary_sql = f"""
         SELECT
-            MAX(CAST(ds AS STRING)) AS run_date,
-            SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0)) AS most_likely,
-            SUM(COALESCE(CAST(Best_Case AS DOUBLE), CAST(best_case AS DOUBLE), CAST(yhat_upper AS DOUBLE), 0)) AS best_case,
-            SUM(COALESCE(CAST(Worst_Case AS DOUBLE), CAST(worst_case AS DOUBLE), CAST(yhat_lower AS DOUBLE), 0)) AS worst_case,
-            AVG(COALESCE(CAST(mape_prophet AS DOUBLE), CAST(mape AS DOUBLE), 19.4)) AS mape
+            MAX(CAST(run_date AS STRING)) AS run_date,
+            SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS most_likely,
+            SUM(COALESCE(CAST(Best_Case AS DOUBLE), 0)) AS best_case,
+            SUM(COALESCE(CAST(Worst_Case AS DOUBLE), 0)) AS worst_case,
+            AVG(COALESCE(CAST(mape_prophet AS DOUBLE), 19.4)) AS mape
         FROM {FORECAST_INSIGHTS_TABLE}
-        WHERE 1=1
-          {_product_clause(product, product_line)}
-          AND COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0) > 0
+        WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
+          AND forecast_type = 'rolling'
+          {_insights_product_clause(product, product_line)}
+          AND COALESCE(CAST(Most_Likely AS DOUBLE), 0) > 0
     """
 
     actuals_sql = f"""
         SELECT
             CAST(ds AS STRING) AS date,
-            SUM(COALESCE(CAST(Actuals AS DOUBLE), CAST(actuals AS DOUBLE), 0)) AS value
+            SUM(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS value
         FROM {FORECAST_INSIGHTS_TABLE}
-        WHERE 1=1
-          {_product_clause(product, product_line)}
-          AND COALESCE(CAST(Actuals AS DOUBLE), CAST(actuals AS DOUBLE), 0) > 0
+        WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
+          AND forecast_type = 'actuals'
+          {_insights_product_clause(product, product_line)}
+          AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
         GROUP BY ds
         ORDER BY ds
     """
 
     product_mix_sql = f"""
         SELECT
-            COALESCE(CAST(product_line AS STRING), CAST(product AS STRING), 'Unknown') AS product,
-            SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0)) AS likely
+            COALESCE(CAST(product AS STRING), 'Unknown') AS product,
+            SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS likely
         FROM {FORECAST_INSIGHTS_TABLE}
-                WHERE 1=1
-          {_product_clause(product, product_line)}
-          AND COALESCE(CAST(Most_Likely AS DOUBLE), CAST(most_likely AS DOUBLE), CAST(arr_prophet AS DOUBLE), CAST(yhat AS DOUBLE), 0) > 0
-        GROUP BY COALESCE(CAST(product_line AS STRING), CAST(product AS STRING), 'Unknown')
+        WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
+          AND forecast_type = 'rolling'
+          {_insights_product_clause(product, product_line)}
+          AND COALESCE(CAST(Most_Likely AS DOUBLE), 0) > 0
+        GROUP BY COALESCE(CAST(product AS STRING), 'Unknown')
         ORDER BY likely DESC
         LIMIT 2
     """
