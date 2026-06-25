@@ -542,18 +542,18 @@ async def get_by_product(
         ORDER BY product
     """
 
-        norm_geo_expr = _normalized_market_expr("sales_market")
-        geo_sql = f"""
+    norm_geo_expr = _normalized_market_expr("sales_market")
+    geo_sql = f"""
         SELECT
-                        {norm_geo_expr} AS sales_market,
+            {norm_geo_expr} AS sales_market,
             SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
             SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE {' AND '.join(where_parts)}
           AND product = 'Total'
-                    AND {norm_geo_expr} IN ('NA','EMEA','APAC','LATAM','Unknown')
-                GROUP BY {norm_geo_expr}
+          AND {norm_geo_expr} IN ('NA','EMEA','APAC','LATAM','Unknown')
+        GROUP BY {norm_geo_expr}
         ORDER BY arr_likely DESC
     """
 
