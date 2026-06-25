@@ -124,14 +124,14 @@ def _demo(key: str, error: str = "Databricks unavailable"):
             "error": error, key: []}
 
 def _product_filter(product, col="product"):
-    if not product or product == "All":
-        return ""
-    return f"AND {col} = '{product.replace(chr(39), chr(39)*2)}'"
+    # When no product selected, default to Total to avoid summing all 18 slices
+    effective = product if (product and product not in ("All", "all")) else "Total"
+    return f"AND {col} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 def _geo_filter(geo, col="sales_market"):
-    if not geo or geo == "All":
-        return ""
-    return f"AND {col} = '{geo.replace(chr(39), chr(39)*2)}'"
+    # When no geo selected, default to Total to avoid double-counting
+    effective = geo if (geo and geo not in ("All", "all")) else "Total"
+    return f"AND {col} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 def _latest_run():
     return f"run_date = (SELECT MAX(run_date) FROM {FC_TABLE})"
@@ -190,6 +190,7 @@ def _normalized_forecast_sql(
             COALESCE(CAST(Actuals AS DOUBLE), 0) AS actual
         FROM {table}
         WHERE 1=1
+                                        AND CAST(ds AS DATE) >= ADD_MONTHS(current_date(), -36)
                     AND CASE
                                 WHEN COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 AND CAST(ds AS DATE) < current_date() THEN 'actuals'
                                 ELSE 'rolling'
@@ -197,6 +198,12 @@ def _normalized_forecast_sql(
           {pf} {gf}
         ORDER BY ds
     """
+
+
+
+def _three_year_filter():
+    """Limit forecast_prophet actuals to last 3 years to avoid 5-year chart noise."""
+    return "AND CAST(ds AS DATE) >= DATE_SUB(current_date(), 3 * 365)"
 
 
 def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, Any]]:
