@@ -21,11 +21,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 
-GOLD      = (os.getenv("FORECAST_CATALOG", "datagroup_mdl") + "." +
-             os.getenv("FORECAST_SCHEMA",  "mdl_sales_analytics"))
-FC_TABLE  = f"`{GOLD}`.`arr_forecast_v2`"
-LB_TABLE  = f"`{GOLD}`.`arr_forecast_v2_leaderboard`"
-PROPHET_PROD_TABLE = f"`{GOLD}`.`forecast_prophet`"
+FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
+FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
+GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
+FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
+LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
+PROPHET_PROD_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
