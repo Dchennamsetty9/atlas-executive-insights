@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import Header, HTTPException
@@ -20,10 +20,16 @@ _VERIFY_CACHE: Dict[str, Tuple[str, datetime]] = {}
 _VERIFY_TTL_SECONDS = 300
 
 
-def _normalize_token(token: Optional[str]) -> str:
-    if not token:
+def _normalize_token(token: Optional[Any]) -> str:
+    if token is None:
+        return ""
+    if not isinstance(token, str):
+        # Allows direct function calls in tests where dependency defaults may
+        # still be FastAPI Header objects for optional parameters.
         return ""
     value = token.strip()
+    if not value:
+        return ""
     if value.lower().startswith("bearer "):
         return value[7:].strip()
     return value
