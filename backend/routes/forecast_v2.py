@@ -160,6 +160,8 @@ def _normalized_forecast_sql(
     forecast_type: str,
     product: Optional[str],
     sales_market: Optional[str],
+    year: Optional[int] = None,
+    quarter: Optional[int] = None,
 ) -> str:
     source = _model_source(model)
     table = source["table"]
@@ -168,8 +170,11 @@ def _normalized_forecast_sql(
     upper_col = source["upper_col"]
     pf = _product_filter(product)
     gf = _geo_filter(sales_market)
-
+    yf = _year_filter(year)
+    qf = _quarter_filter(quarter, year) if quarter else ""
+    
     if source["has_forecast_type"]:
+        date_filter = f"AND {qf}" if qf else f"AND {yf}"
         return f"""
             SELECT
                 CAST(ds AS STRING) AS ds,
@@ -183,9 +188,11 @@ def _normalized_forecast_sql(
             WHERE {_latest_run()}
                             AND forecast_type = '{forecast_type}'
               {pf} {gf}
+              {date_filter}
             ORDER BY ds
         """
 
+    date_filter = f"AND {qf}" if qf else f"AND {yf}"
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
@@ -206,6 +213,7 @@ def _normalized_forecast_sql(
                                 ELSE 'rolling'
                             END = '{forecast_type}'
           {pf} {gf}
+          {date_filter}
         ORDER BY ds
     """
 
@@ -264,6 +272,36 @@ def _model_mape_for_row(row: Dict[str, Any], model: str) -> float | None:
     return round(parsed, 1) if parsed < 999 else None
 
 
+def _year_filter(year: Optional[int] = None) -> str:
+    """SQL filter for year. Defaults to current year if not provided."""
+    y = year if year else datetime.date.today().year
+    return f"YEAR(ds) = {y}"
+
+
+def _quarter_filter(quarter: Optional[int] = None, year: Optional[int] = None) -> str:
+    """SQL filter for quarter. If None, no quarter filter applied."""
+    if quarter is None:
+        return ""
+    y = year if year else datetime.date.today().year
+    # Q1: 1–3, Q2: 4–6, Q3: 7–9, Q4: 10–12
+    month_ranges = {
+        1: (1, 3),
+        2: (4, 6),
+        3: (7, 9),
+        4: (10, 12),
+    }
+    if quarter not in month_ranges:
+        return ""
+    m_start, m_end = month_ranges[quarter]
+    return f"YEAR(ds) = {y} AND MONTH(ds) BETWEEN {m_start} AND {m_end}"
+
+
+def _actuals_year_filter(year: Optional[int] = None) -> str:
+    """Filter for actuals only, scoped to year."""
+    y = year if year else datetime.date.today().year
+    return f"forecast_type = 'actuals' AND YEAR(ds) = {y}"
+
+
 # ── GET /weekly ─────────────────────────────────────────────────────────────────
 @router.get("/weekly")
 async def get_weekly(
@@ -271,6 +309,8 @@ async def get_weekly(
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
     model:         str           = Query("ensemble"),
+    year:          Optional[int] = Query(None),
+    quarter:       Optional[int] = Query(None),
 ):
     """
     Weekly actuals + forecast rows for WeeklyForecastChart.
@@ -282,6 +322,9 @@ async def get_weekly(
     forecast_type = _validate_forecast_type(forecast_type)
     model = _validate_model(model)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
+    
+    year = year if year else datetime.date.today().year
+    qtr_filter = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
 
     try:
         kpi_sql = f"""
@@ -290,14 +333,14 @@ async def get_weekly(
             WHERE {_latest_run()}
               {_product_filter(product)} {_geo_filter(sales_market)}
               AND (
-                    (forecast_type = 'actuals' AND YEAR(ds) = YEAR(CURRENT_DATE()))
-                    OR forecast_type IN ('rolling', 'roy')
+                    ({_actuals_year_filter(year)} {f"AND {_quarter_filter(quarter, year)}" if quarter else ""})
+                    OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter})
                   )
             ORDER BY ds
         """
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
-            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market)),
-            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market)),
+            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market, year, quarter)),
+            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market, year, quarter)),
             asyncio.to_thread(execute_query, kpi_sql),
         )
     except Exception as exc:
@@ -343,6 +386,8 @@ async def get_monthly(
     product:       Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
+    year:          Optional[int] = Query(None),
+    quarter:       Optional[int] = Query(None),
 ):
     """Monthly Actuals + Worst/Most Likely/Best for Monthly table."""
     if not _live():
@@ -352,6 +397,9 @@ async def get_monthly(
 
     pf = _product_filter(product)
     gf = _geo_filter(sales_market)
+    yf = _year_filter(year)
+    qf = _quarter_filter(quarter, year) if quarter else ""
+    date_filter = f"AND {qf}" if qf else f"AND {yf}"
 
     act_sql = f"""
         SELECT
@@ -364,6 +412,7 @@ async def get_monthly(
         WHERE forecast_type = 'actuals'
           AND {_latest_run()}
           {pf} {gf}
+          {date_filter}
         GROUP BY yr, qtr, mth, month_name
         ORDER BY yr, mth
     """
@@ -381,6 +430,7 @@ async def get_monthly(
         WHERE forecast_type = '{forecast_type}'
           AND {_latest_run()}
           {pf} {gf}
+          {date_filter}
         GROUP BY yr, qtr, mth, month_name
         ORDER BY yr, mth
     """
@@ -422,6 +472,8 @@ async def get_ytd(
     product:       Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
+    year:          Optional[int] = Query(None),
+    quarter:       Optional[int] = Query(None),
 ):
     """Cumulative YTD actuals + forecast scenarios for Running Totals chart."""
     if not _live():
@@ -429,15 +481,18 @@ async def get_ytd(
 
     forecast_type = _validate_forecast_type(forecast_type)
 
-    year = datetime.date.today().year
+    year = year if year else datetime.date.today().year
     pf   = _product_filter(product)
     gf   = _geo_filter(sales_market)
+    yf   = _year_filter(year)
+    qf   = _quarter_filter(quarter, year) if quarter else ""
+    date_filter = f"AND {qf}" if qf else f"AND {yf}"
 
     act_sql = f"""
         SELECT CAST(ds AS STRING) AS d, SUM(Actuals) AS arr
         FROM {FC_TABLE}
         WHERE forecast_type = 'actuals'
-          AND year(ds) = {year}
+          {date_filter}
           AND {_latest_run()}
           {pf} {gf}
         GROUP BY ds ORDER BY ds
@@ -450,7 +505,7 @@ async def get_ytd(
                SUM(Best_Case)   AS best
         FROM {FC_TABLE}
         WHERE forecast_type = '{forecast_type}'
-          AND year(ds) = {year}
+          {date_filter}
           AND {_latest_run()}
           {pf} {gf}
         GROUP BY ds ORDER BY ds
@@ -495,6 +550,8 @@ async def get_by_product(
     model:         str = Query("ensemble"),
     forecast_type: str = Query("rolling"),
     sales_market:  Optional[str] = Query(None),
+    year:          Optional[int] = Query(None),
+    quarter:       Optional[int] = Query(None),
 ):
     """Total forecast per product group (UCC/ITSG) + by sales_market."""
     if not _live():
@@ -503,6 +560,9 @@ async def get_by_product(
     model = _validate_model(model)
     forecast_type = _validate_forecast_type(forecast_type)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
+
+    year = year if year else datetime.date.today().year
+    qf   = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
 
     try:
         lb_rows_raw = await asyncio.to_thread(execute_query, f"""
@@ -530,6 +590,7 @@ async def get_by_product(
         where_parts.append(_latest_run())
     else:
         where_parts.append("COALESCE(CAST(Actuals AS DOUBLE), 0) = 0")
+    where_parts.append(qf)
 
     prod_sql = f"""
         SELECT
@@ -644,6 +705,7 @@ async def get_models():
 async def get_historical(
     product:      Optional[str] = Query(None),
     sales_market: Optional[str] = Query(None),
+    year:         Optional[int] = Query(None),
 ):
     """Multi-year weekly actuals for Historical Trend + Seasonality charts."""
     if not _live():
@@ -651,6 +713,7 @@ async def get_historical(
 
     pf = _product_filter(product)
     gf = _geo_filter(sales_market)
+    yf = _year_filter(year)
 
     sql = f"""
         SELECT
@@ -662,6 +725,7 @@ async def get_historical(
         FROM {FC_TABLE}
         WHERE forecast_type = 'actuals'
           AND {_latest_run()}
+          AND {yf}
           {pf} {gf}
         GROUP BY ds, year(ds), weekofyear(ds), quarter(ds)
         ORDER BY ds

@@ -697,6 +697,8 @@ const ForecastingPanel = () => {
   const [model,       setModel]       = useState('ensemble');
   const [fcType,      setFcType]      = useState('rolling');
   const [prodLine,    setProdLine]    = useState('All');
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [selectedQuarter, setSelectedQuarter] = useState(null);
 
   const [weekly,      setWeekly]      = useState(null);
   const [ytd,         setYtd]         = useState(null);
@@ -715,11 +717,11 @@ const ForecastingPanel = () => {
     setLoading(true); setError(null);
     try {
       const [wk, yt, hs, bp, mo, lb, modelsRes] = await Promise.allSettled([
-        apiService.getForecastV2Weekly(model, fcType, null, activePl),
-        apiService.getForecastV2YTD(fcType, null, activePl),
-        apiService.getForecastV2Historical(null, activePl),
-        apiService.getForecastV2ByProduct(fcType),
-        apiService.getForecastV2Monthly(fcType, null, activePl),
+        apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2Historical(null, activePl, null, selectedYear),
+        apiService.getForecastV2ByProduct(fcType, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2Leaderboard(),
         apiService.getForecastV2Models(),
       ]);
@@ -748,7 +750,7 @@ const ForecastingPanel = () => {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, fcType, activePl]);
+  }, [model, fcType, activePl, selectedYear, selectedQuarter]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -871,6 +873,24 @@ const ForecastingPanel = () => {
             </button>
           ))}
         </div>
+        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+
+        {/* Year & Quarter dropdowns */}
+        <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}
+          style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                   color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
+          {[2026, 2025, 2024, 2023].map(yr => <option key={yr} value={yr}>{yr}</option>)}
+        </select>
+
+        <select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)}
+          style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                   color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
+          <option value="">All Quarters</option>
+          <option value="1">Q1 (Jan–Mar)</option>
+          <option value="2">Q2 (Apr–Jun)</option>
+          <option value="3">Q3 (Jul–Sep)</option>
+          <option value="4">Q4 (Oct–Dec)</option>
+        </select>
       </div>
 
       {/* ── Status banners ─────────────────────────────────────────────────── */}

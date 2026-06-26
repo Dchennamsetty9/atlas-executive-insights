@@ -108,37 +108,46 @@ export const apiService = {
   getInsights: () => api.get('/api/insights'),
 
   // ── Forecast V2 endpoints — arr_forecast_v2 table (scheduled Mondays 03:00 UTC) ──
-  getForecastV2Weekly: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+  getForecastV2Weekly: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { model, forecast_type: forecastType };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/weekly', { params });
   },
-  getForecastV2YTD: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+  getForecastV2YTD: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { forecast_type: forecastType };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/ytd', { params });
   },
-  getForecastV2Historical: (product = null, productLine = null, salesMarket = null) => {
+  getForecastV2Historical: (product = null, productLine = null, salesMarket = null, year = null) => {
     const params = {};
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
     return api.get('/api/forecast/v2/historical', { params });
   },
-  getForecastV2ByProduct: (forecastType = 'rolling', salesMarket = null) => {
+  getForecastV2ByProduct: (forecastType = 'rolling', salesMarket = null, year = null, quarter = null) => {
     const params = { forecast_type: forecastType };
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/by-product', { params });
   },
-  getForecastV2Monthly: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null) => {
+  getForecastV2Monthly: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { forecast_type: forecastType };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/monthly', { params });
   },
   getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
