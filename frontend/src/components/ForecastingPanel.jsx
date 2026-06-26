@@ -934,7 +934,7 @@ const ForecastingPanel = () => {
                           { label: 'Most Likely', val: fc.reduce((s,r)=>s+r.arr_likely,0), color: '#f1f5f9', sub: 'Planning center'    },
                           { label: 'Best Case',   val: fc.reduce((s,r)=>s+r.arr_best,0),   color: '#10b981', sub: '~20% probability'  },
                           { label: 'Worst Case',  val: fc.reduce((s,r)=>s+r.arr_worst,0),  color: '#ef4444', sub: '~15% probability'  },
-                          { label: 'Actuals YTD', val: weeklyView.filter(r=>r.arr_actual).reduce((s,r)=>s+r.arr_actual,0), color: '#f59e0b', sub: 'Realized YTD' },
+                          { label: 'Actuals YTD', val: ytdActual, color: '#f59e0b', sub: 'Realized YTD' },
                         ].map(({ label, val, color, sub }) => (
                           <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
                             <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>

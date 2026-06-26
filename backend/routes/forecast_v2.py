@@ -289,7 +289,10 @@ async def get_weekly(
             FROM {FC_TABLE}
             WHERE {_latest_run()}
               {_product_filter(product)} {_geo_filter(sales_market)}
-              AND forecast_type IN ('actuals', 'rolling', 'roy')
+              AND (
+                    (forecast_type = 'actuals' AND YEAR(ds) = YEAR(CURRENT_DATE()))
+                    OR forecast_type IN ('rolling', 'roy')
+                  )
             ORDER BY ds
         """
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
