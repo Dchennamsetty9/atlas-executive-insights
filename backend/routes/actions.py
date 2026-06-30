@@ -30,6 +30,17 @@ class CreateActionRequest(BaseModel):
     owner: Optional[str] = None
     priority: str = "medium"
     source: str = "manual"
+    due_date: Optional[str] = None
+    playbook_action: Optional[str] = None
+    expected_impact: Optional[float] = None
+    actual_impact: Optional[float] = None
+
+
+class UpdateActionMetaRequest(BaseModel):
+    due_date: Optional[str] = None
+    playbook_action: Optional[str] = None
+    expected_impact: Optional[float] = None
+    actual_impact: Optional[float] = None
 
 
 class UpdateStatusRequest(BaseModel):
@@ -43,6 +54,11 @@ async def list_actions(
     user_id: str = Depends(require_authenticated_user)
 ):
     actions = user_prefs_service.list_actions(user_id=user_id, status=status)
+    metadata_map = user_prefs_service.list_action_metadata(user_id)
+    for action in actions:
+        meta = metadata_map.get(str(action.get("action_id") or ""), {})
+        if meta:
+            action.update(meta)
     return {"success": True, "data": actions}
 
 
@@ -56,6 +72,14 @@ async def create_action(
         priority=body.priority, source=body.source,
         user_id=user_id,
     )
+    meta = {
+        "due_date": body.due_date,
+        "playbook_action": body.playbook_action,
+        "expected_impact": body.expected_impact,
+        "actual_impact": body.actual_impact,
+    }
+    if any(v is not None for v in meta.values()):
+        action.update(user_prefs_service.upsert_action_metadata(user_id, action["action_id"], meta))
     return {"success": True, "data": action}
 
 
@@ -76,3 +100,18 @@ async def delete_action(
 ):
     user_prefs_service.delete_action(action_id)
     return {"success": True, "message": f"Action {action_id} deleted."}
+
+
+@router.patch("/{action_id}/meta")
+async def update_action_meta(
+    action_id: str,
+    body: UpdateActionMetaRequest,
+    user_id: str = Depends(require_authenticated_user)
+):
+    meta = user_prefs_service.upsert_action_metadata(user_id, action_id, {
+        "due_date": body.due_date,
+        "playbook_action": body.playbook_action,
+        "expected_impact": body.expected_impact,
+        "actual_impact": body.actual_impact,
+    })
+    return {"success": True, "data": {"action_id": action_id, **meta}}

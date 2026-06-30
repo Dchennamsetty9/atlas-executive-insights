@@ -118,6 +118,47 @@ const SectionTitle = ({ children }) => (
                 letterSpacing: '0.06em', marginBottom: 10 }}>{children}</div>
 );
 
+const GraphInsight = ({ summary }) => {
+  const [open, setOpen] = useState(false);
+  if (!summary) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          border: '1px solid rgba(59,130,246,0.22)',
+          background: 'rgba(59,130,246,0.08)',
+          color: '#93c5fd',
+          borderRadius: 8,
+          padding: '4px 10px',
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: 'pointer',
+          letterSpacing: '0.02em',
+        }}
+      >
+        {open ? '▾' : '▸'} AI Insight
+      </button>
+      {open && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 12,
+            color: '#cbd5e1',
+            lineHeight: 1.6,
+            background: 'rgba(30,41,59,0.45)',
+            border: '1px solid rgba(148,163,184,0.2)',
+            borderRadius: 8,
+            padding: '8px 10px',
+          }}
+        >
+          {summary}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
@@ -558,7 +599,7 @@ const AiInsightsSection = ({ model, prodLine }) => {
 };
 
 // ── Main panel ────────────────────────────────────────────────────────────────
-const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'AI Insights'];
+const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'AI Insights', 'Exec Mode'];
 const MODELS     = ['ensemble', 'prophet', 'lightgbm', 'ets', 'chronos'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
 const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
@@ -707,16 +748,30 @@ const ForecastingPanel = () => {
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
   const [modelRegistry, setModelRegistry] = useState([]);
+  const [freshness,   setFreshness]   = useState(null);
+  const [confidence,  setConfidence]  = useState(null);
+  const [driverBridge, setDriverBridge] = useState(null);
+  const [riskRadar,   setRiskRadar]   = useState([]);
+  const [meetingMode, setMeetingMode] = useState(null);
+  const [actions,     setActions]     = useState([]);
+  const [governanceLog, setGovernanceLog] = useState([]);
+  const [actionDraft, setActionDraft] = useState({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
+  const [decisionDraft, setDecisionDraft] = useState({ decision: '', owner: '', expected_impact: '', reason: '' });
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
+
+  const [simWinRate, setSimWinRate] = useState(31.8);
+  const [simCycle, setSimCycle] = useState(45);
+  const [simDealSize, setSimDealSize] = useState(1.0);
+  const [simCoverage, setSimCoverage] = useState(3.2);
 
   const activePl = prodLine !== 'All' ? prodLine : null;
 
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [wk, yt, hs, bp, mo, lb, modelsRes] = await Promise.allSettled([
+      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov] = await Promise.allSettled([
         apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2Historical(null, activePl, null, selectedYear),
@@ -724,6 +779,13 @@ const ForecastingPanel = () => {
         apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2Leaderboard(),
         apiService.getForecastV2Models(),
+        apiService.getForecastV2Freshness(),
+        apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
+        apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter),
+        apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20),
+        apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
+        apiService.getActions('pending'),
+        apiService.getForecastV2GovernanceLog(),
       ]);
       if (wk.status === 'fulfilled') {
         setWeekly(wk.value?.rows ?? []);
@@ -738,6 +800,13 @@ const ForecastingPanel = () => {
       if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
       if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
       if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
+      if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
+      if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
+      if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
+      if (radar.status === 'fulfilled') setRiskRadar(radar.value?.items ?? []);
+      if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
+      if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
+      if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
       if (firstReject) {
@@ -789,6 +858,110 @@ const ForecastingPanel = () => {
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
+  const graphInsights = useMemo(() => {
+    const insight = {
+      weekly: null,
+      ytd: null,
+      seasonality: null,
+      trend: null,
+      byProduct: null,
+      monthly: null,
+      accuracy: null,
+    };
+
+    const actuals = (weeklyView || []).filter((r) => r.arr_actual != null);
+    const forecast = (weeklyView || []).filter((r) => r.arr_likely != null);
+    if (actuals.length && forecast.length) {
+      const first = Number(actuals[0].arr_actual || 0);
+      const last = Number(actuals[actuals.length - 1].arr_actual || 0);
+      const trendPct = first > 0 ? ((last - first) / first) * 100 : 0;
+      const avgBandPct = forecast.length
+        ? forecast.reduce((s, r) => {
+            const likely = Number(r.arr_likely || 0);
+            const spread = Number(r.arr_best || 0) - Number(r.arr_worst || 0);
+            return s + (likely > 0 ? (spread / likely) * 100 : 0);
+          }, 0) / forecast.length
+        : 0;
+      const quarterText = selectedQuarter ? `Q${selectedQuarter}` : 'all quarters';
+      insight.weekly = `Actuals trend ${trendPct >= 0 ? 'up' : 'down'} ${Math.abs(trendPct).toFixed(1)}% through ${quarterText} ${selectedYear}. Most-likely forecast sits inside an average confidence band of ${Math.max(0, avgBandPct).toFixed(1)}%.`;
+    }
+
+    const ytdRows = (ytdView || []).filter((r) => r.ytd_actual != null || r.ytd_likely != null);
+    if (ytdRows.length) {
+      const lastActual = [...ytdRows].reverse().find((r) => r.ytd_actual != null)?.ytd_actual ?? null;
+      const lastLikely = [...ytdRows].reverse().find((r) => r.ytd_likely != null)?.ytd_likely ?? null;
+      const gap = (lastLikely != null && lastActual != null) ? Number(lastLikely) - Number(lastActual) : null;
+      insight.ytd = gap == null
+        ? `YTD curve is tracking with current selection (${selectedYear}${selectedQuarter ? `, Q${selectedQuarter}` : ''}).`
+        : `YTD actual is ${fmtM(lastActual)} versus likely path ${fmtM(lastLikely)}, a ${gap >= 0 ? 'remaining upside' : 'shortfall'} of ${fmtM(Math.abs(gap))}.`;
+    }
+
+    const histRows = historicalView || [];
+    if (histRows.length) {
+      const totalsByYear = histRows.reduce((acc, r) => {
+        const y = Number(r.year);
+        acc[y] = (acc[y] || 0) + Number(r.arr || 0);
+        return acc;
+      }, {});
+      const years = Object.keys(totalsByYear).map(Number).sort((a, b) => a - b);
+      const curr = totalsByYear[selectedYear] || null;
+      const prevYear = years.filter((y) => y < selectedYear).slice(-1)[0];
+      const prev = prevYear ? totalsByYear[prevYear] : null;
+      if (curr != null && prev != null && prev > 0) {
+        const yoy = ((curr - prev) / prev) * 100;
+        insight.seasonality = `${selectedYear} seasonal run-rate is ${yoy >= 0 ? 'above' : 'below'} prior year by ${Math.abs(yoy).toFixed(1)}%, showing where weekly demand is accelerating or flattening.`;
+      } else {
+        insight.seasonality = `Seasonality chart highlights recurring weekly peaks and troughs for ${selectedYear} to guide quarter pacing.`;
+      }
+
+      const vals = histRows.map((r) => Number(r.arr || 0)).filter((v) => Number.isFinite(v));
+      if (vals.length > 5) {
+        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
+        const cv = mean > 0 ? (Math.sqrt(variance) / mean) * 100 : 0;
+        insight.trend = `Weekly trend volatility is ${cv.toFixed(1)}% of the mean, which indicates ${cv > 18 ? 'higher forecasting risk' : 'stable execution'} across the selected horizon.`;
+      }
+    }
+
+    const lines = byProductView?.by_product_line || byProductView?.by_product || [];
+    if (lines.length) {
+      const sorted = [...lines].sort((a, b) => Number(b.arr_likely || 0) - Number(a.arr_likely || 0));
+      const lead = sorted[0];
+      const second = sorted[1];
+      const gap = second ? Number(lead.arr_likely || 0) - Number(second.arr_likely || 0) : null;
+      insight.byProduct = gap == null
+        ? `${lead.product_line || lead.product} is the primary contributor in the current forecast mix.`
+        : `${lead.product_line || lead.product} leads forecast mix at ${fmtM(lead.arr_likely)}, ahead of ${second.product_line || second.product} by ${fmtM(Math.abs(gap))}.`;
+    }
+
+    const monthRows = monthlyView || [];
+    if (monthRows.length) {
+      const totalLikely = monthRows.reduce((s, m) => s + Number(m.arr_likely || 0), 0);
+      const totalActual = monthRows.reduce((s, m) => s + Number(m.arr_actual || 0), 0);
+      const openMonths = monthRows.filter((m) => !m.arr_actual).length;
+      insight.monthly = `Monthly view shows ${fmtM(totalActual)} realized and ${fmtM(totalLikely)} likely for ${selectedYear}${selectedQuarter ? ` Q${selectedQuarter}` : ''}, with ${openMonths} month(s) still forecast-driven.`;
+    }
+
+    const totalRow = (leaderboardView || []).find((r) =>
+      (r.product === 'Total' || r.product === 'All') &&
+      (r.sales_market === 'Total' || r.sales_market === 'All')
+    );
+    if (totalRow) {
+      const models = [
+        { name: 'ETS', val: Number(totalRow.ETS || Infinity) },
+        { name: 'Prophet', val: Number(totalRow.Prophet || Infinity) },
+        { name: 'LightGBM', val: Number(totalRow.LightGBM || Infinity) },
+        { name: 'Chronos', val: Number(totalRow.Chronos || Infinity) },
+      ].filter((m) => Number.isFinite(m.val));
+      const best = [...models].sort((a, b) => a.val - b.val)[0];
+      if (best) {
+        insight.accuracy = `${best.name} is currently the most accurate model at ${best.val.toFixed(1)}% MAPE on the total slice; use it as the tie-breaker when scenario ranges are wide.`;
+      }
+    }
+
+    return insight;
+  }, [weeklyView, ytdView, historicalView, byProductView, monthlyView, leaderboardView, selectedYear, selectedQuarter]);
+
   // Per-model MAPE for pill badges (Total/All slice)
   const modelMapes = useMemo(() => {
     const totalRow = (leaderboardView || []).find(r =>
@@ -801,6 +974,79 @@ const ForecastingPanel = () => {
   }, [leaderboardView]);
 
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
+
+  const simulatedScenario = useMemo(() => {
+    const baseLikely = (weeklyView || []).filter((r) => r.arr_likely != null).reduce((s, r) => s + Number(r.arr_likely || 0), 0);
+    if (!baseLikely) return { base: 0, worst: 0, best: 0 };
+    const winFactor = simWinRate / 31.8;
+    const cycleFactor = 45 / Math.max(20, simCycle);
+    const dealFactor = simDealSize;
+    const covFactor = simCoverage / 3.2;
+    const multiplier = winFactor * cycleFactor * dealFactor * covFactor;
+    const base = baseLikely * multiplier;
+    return {
+      base,
+      worst: base * 0.92,
+      best: base * 1.08,
+    };
+  }, [weeklyView, simWinRate, simCycle, simDealSize, simCoverage]);
+
+  const refreshActionData = useCallback(async () => {
+    try {
+      const [act, gov] = await Promise.allSettled([
+        apiService.getActions('pending'),
+        apiService.getForecastV2GovernanceLog(),
+      ]);
+      if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
+      if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
+    } catch (_e) {
+      // noop — keep existing state for unauthenticated contexts
+    }
+  }, []);
+
+  const submitAction = useCallback(async () => {
+    if (!actionDraft.text?.trim()) return;
+    try {
+      await apiService.createAction({
+        text: actionDraft.text.trim(),
+        owner: actionDraft.owner || null,
+        priority: actionDraft.priority || 'medium',
+        source: 'forecast',
+        due_date: actionDraft.due_date || null,
+        playbook_action: actionDraft.playbook_action || null,
+      });
+      setActionDraft({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
+      refreshActionData();
+    } catch (_e) {
+      setError('Unable to create action. Please verify authentication context.');
+    }
+  }, [actionDraft, refreshActionData]);
+
+  const markActionDone = useCallback(async (actionId) => {
+    try {
+      await apiService.updateActionStatus(actionId, 'done');
+      refreshActionData();
+    } catch (_e) {
+      setError('Unable to update action status.');
+    }
+  }, [refreshActionData]);
+
+  const submitDecisionLog = useCallback(async () => {
+    if (!decisionDraft.decision?.trim()) return;
+    try {
+      await apiService.createForecastV2GovernanceLog({
+        decision: decisionDraft.decision.trim(),
+        owner: decisionDraft.owner || null,
+        expected_impact: decisionDraft.expected_impact ? Number(decisionDraft.expected_impact) : null,
+        reason: decisionDraft.reason || null,
+        scenario_name: `${selectedYear}${selectedQuarter ? `-Q${selectedQuarter}` : '-All'}`,
+      });
+      setDecisionDraft({ decision: '', owner: '', expected_impact: '', reason: '' });
+      refreshActionData();
+    } catch (_e) {
+      setError('Unable to write governance log. Please verify authentication context.');
+    }
+  }, [decisionDraft, refreshActionData, selectedQuarter, selectedYear]);
 
   return (
     <div style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
@@ -894,6 +1140,14 @@ const ForecastingPanel = () => {
       </div>
 
       {/* ── Status banners ─────────────────────────────────────────────────── */}
+      {freshness && (
+        <div style={{ padding: '8px 14px', marginBottom: 8, borderRadius: 8, fontSize: 12,
+                      color: freshness.sla_status === 'breached' ? '#ef4444' : '#10b981',
+                      background: freshness.sla_status === 'breached' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
+                      border: freshness.sla_status === 'breached' ? '1px solid rgba(239,68,68,0.2)' : '1px solid rgba(16,185,129,0.2)' }}>
+          ⏱ Forecast Freshness: {freshness.freshness || 'unknown'} · {freshness.days_stale ?? '—'} day(s) stale · SLA {freshness.sla_status || 'unknown'}
+        </div>
+      )}
       {isDemo && !loading && (
         <div style={{ padding: '8px 14px', marginBottom: 8, borderRadius: 8, fontSize: 12, color: '#f59e0b',
                       background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
@@ -969,6 +1223,7 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
+                <GraphInsight summary={graphInsights.weekly} />
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                   <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
                   <span><span style={{ color: '#ef4444' }}>- -</span> Worst Case</span>
@@ -981,6 +1236,7 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
+                <GraphInsight summary={graphInsights.ytd} />
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
             </div>
@@ -990,6 +1246,7 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
                 <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+                <GraphInsight summary={graphInsights.seasonality} />
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                   {Object.entries(YEAR_COLORS).map(([yr,c]) => <span key={yr}><span style={{ color: c }}>─</span> {yr}</span>)}
                 </div>
@@ -997,6 +1254,7 @@ const ForecastingPanel = () => {
               </CardWrap>
               <CardWrap>
                 <SectionTitle>Historical Weekly Trend</SectionTitle>
+                <GraphInsight summary={graphInsights.trend} />
                 {loading ? <Skeleton height={220} /> : (
                   <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
@@ -1016,6 +1274,7 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
+                <GraphInsight summary={graphInsights.byProduct} />
                 {loading ? <Skeleton height={200} /> : byProductView ? <ByProductChart byProduct={byProductView.by_product} byLine={byProductView.by_product_line} /> : <EmptyState />}
               </CardWrap>
               {!loading && byProductView?.by_product && (
@@ -1053,6 +1312,7 @@ const ForecastingPanel = () => {
           {tab === 'Monthly' && (
             <CardWrap>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
+              <GraphInsight summary={graphInsights.monthly} />
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
             </CardWrap>
           )}
@@ -1068,12 +1328,176 @@ const ForecastingPanel = () => {
               </div>
               <CardWrap>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
+                <GraphInsight summary={graphInsights.accuracy} />
                 {loading ? <Skeleton height={240} /> : leaderboardView && leaderboardView.length > 0 ? <AccuracyTable data={leaderboardView} /> : <EmptyState />}
               </CardWrap>
             </div>
           )}
 
           {tab === 'AI Insights' && <AiInsightsSection model={model} prodLine={prodLine} />}
+
+          {tab === 'Exec Mode' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <CardWrap>
+                  <SectionTitle>Forecast Confidence Score</SectionTitle>
+                  <div style={{ fontSize: 30, fontWeight: 800, color: confidence?.confidence_score >= 85 ? '#10b981' : confidence?.confidence_score >= 65 ? '#f59e0b' : '#ef4444' }}>
+                    {confidence?.confidence_score ?? '—'}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{confidence?.confidence_label || 'Unknown'} confidence</div>
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {(confidence?.reasons || []).slice(0, 3).map((r, i) => (
+                      <div key={i} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>• {r}</div>
+                    ))}
+                  </div>
+                </CardWrap>
+
+                <CardWrap>
+                  <SectionTitle>Meeting Snapshot</SectionTitle>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Top Moves This Quarter</div>
+                  {(meetingMode?.top_moves || []).slice(0, 3).map((m, i) => (
+                    <div key={i} style={{ fontSize: 11, color: '#e2e8f0', marginBottom: 6, lineHeight: 1.5 }}>{i + 1}. {m}</div>
+                  ))}
+                </CardWrap>
+              </div>
+
+              <CardWrap>
+                <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(driverBridge?.components || []).map((c, i) => {
+                    const positive = (c.value || 0) >= 0;
+                    const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / Math.max(1, Math.abs(driverBridge?.variance || 1)) * 100));
+                    return (
+                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 100px', gap: 8, alignItems: 'center' }}>
+                        <div style={{ fontSize: 11, color: '#cbd5e1' }}>{c.name}</div>
+                        <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                          <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
+                        </div>
+                        <div style={{ textAlign: 'right', fontSize: 11, color: positive ? '#10b981' : '#ef4444' }}>{fmtM(c.value)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>Scenario Simulator (What-If)</SectionTitle>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Win Rate %: {simWinRate.toFixed(1)}</div>
+                    <input type="range" min="15" max="60" step="0.1" value={simWinRate} onChange={(e) => setSimWinRate(Number(e.target.value))} style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Cycle Time Days: {simCycle}</div>
+                    <input type="range" min="20" max="120" step="1" value={simCycle} onChange={(e) => setSimCycle(Number(e.target.value))} style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Avg Deal Size Multiplier: {simDealSize.toFixed(2)}x</div>
+                    <input type="range" min="0.7" max="1.4" step="0.01" value={simDealSize} onChange={(e) => setSimDealSize(Number(e.target.value))} style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Coverage: {simCoverage.toFixed(1)}x</div>
+                    <input type="range" min="1.5" max="5" step="0.1" value={simCoverage} onChange={(e) => setSimCoverage(Number(e.target.value))} style={{ width: '100%' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: 10, marginTop: 12 }}>
+                  <div style={{ padding: '10px', borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                    <div style={{ fontSize: 10, color: '#ef4444', marginBottom: 3 }}>Worst</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: '#ef4444' }}>{fmtM(simulatedScenario.worst)}</div>
+                  </div>
+                  <div style={{ padding: '10px', borderRadius: 8, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
+                    <div style={{ fontSize: 10, color: '#3b82f6', marginBottom: 3 }}>Base</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: '#93c5fd' }}>{fmtM(simulatedScenario.base)}</div>
+                  </div>
+                  <div style={{ padding: '10px', borderRadius: 8, background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                    <div style={{ fontSize: 10, color: '#10b981', marginBottom: 3 }}>Best</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: '#10b981' }}>{fmtM(simulatedScenario.best)}</div>
+                  </div>
+                </div>
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>At-Risk ARR Radar (Top 20)</SectionTitle>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        {['Product', 'Geo', 'Likely', 'Worst', 'Risk Impact', 'Risk Level'].map((h) => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: ['Product', 'Geo', 'Risk Level'].includes(h) ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(riskRadar || []).slice(0, 20).map((r, i) => (
+                        <tr key={`${r.product}-${r.sales_market}-${i}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <td style={{ padding: '6px 10px', fontSize: 11, color: '#f1f5f9' }}>{r.product}</td>
+                          <td style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>{r.sales_market}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#e2e8f0' }}>{fmtM(r.likely)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f87171' }}>{fmtM(r.worst)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#ef4444', fontWeight: 700 }}>{fmtM(r.risk_dollar_impact)}</td>
+                          <td style={{ padding: '6px 10px', fontSize: 10, color: r.risk_level === 'high' ? '#ef4444' : r.risk_level === 'moderate' ? '#f59e0b' : '#10b981' }}>{String(r.risk_level || '').toUpperCase()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>Action Command Center</SectionTitle>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 10 }}>
+                  <input value={actionDraft.text} onChange={(e) => setActionDraft((d) => ({ ...d, text: e.target.value }))} placeholder="Action item" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <input value={actionDraft.owner} onChange={(e) => setActionDraft((d) => ({ ...d, owner: e.target.value }))} placeholder="Owner" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <input type="date" value={actionDraft.due_date} onChange={(e) => setActionDraft((d) => ({ ...d, due_date: e.target.value }))} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <select value={actionDraft.priority} onChange={(e) => setActionDraft((d) => ({ ...d, priority: e.target.value }))} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }}>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                  <button onClick={submitAction} style={{ background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.35)', color: '#93c5fd', borderRadius: 6, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Add</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {(actions || []).slice(0, 12).map((a) => (
+                    <div key={a.action_id} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 100px 72px', gap: 8, alignItems: 'center', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, color: '#e2e8f0' }}>{a.text}</div>
+                      <div style={{ fontSize: 10, color: '#94a3b8' }}>{a.owner || 'Unassigned'}</div>
+                      <div style={{ fontSize: 10, color: '#f59e0b' }}>{a.due_date || 'No due date'}</div>
+                      <button onClick={() => markActionDone(a.action_id)} style={{ background: 'rgba(16,185,129,0.14)', border: '1px solid rgba(16,185,129,0.35)', color: '#10b981', borderRadius: 6, padding: '5px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Done</button>
+                    </div>
+                  ))}
+                  {(!actions || actions.length === 0) && <div style={{ fontSize: 11, color: '#64748b' }}>No pending actions. Add one above.</div>}
+                </div>
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>Forecast Governance and Audit Trail</SectionTitle>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 2fr auto', gap: 8, marginBottom: 10 }}>
+                  <input value={decisionDraft.decision} onChange={(e) => setDecisionDraft((d) => ({ ...d, decision: e.target.value }))} placeholder="Decision / override" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <input value={decisionDraft.owner} onChange={(e) => setDecisionDraft((d) => ({ ...d, owner: e.target.value }))} placeholder="Owner" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <input type="number" value={decisionDraft.expected_impact} onChange={(e) => setDecisionDraft((d) => ({ ...d, expected_impact: e.target.value }))} placeholder="Expected impact" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <input value={decisionDraft.reason} onChange={(e) => setDecisionDraft((d) => ({ ...d, reason: e.target.value }))} placeholder="Reason" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
+                  <button onClick={submitDecisionLog} style={{ background: 'rgba(168,85,247,0.16)', border: '1px solid rgba(168,85,247,0.35)', color: '#c4b5fd', borderRadius: 6, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Log</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {(governanceLog || []).slice(0, 12).map((g) => (
+                    <div key={g.id} style={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, color: '#f1f5f9', marginBottom: 3 }}>{g.decision}</div>
+                      <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                        {g.owner || 'Unknown owner'} · {g.created_at ? String(g.created_at).slice(0, 10) : '—'} · Impact {g.expected_impact != null ? fmtM(g.expected_impact) : '—'}
+                      </div>
+                      {g.reason && <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>{g.reason}</div>}
+                    </div>
+                  ))}
+                  {(!governanceLog || governanceLog.length === 0) && <div style={{ fontSize: 11, color: '#64748b' }}>No governance entries yet.</div>}
+                </div>
+              </CardWrap>
+            </div>
+          )}
 
         </TabErrorBoundary>
       </div>

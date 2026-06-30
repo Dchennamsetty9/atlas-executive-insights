@@ -152,6 +152,45 @@ export const apiService = {
   },
   getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
   getForecastV2Models: () => api.get('/api/forecast/v2/models'),
+  getForecastV2Freshness: () => api.get('/api/forecast/v2/freshness'),
+  getForecastV2Confidence: (model = 'ensemble', year = null, quarter = null) => {
+    const params = { model }
+    if (year) params.year = year
+    if (quarter) params.quarter = quarter
+    return api.get('/api/forecast/v2/confidence', { params })
+  },
+  getForecastV2DriverBridge: (year = null, quarter = null) => {
+    const params = {}
+    if (year) params.year = year
+    if (quarter) params.quarter = quarter
+    return api.get('/api/forecast/v2/driver-bridge', { params })
+  },
+  getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20) => {
+    const params = { forecast_type: forecastType, limit }
+    if (year) params.year = year
+    if (quarter) params.quarter = quarter
+    return api.get('/api/forecast/v2/risk-radar', { params })
+  },
+  getForecastV2MeetingMode: (model = 'ensemble', year = null, quarter = null) => {
+    const params = { model }
+    if (year) params.year = year
+    if (quarter) params.quarter = quarter
+    return api.get('/api/forecast/v2/meeting-mode', { params })
+  },
+  getForecastV2GovernanceLog: () => api.get('/api/forecast/v2/governance/log'),
+  createForecastV2GovernanceLog: (payload) => api.post('/api/forecast/v2/governance/log', payload),
+
+  // Action command center
+  getActions: (status = null) => {
+    const params = {}
+    if (status) params.status = status
+    return api.get('/api/actions', { params })
+  },
+  createAction: (payload) => api.post('/api/actions', payload),
+  updateActionStatus: (actionId, status, owner = null) => api.patch(`/api/actions/${actionId}/status`, { status, owner }),
+  updateActionMeta: (actionId, payload) => api.patch(`/api/actions/${actionId}/meta`, payload),
+  deleteAction: (actionId) => api.delete(`/api/actions/${actionId}`),
+
   getForecastIntelligence: (metric = 'won_pipeline', model = 'prophet', productLine = null) => {
     const params = { metric, model };
     if (productLine && productLine !== 'All') params.product_line = productLine;

@@ -226,6 +226,46 @@ class UserPreferencesService:
         self._exec(f"DELETE FROM {fqn} WHERE action_id = ?", (action_id,))
         return True
 
+    # ── Action metadata + governance log (JSON in prefs table) ──────────────
+
+    def _action_meta_key(self) -> str:
+        return "action_metadata"
+
+    def _governance_log_key(self) -> str:
+        return "forecast_governance_log"
+
+    def list_action_metadata(self, user_id: str) -> Dict[str, Any]:
+        data = self.get_pref(user_id, self._action_meta_key(), default={})
+        return data if isinstance(data, dict) else {}
+
+    def get_action_metadata(self, user_id: str, action_id: str) -> Dict[str, Any]:
+        return self.list_action_metadata(user_id).get(action_id, {})
+
+    def upsert_action_metadata(self, user_id: str, action_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        all_meta = self.list_action_metadata(user_id)
+        current = all_meta.get(action_id, {})
+        merged = {**current, **{k: v for k, v in metadata.items() if v is not None}}
+        merged["updated_at"] = datetime.utcnow().isoformat()
+        all_meta[action_id] = merged
+        self.set_pref(user_id, self._action_meta_key(), all_meta)
+        return merged
+
+    def list_governance_log(self, user_id: str) -> List[Dict[str, Any]]:
+        rows = self.get_pref(user_id, self._governance_log_key(), default=[])
+        return rows if isinstance(rows, list) else []
+
+    def append_governance_log(self, user_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+        import uuid
+        rows = self.list_governance_log(user_id)
+        payload = {
+            "id": str(uuid.uuid4()),
+            "created_at": datetime.utcnow().isoformat(),
+            **entry,
+        }
+        rows.insert(0, payload)
+        self.set_pref(user_id, self._governance_log_key(), rows[:500])
+        return payload
+
 
 # Singleton
 user_prefs_service = UserPreferencesService()
