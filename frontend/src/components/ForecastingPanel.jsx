@@ -52,6 +52,14 @@ const fmtDate = (d) => {
   return `${dt.toLocaleString('default', { month: 'short' })} ${dt.getDate()}`;
 };
 const mapeColor = (v) => (v < 15 ? '#10b981' : v < 25 ? '#f59e0b' : '#ef4444');
+const MODEL_LABELS = {
+  ETS: 'ETS',
+  Prophet: 'Prophet',
+  LightGBM: 'LightGBM',
+  MSTL_v2: 'MSTL',
+  DHR_ARIMA: 'DHR-ARIMA',
+};
+const formatModelLabel = (name) => MODEL_LABELS[name] || name || 'Unknown';
 
 // ── Colour constants ──────────────────────────────────────────────────────────
 const YEAR_COLORS  = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
@@ -388,17 +396,25 @@ const MonthlyTable = ({ months }) => {
 const AccuracyTable = ({ data }) => {
   // Notebook models: Prophet_trend (→Prophet), MSTL_v2, ETS, DHR_ARIMA (→DHR_ARIMA), LightGBM
   // Chronos NOT in model suite — filter it out if value is null / ≥999
-  const ALL_MODELS = ['ETS', 'Prophet', 'LightGBM'];
+  const ALL_MODELS = [
+    { key: 'ETS', label: formatModelLabel('ETS') },
+    { key: 'Prophet', label: formatModelLabel('Prophet') },
+    { key: 'LightGBM', label: formatModelLabel('LightGBM') },
+  ];
   // Also show MSTL_v2 and DHR_ARIMA when leaderboard contains those columns
   const hasMstl = data?.some(r => r['MSTL_v2'] != null && r['MSTL_v2'] < 999);
   const hasDhr  = data?.some(r => r['DHR_ARIMA'] != null && r['DHR_ARIMA'] < 999);
-  const models = [...ALL_MODELS, ...(hasMstl ? ['MSTL_v2'] : []), ...(hasDhr ? ['DHR_ARIMA'] : [])];
+  const models = [
+    ...ALL_MODELS,
+    ...(hasMstl ? [{ key: 'MSTL_v2', label: formatModelLabel('MSTL_v2') }] : []),
+    ...(hasDhr ? [{ key: 'DHR_ARIMA', label: formatModelLabel('DHR_ARIMA') }] : []),
+  ];
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {['Product','Geo',...models,'Best Model','Best MAPE'].map(h => (
+            {['Product','Geo',...models.map(m => m.label),'Best Model','Best MAPE'].map(h => (
               <th key={h} style={{ padding: '6px 12px', textAlign: ['Product','Geo','Best Model'].includes(h)?'left':'right',
                                    fontSize: 10, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
             ))}
@@ -410,14 +426,14 @@ const AccuracyTable = ({ data }) => {
               <td style={{ padding: '6px 12px', fontSize: 12, color: '#f1f5f9' }}>{r.product}</td>
               <td style={{ padding: '6px 12px', fontSize: 11, color: '#64748b' }}>{r.sales_market}</td>
               {models.map(m => (
-                <td key={m} style={{ padding: '6px 12px', textAlign: 'right', fontSize: 12,
-                                     color: r[m]&&r[m]<999 ? mapeColor(r[m]) : '#334155',
-                                     fontWeight: r.best_model===m ? 700 : 400 }}>
-                  {r[m]&&r[m]<999 ? `${r[m].toFixed(1)}%` : '—'}
-                  {r.best_model===m && <span style={{ marginLeft: 4, fontSize: 9 }}>★</span>}
+                <td key={m.key} style={{ padding: '6px 12px', textAlign: 'right', fontSize: 12,
+                                     color: r[m.key]&&r[m.key]<999 ? mapeColor(r[m.key]) : '#334155',
+                                     fontWeight: r.best_model===m.key ? 700 : 400 }}>
+                  {r[m.key]&&r[m.key]<999 ? `${r[m.key].toFixed(1)}%` : '—'}
+                  {r.best_model===m.key && <span style={{ marginLeft: 4, fontSize: 9 }}>★</span>}
                 </td>
               ))}
-              <td style={{ padding: '6px 12px', textAlign: 'left', fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>{r.best_model}</td>
+              <td style={{ padding: '6px 12px', textAlign: 'left', fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>{formatModelLabel(r.best_model)}</td>
               <td style={{ padding: '6px 12px', textAlign: 'right', fontSize: 12, fontWeight: 700,
                            color: r.best_mape&&r.best_mape<999 ? mapeColor(r.best_mape) : '#334155' }}>
                 {r.best_mape&&r.best_mape<999 ? `${r.best_mape.toFixed(1)}%` : '—'}
@@ -969,7 +985,7 @@ const ForecastingPanel = () => {
       ].filter((m) => Number.isFinite(m.val) && m.val < 999);
       const best = [...models].sort((a, b) => a.val - b.val)[0];
       if (best) {
-        insight.accuracy = `${best.name} is currently the most accurate model at ${best.val.toFixed(1)}% MAPE on the total slice; use it as the tie-breaker when scenario ranges are wide.`;
+        insight.accuracy = `${formatModelLabel(best.name)} is currently the most accurate model at ${best.val.toFixed(1)}% MAPE on the total slice; use it as the tie-breaker when scenario ranges are wide.`;
       }
     }
 

@@ -25,7 +25,6 @@ const MODELS = [
   { label: 'Ensemble', color: '#00FF88', primary: false },
   { label: 'LightGBM', color: '#00BFFF', primary: false },
   { label: 'ETS',      color: '#f59e0b', primary: false },
-  { label: 'Chronos',  color: '#a78bfa', primary: false },
 ];
 
 const MODEL_TO_API = {
@@ -33,7 +32,6 @@ const MODEL_TO_API = {
   Ensemble: 'ensemble',
   LightGBM: 'lightgbm',
   ETS: 'ets',
-  Chronos: 'chronos',
 };
 
 const fmtDate = (d) => {
