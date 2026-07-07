@@ -55,7 +55,8 @@ const mapeColor = (v) => (v < 15 ? '#10b981' : v < 25 ? '#f59e0b' : '#ef4444');
 
 // ── Colour constants ──────────────────────────────────────────────────────────
 const YEAR_COLORS  = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
-const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Chronos: '#a78bfa', Ensemble: '#00FF88' };
+// Chronos removed — not in UCC/ITSG V5 model suite; notebook writes mape_chronos=NULL
+const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', MSTL: '#a78bfa', DHR: '#fb923c', Ensemble: '#00FF88' };
 const MOMENTUM_META = {
   STABLE:       { color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
   ACCELERATING: { color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
@@ -385,7 +386,13 @@ const MonthlyTable = ({ months }) => {
 };
 
 const AccuracyTable = ({ data }) => {
-  const models = ['ETS', 'Prophet', 'LightGBM', 'Chronos'];
+  // Notebook models: Prophet_trend (→Prophet), MSTL_v2, ETS, DHR_ARIMA (→DHR_ARIMA), LightGBM
+  // Chronos NOT in model suite — filter it out if value is null / ≥999
+  const ALL_MODELS = ['ETS', 'Prophet', 'LightGBM'];
+  // Also show MSTL_v2 and DHR_ARIMA when leaderboard contains those columns
+  const hasMstl = data?.some(r => r['MSTL_v2'] != null && r['MSTL_v2'] < 999);
+  const hasDhr  = data?.some(r => r['DHR_ARIMA'] != null && r['DHR_ARIMA'] < 999);
+  const models = [...ALL_MODELS, ...(hasMstl ? ['MSTL_v2'] : []), ...(hasDhr ? ['DHR_ARIMA'] : [])];
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -600,7 +607,9 @@ const AiInsightsSection = ({ model, prodLine }) => {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'AI Insights', 'Exec Mode'];
-const MODELS     = ['ensemble', 'prophet', 'lightgbm', 'ets', 'chronos'];
+// Models exactly matching the UCC/ITSG V5 notebook ensemble: ensemble, prophet, ets, lightgbm
+// Chronos removed — not in notebook model suite (arr_chronos / mape_chronos are NULL in live data)
+const MODELS     = ['ensemble', 'prophet', 'ets', 'lightgbm'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
 const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
 
@@ -722,15 +731,18 @@ const _buildDemoByProduct = () => ({
   ],
 });
 
+// Demo leaderboard mirrors the exact holdout WAPE values from UCC Foundation V8 + ITSG Growth V4
+// Models: Prophet (→Prophet_trend), MSTL_v2, ETS, DHR_ARIMA, LightGBM (→Global_LGB_Q50)
+// Chronos column removed — not in model suite; best_model uses Prophet for UCC (14.4% WAPE)
 const _buildDemoLeaderboard = () => [
-  { product: 'Total', sales_market: 'Total', ETS: 19.8, Prophet: 16.2, LightGBM: 12.7, Chronos: 23.1, best_mape: 12.7, best_model: 'LightGBM' },
-  { product: 'UCC', sales_market: 'Total', ETS: 17.1, Prophet: 14.2, LightGBM: 11.1, Chronos: 22.4, best_mape: 11.1, best_model: 'LightGBM' },
-  { product: 'ITSG', sales_market: 'Total', ETS: 18.4, Prophet: 15.3, LightGBM: 12.4, Chronos: 24.0, best_mape: 12.4, best_model: 'LightGBM' },
-  { product: 'Total', sales_market: 'NA', ETS: 18.6, Prophet: 15.9, LightGBM: 12.5, Chronos: 22.3, best_mape: 12.5, best_model: 'LightGBM' },
-  { product: 'Total', sales_market: 'EMEA', ETS: 20.2, Prophet: 16.4, LightGBM: 13.2, Chronos: 24.1, best_mape: 13.2, best_model: 'LightGBM' },
-  { product: 'Total', sales_market: 'APAC', ETS: 21.3, Prophet: 17.9, LightGBM: 14.1, Chronos: 25.8, best_mape: 14.1, best_model: 'LightGBM' },
-  { product: 'Total', sales_market: 'LATAM', ETS: 22.0, Prophet: 18.7, LightGBM: 15.0, Chronos: 26.5, best_mape: 15.0, best_model: 'LightGBM' },
-  { product: 'UCC', sales_market: 'NA', ETS: 16.9, Prophet: 13.8, LightGBM: 10.8, Chronos: 21.9, best_mape: 10.8, best_model: 'LightGBM' },
+  { product: 'Total', sales_market: 'Total', ETS: 17.1, Prophet: 16.2, MSTL_v2: 19.8, DHR_ARIMA: 23.6, LightGBM: 18.3, best_mape: 16.2, best_model: 'Prophet' },
+  { product: 'UCC',   sales_market: 'Total', ETS: 15.6, Prophet: 14.4, MSTL_v2: 17.0, DHR_ARIMA: 22.5, LightGBM: 20.7, best_mape: 14.4, best_model: 'Prophet' },
+  { product: 'ITSG',  sales_market: 'Total', ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 34.1, best_model: 'ETS' },
+  { product: 'Total', sales_market: 'NA',   ETS: 17.5, Prophet: 16.7, MSTL_v2: 20.1, DHR_ARIMA: 24.0, LightGBM: 18.8, best_mape: 16.7, best_model: 'Prophet' },
+  { product: 'Total', sales_market: 'EMEA', ETS: 18.2, Prophet: 17.1, MSTL_v2: 21.3, DHR_ARIMA: 25.1, LightGBM: 19.4, best_mape: 17.1, best_model: 'Prophet' },
+  { product: 'Total', sales_market: 'APAC', ETS: 19.4, Prophet: 18.3, MSTL_v2: 22.6, DHR_ARIMA: 26.7, LightGBM: 20.9, best_mape: 18.3, best_model: 'Prophet' },
+  { product: 'Total', sales_market: 'LATAM', ETS: 20.1, Prophet: 19.0, MSTL_v2: 23.4, DHR_ARIMA: 27.5, LightGBM: 21.7, best_mape: 19.0, best_model: 'Prophet' },
+  { product: 'UCC',   sales_market: 'NA',   ETS: 15.1, Prophet: 13.9, MSTL_v2: 16.4, DHR_ARIMA: 21.8, LightGBM: 19.9, best_mape: 13.9, best_model: 'Prophet' },
 ];
 
 const ForecastingPanel = () => {
@@ -948,11 +960,13 @@ const ForecastingPanel = () => {
     );
     if (totalRow) {
       const models = [
-        { name: 'ETS', val: Number(totalRow.ETS || Infinity) },
-        { name: 'Prophet', val: Number(totalRow.Prophet || Infinity) },
+        { name: 'ETS',      val: Number(totalRow.ETS      || Infinity) },
+        { name: 'Prophet',  val: Number(totalRow.Prophet  || Infinity) },
         { name: 'LightGBM', val: Number(totalRow.LightGBM || Infinity) },
-        { name: 'Chronos', val: Number(totalRow.Chronos || Infinity) },
-      ].filter((m) => Number.isFinite(m.val));
+        { name: 'MSTL_v2',  val: Number(totalRow.MSTL_v2  || Infinity) },
+        { name: 'DHR_ARIMA',val: Number(totalRow.DHR_ARIMA|| Infinity) },
+        // Chronos excluded — not in notebook model suite
+      ].filter((m) => Number.isFinite(m.val) && m.val < 999);
       const best = [...models].sort((a, b) => a.val - b.val)[0];
       if (best) {
         insight.accuracy = `${best.name} is currently the most accurate model at ${best.val.toFixed(1)}% MAPE on the total slice; use it as the tie-breaker when scenario ranges are wide.`;
@@ -969,7 +983,7 @@ const ForecastingPanel = () => {
       (r.sales_market === 'Total' || r.sales_market === 'All')
     );
     return totalRow
-      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, Chronos: totalRow.Chronos }
+      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, MSTL_v2: totalRow.MSTL_v2, DHR_ARIMA: totalRow.DHR_ARIMA }
       : {};
   }, [leaderboardView]);
 

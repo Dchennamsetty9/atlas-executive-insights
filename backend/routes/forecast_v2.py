@@ -4,9 +4,12 @@ Forecast v2 — rich endpoints for the ForecastingPanel UI.
 Reads from:  datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
   columns: ds, product (Total/UCC/ITSG), sales_market (Total/NA/EMEA/APAC/LATAM),
            Actuals, Most_Likely, Worst_Case, Best_Case,
-           arr_ets, arr_prophet, arr_lightgbm, arr_chronos,
-           mape_ets, mape_prophet, mape_lightgbm, mape_chronos,
+           arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima,
+           mape_ets, mape_prophet, mape_lightgbm, mape_mstl_v2, mape_dhr_arima,
            forecast_type (actuals|rolling|roy), run_date
+  NOTE: arr_chronos / mape_chronos are NOT in the model suite.
+        The notebook writes mape_chronos=NULL explicitly so live rows never
+        surface stale demo Chronos values.
 
 Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 
@@ -61,15 +64,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "mape_field": "LightGBM",
         "has_forecast_type": True,
     },
-    "chronos": {
-        "display_name": "Chronos",
-        "table": FC_TABLE,
-        "most_likely_col": "arr_chronos",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
-        "mape_field": "Chronos",
-        "has_forecast_type": True,
-    },
+    # Chronos removed — not in UCC/ITSG V5 notebook model suite.
+    # arr_chronos / mape_chronos are NULL in arr_forecast_v2.
     "ensemble": {
         "display_name": "Ensemble",
         "table": FC_TABLE,
@@ -583,7 +579,9 @@ async def get_by_product(
 
     try:
         lb_rows_raw = await asyncio.to_thread(execute_query, f"""
-            SELECT product, sales_market, mape_ets, mape_prophet, mape_lightgbm, mape_chronos, best_mape, best_model
+            SELECT product, sales_market,
+                   mape_ets, mape_prophet, mape_lightgbm, mape_mstl_v2, mape_dhr_arima,
+                   best_mape, best_model
             FROM {LB_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
         """)
@@ -778,7 +776,8 @@ async def get_leaderboard():
             AVG(CAST(mape_ets AS DOUBLE)) AS mape_ets,
             AVG(CAST(mape_prophet AS DOUBLE)) AS mape_prophet,
             AVG(CAST(mape_lightgbm AS DOUBLE)) AS mape_lightgbm,
-            AVG(CAST(mape_chronos AS DOUBLE)) AS mape_chronos,
+            AVG(CAST(mape_mstl_v2 AS DOUBLE)) AS mape_mstl_v2,
+            AVG(CAST(mape_dhr_arima AS DOUBLE)) AS mape_dhr_arima,
             AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
             MAX(best_model) AS best_model
         FROM {LB_TABLE}
@@ -795,11 +794,13 @@ async def get_leaderboard():
     data = [{
         "product":        str(r.get("product") or ""),
         "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
-        "ETS":            _f(r.get("mape_ets"),    999),
-        "Prophet":        _f(r.get("mape_prophet"), 999),
-        "LightGBM":       _f(r.get("mape_lightgbm"),999),
-        "Chronos":        _f(r.get("mape_chronos"), 999),
-        "best_mape":      _f(r.get("best_mape"),    999),
+        "ETS":            _f(r.get("mape_ets"),       999),
+        "Prophet":        _f(r.get("mape_prophet"),   999),
+        "LightGBM":       _f(r.get("mape_lightgbm"),  999),
+        "MSTL_v2":        _f(r.get("mape_mstl_v2"),   999),
+        "DHR_ARIMA":      _f(r.get("mape_dhr_arima"),  999),
+        # Chronos intentionally omitted — not in model suite, NULL in live data
+        "best_mape":      _f(r.get("best_mape"),       999),
         "best_model":     str(r.get("best_model") or ""),
     } for r in rows_raw]
 
