@@ -1,8 +1,19 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # ARR Forecast v2 — Chronos (Companion Notebook)
+# MAGIC # ⚠️ DEPRECATED — ARR Forecast v2 — Chronos (Companion Notebook)
 # MAGIC
-# MAGIC **Run AFTER**: arr_forecast_v2_main.py
+# MAGIC **STATUS: RETIRED as of July 2026**
+# MAGIC
+# MAGIC Chronos/MSTL_v2 has been removed from the model ensemble for both UCC and ITSG.
+# MAGIC
+# MAGIC **Replacement:**
+# MAGIC - **ITSG**: DHR-ARIMA (already computed in `itsg_forecast_v5`) now fills the `arr_chronos` column via `atlas_combined_writer.py`
+# MAGIC - **UCC**: `arr_chronos` column left NULL — 3-model ensemble (ETS + Prophet + LightGBM) is sufficient
+# MAGIC
+# MAGIC **Do NOT run this notebook.** It is kept for historical reference only.
+# MAGIC Remove it from any Databricks Job schedules.
+# MAGIC
+# MAGIC **Run AFTER**: arr_forecast_v2_main.py (historical reference)
 # MAGIC
 # MAGIC This notebook:
 # MAGIC 1. Loads the same blended monthly actuals used by the main notebook
