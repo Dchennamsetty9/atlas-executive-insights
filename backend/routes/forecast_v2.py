@@ -307,6 +307,35 @@ def _pct(part: float, whole: float) -> float:
     return (part / whole) * 100.0
 
 
+async def _lb_columns() -> set[str]:
+    """Return lowercase leaderboard column names for runtime schema compatibility."""
+    sql = f"""
+        SELECT LOWER(column_name) AS column_name
+        FROM `{FORECAST_CATALOG}`.information_schema.columns
+        WHERE LOWER(table_schema) = LOWER('{FORECAST_SCHEMA}')
+          AND LOWER(table_name) = 'arr_forecast_v2_leaderboard'
+    """
+    try:
+        rows = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/lb-columns] schema introspection failed: %s", exc)
+        return set()
+
+    return {
+        str(r.get("column_name") or "").strip().lower()
+        for r in rows
+        if str(r.get("column_name") or "").strip()
+    }
+
+
+def _pick_lb_column(columns: set[str], *candidates: str) -> str:
+    """Pick the first available leaderboard column, else SQL NULL."""
+    for c in candidates:
+        if c and c.lower() in columns:
+            return c
+    return "NULL"
+
+
 class GovernanceLogRequest(BaseModel):
     decision: str
     owner: Optional[str] = None
@@ -578,9 +607,16 @@ async def get_by_product(
     qf   = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
 
     try:
+        lb_cols = await _lb_columns()
+        mstl_col = _pick_lb_column(lb_cols, "mape_mstl_v2", "mape_chronos")
+        # DHR has no legacy equivalent in old schemas; leave NULL if absent.
+        dhr_col = _pick_lb_column(lb_cols, "mape_dhr_arima")
+
         lb_rows_raw = await asyncio.to_thread(execute_query, f"""
             SELECT product, sales_market,
-                   mape_ets, mape_prophet, mape_lightgbm, mape_mstl_v2, mape_dhr_arima,
+                   mape_ets, mape_prophet, mape_lightgbm,
+                   {mstl_col} AS mape_mstl_v2,
+                   {dhr_col} AS mape_dhr_arima,
                    best_mape, best_model
             FROM {LB_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
@@ -769,6 +805,11 @@ async def get_leaderboard():
     if not _live():
         return _demo("data")
 
+    lb_cols = await _lb_columns()
+    mstl_col = _pick_lb_column(lb_cols, "mape_mstl_v2", "mape_chronos")
+    # DHR has no legacy equivalent in old schemas; keep NULL when column is missing.
+    dhr_col = _pick_lb_column(lb_cols, "mape_dhr_arima")
+
     sql = f"""
         SELECT
             product,
@@ -776,8 +817,8 @@ async def get_leaderboard():
             AVG(CAST(mape_ets AS DOUBLE)) AS mape_ets,
             AVG(CAST(mape_prophet AS DOUBLE)) AS mape_prophet,
             AVG(CAST(mape_lightgbm AS DOUBLE)) AS mape_lightgbm,
-            AVG(CAST(mape_mstl_v2 AS DOUBLE)) AS mape_mstl_v2,
-            AVG(CAST(mape_dhr_arima AS DOUBLE)) AS mape_dhr_arima,
+            AVG(CAST({mstl_col} AS DOUBLE)) AS mape_mstl_v2,
+            AVG(CAST({dhr_col} AS DOUBLE)) AS mape_dhr_arima,
             AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
             MAX(best_model) AS best_model
         FROM {LB_TABLE}
