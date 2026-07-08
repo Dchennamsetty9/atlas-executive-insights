@@ -114,9 +114,17 @@ def _demo(key: str, error: str = "Databricks unavailable"):
     return {"source": "demo", "live_mode_available": False,
             "error": error, key: []}
 
-def _product_filter(product, col="product"):
-    # When no product selected, default to Total to avoid summing all 18 slices
-    effective = product if (product and product not in ("All", "all")) else "Total"
+def _selected_product(product, product_line=None):
+    selected = product_line if product_line not in (None, "", "All", "all") else product
+    if selected in (None, "", "All", "all"):
+        return "Total"
+    return selected
+
+
+def _product_filter(product, product_line=None, col="product"):
+    # When no product selected, default to Total to avoid summing all 18 slices.
+    # Product line is the active UI filter; product remains for backward compatibility.
+    effective = _selected_product(product, product_line)
     return f"AND {col} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 
@@ -158,6 +166,7 @@ def _normalized_forecast_sql(
     model: str,
     forecast_type: str,
     product: Optional[str],
+    product_line: Optional[str],
     sales_market: Optional[str],
     year: Optional[int] = None,
     quarter: Optional[int] = None,
@@ -167,7 +176,7 @@ def _normalized_forecast_sql(
     value_col = source["most_likely_col"]
     lower_col = source["lower_col"]
     upper_col = source["upper_col"]
-    pf = _product_filter(product)
+    pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
     yf = _year_filter(year)
     qf = _quarter_filter(quarter, year) if quarter else ""
@@ -348,6 +357,7 @@ class GovernanceLogRequest(BaseModel):
 @router.get("/weekly")
 async def get_weekly(
     product:       Optional[str] = Query(None),
+    product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
     model:         str           = Query("ensemble"),
@@ -373,7 +383,7 @@ async def get_weekly(
             SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
             FROM {FC_TABLE}
             WHERE {_latest_run()}
-              {_product_filter(product)} {_geo_filter(sales_market)}
+                            {_product_filter(product, product_line)} {_geo_filter(sales_market)}
               AND (
                     ({_actuals_year_filter(year)} {f"AND {_quarter_filter(quarter, year)}" if quarter else ""})
                     OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter})
@@ -381,8 +391,8 @@ async def get_weekly(
             ORDER BY ds
         """
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
-            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, sales_market, year, quarter)),
-            asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, sales_market, year, quarter)),
+                        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter)),
+                        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter)),
             asyncio.to_thread(execute_query, kpi_sql),
         )
     except Exception as exc:
@@ -426,6 +436,7 @@ async def get_weekly(
 @router.get("/monthly")
 async def get_monthly(
     product:       Optional[str] = Query(None),
+    product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
     year:          Optional[int] = Query(None),
@@ -437,7 +448,7 @@ async def get_monthly(
 
     forecast_type = _validate_forecast_type(forecast_type)
 
-    pf = _product_filter(product)
+    pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
     yf = _year_filter(year)
     qf = _quarter_filter(quarter, year) if quarter else ""
@@ -512,6 +523,7 @@ async def get_monthly(
 @router.get("/ytd")
 async def get_ytd(
     product:       Optional[str] = Query(None),
+    product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
     year:          Optional[int] = Query(None),
@@ -524,7 +536,7 @@ async def get_ytd(
     forecast_type = _validate_forecast_type(forecast_type)
 
     year = year if year else datetime.date.today().year
-    pf   = _product_filter(product)
+    pf   = _product_filter(product, product_line)
     gf   = _geo_filter(sales_market)
     yf   = _year_filter(year)
     qf   = _quarter_filter(quarter, year) if quarter else ""
@@ -755,6 +767,7 @@ async def get_models():
 @router.get("/historical")
 async def get_historical(
     product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
     sales_market: Optional[str] = Query(None),
     year:         Optional[int] = Query(None),
 ):
@@ -762,7 +775,7 @@ async def get_historical(
     if not _live():
         return _demo("rows")
 
-    pf = _product_filter(product)
+    pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
     yf = _year_filter(year)
 
