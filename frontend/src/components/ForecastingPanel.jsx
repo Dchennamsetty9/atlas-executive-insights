@@ -1235,9 +1235,13 @@ const ForecastingPanel = () => {
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
                 : weeklyView && weeklyView.length > 0 && (() => {
-                      // Prefer server-computed kpis (quarter-aware, handles closed quarters)
+                      // Most Likely = per-model forecast sum from chart rows (arr_likely changes per model pill).
+                      // Best/Worst Case = ensemble P10/P90 from backend kpis (constant across models).
                       const kp = weeklyKpis;
-                      const ml  = kp?.most_likely ?? 0;
+                      const forecastRows = (weeklyView || []).filter(r => r.arr_likely != null);
+                      const modelMl = forecastRows.reduce((s, r) => s + Number(r.arr_likely || 0), 0);
+                      // Fall back to server kpis most_likely only when no chart rows (demo mode)
+                      const ml  = forecastRows.length > 0 ? modelMl : (kp?.most_likely ?? 0);
                       const bc  = kp?.best_case   ?? 0;
                       const wc  = kp?.worst_case  ?? 0;
                       const ytdActual = kp?.ytd_actuals
