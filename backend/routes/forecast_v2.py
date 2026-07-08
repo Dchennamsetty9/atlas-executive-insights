@@ -64,6 +64,24 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "mape_field": "LightGBM",
         "has_forecast_type": True,
     },
+    "mstl_v2": {
+        "display_name": "MSTL",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_mstl_v2",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "MSTL_v2",
+        "has_forecast_type": True,
+    },
+    "dhr_arima": {
+        "display_name": "DHR-ARIMA",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_dhr_arima",
+        "lower_col": "Worst_Case",
+        "upper_col": "Best_Case",
+        "mape_field": "DHR_ARIMA",
+        "has_forecast_type": True,
+    },
     # Chronos removed — not in UCC/ITSG V5 notebook model suite.
     # arr_chronos / mape_chronos are NULL in arr_forecast_v2.
     "ensemble": {

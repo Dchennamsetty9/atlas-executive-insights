@@ -53,18 +53,21 @@ const fmtDate = (d) => {
 };
 const mapeColor = (v) => (v < 15 ? '#10b981' : v < 25 ? '#f59e0b' : '#ef4444');
 const MODEL_LABELS = {
-  ETS: 'ETS',
-  Prophet: 'Prophet',
+  ETS:      'ETS',
+  Prophet:  'Prophet',
   LightGBM: 'LightGBM',
-  MSTL_v2: 'MSTL',
-  DHR_ARIMA: 'DHR-ARIMA',
+  Mstl_v2:  'MSTL',
+  MSTL_v2:  'MSTL',
+  Dhr_arima:'DHR-ARIMA',
+  DHR_ARIMA:'DHR-ARIMA',
+  Ensemble: 'Ensemble',
 };
-const formatModelLabel = (name) => MODEL_LABELS[name] || name || 'Unknown';
+const formatModelLabel = (name) => MODEL_LABELS[name] || (name ? name.replace(/_/g,' ') : 'Unknown');
 
 // ── Colour constants ──────────────────────────────────────────────────────────
 const YEAR_COLORS  = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
-// Chronos removed — not in UCC/ITSG V5 model suite; notebook writes mape_chronos=NULL
-const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', MSTL: '#a78bfa', DHR: '#fb923c', Ensemble: '#00FF88' };
+// 6 notebook models: ensemble, prophet, ets, lightgbm, mstl_v2, dhr_arima
+const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Mstl_v2: '#a78bfa', Dhr_arima: '#fb923c', Ensemble: '#00FF88' };
 const MOMENTUM_META = {
   STABLE:       { color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
   ACCELERATING: { color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
@@ -623,9 +626,9 @@ const AiInsightsSection = ({ model, prodLine }) => {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'AI Insights', 'Exec Mode'];
-// Models exactly matching the UCC/ITSG V5 notebook ensemble: ensemble, prophet, ets, lightgbm
-// Chronos removed — not in notebook model suite (arr_chronos / mape_chronos are NULL in live data)
-const MODELS     = ['ensemble', 'prophet', 'ets', 'lightgbm'];
+// 6 notebook models: Adaptive_Ensemble, Prophet_trend, ETS, LightGBM (Global_LGB_Q50), MSTL_v2, DHR_ARIMA
+// Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
+const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
 const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
 
@@ -1230,27 +1233,61 @@ const ForecastingPanel = () => {
                   </div>
                 : weeklyView && weeklyView.length > 0 && (() => {
                       // Prefer server-computed kpis (quarter-aware, handles closed quarters)
-                      // over client-side row summation (chart rows null forecast fields for actuals).
                       const kp = weeklyKpis;
+                      const ml  = kp?.most_likely ?? 0;
+                      const bc  = kp?.best_case   ?? 0;
+                      const wc  = kp?.worst_case  ?? 0;
                       const ytdActual = kp?.ytd_actuals
                         ?? [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
                         ?? 0;
-                    return (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
-                        {[
-                          { label: 'Most Likely', val: kp?.most_likely ?? 0, color: '#f1f5f9', sub: 'Planning center'   },
-                          { label: 'Best Case',   val: kp?.best_case   ?? 0, color: '#10b981', sub: '~20% probability' },
-                          { label: 'Worst Case',  val: kp?.worst_case  ?? 0, color: '#ef4444', sub: '~15% probability' },
-                          { label: 'Actuals YTD', val: ytdActual,            color: '#f59e0b', sub: 'Realized YTD'     },
-                        ].map(({ label, val, color, sub }) => (
-                          <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
-                            <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
-                            <div style={{ fontSize: 22, fontWeight: 800, color, letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(val)}</div>
-                            <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>{sub}</div>
+
+                      // Detect a fully-closed quarter: Panel Writer sets ML=BC=WC=Actuals
+                      // when there are no open forecast weeks in the selection.
+                      const isClosed = ml > 0 && ml === bc && ml === wc;
+
+                      if (isClosed) {
+                        // Closed quarter — scenario bands are identical to actuals; show a
+                        // single consolidated card rather than 4 duplicate tiles.
+                        return (
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
+                            <div style={{ gridColumn: '1 / 3', background: 'rgba(16,185,129,0.06)',
+                                          border: '1px solid rgba(16,185,129,0.25)', borderRadius: 10, padding: '12px 14px' }}>
+                              <div style={{ fontSize: 9, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Closed Quarter — Actuals</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: '#10b981', letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(ml)}</div>
+                              <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>Q{selectedQuarter ?? ''} {selectedYear} final — scenario bands equal actuals</div>
+                            </div>
+                            <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
+                              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Actuals YTD</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color: '#f59e0b', letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(ytdActual)}</div>
+                              <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>Realized YTD</div>
+                            </div>
+                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 10, padding: '12px 14px',
+                                          display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                              <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>
+                                Forecast range not available — all {selectedQuarter ? `Q${selectedQuarter}` : 'selected'} weeks are closed actuals.
+                                Select a future quarter or <b style={{color:'#f59e0b'}}>Rest of Year</b> to see scenario bands.
+                              </div>
+                            </div>
                           </div>
-                        ))}
-                      </div>
-                    );
+                        );
+                      }
+
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
+                          {[
+                            { label: 'Most Likely', val: ml,         color: '#f1f5f9', sub: 'Planning center'   },
+                            { label: 'Best Case',   val: bc,         color: '#10b981', sub: '~20% probability' },
+                            { label: 'Worst Case',  val: wc,         color: '#ef4444', sub: '~15% probability' },
+                            { label: 'Actuals YTD', val: ytdActual,  color: '#f59e0b', sub: 'Realized YTD'     },
+                          ].map(({ label, val, color, sub }) => (
+                            <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
+                              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
+                              <div style={{ fontSize: 22, fontWeight: 800, color, letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(val)}</div>
+                              <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>{sub}</div>
+                            </div>
+                          ))}
+                        </div>
+                      );
                   })()
               }
 

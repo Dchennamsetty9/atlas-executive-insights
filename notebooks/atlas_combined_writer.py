@@ -56,15 +56,15 @@ YEAR_END     = datetime.date(TODAY.year, 12, 31)
 ROLLING_END  = RUN_DATE + datetime.timedelta(weeks=13)
 
 # ── Model name → wide column mapping ─────────────────────────────────────────
-# itsg_forecast_v5.model values → arr_forecast_v2 column names
+# Source notebook model names → arr_forecast_v2 column names
 MODEL_COL_MAP = {
     "ETS":                "arr_ets",
     "Prophet_trend":      "arr_prophet",
     "Global_LGB_Q50_ITSG":"arr_lightgbm",
     "Global_LGB":         "arr_lightgbm",   # fallback if suffix differs
-    "MSTL_v2":            "__retired__",     # Chronos/MSTL_v2 retired — not mapped to any column
+    "MSTL_v2":            "arr_mstl_v2",    # MSTL — now has a proper column
+    "DHR-ARIMA":          "arr_dhr_arima",  # DHR-ARIMA — dedicated column (not aliased to arr_chronos)
     "Adaptive_Ensemble":  "__ensemble__",   # handled separately → Most_Likely/P10/P90
-    "DHR-ARIMA":          "arr_chronos",    # DHR-ARIMA replaces Chronos in arr_chronos slot
 }
 
 print(f"[combined_writer] run_date={RUN_DATE} | itsg_src={ITSG_TABLE}")
@@ -128,7 +128,7 @@ def pivot_itsg_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     Output columns:
         ds, sales_market,
         Most_Likely, Worst_Case, Best_Case,
-        arr_ets, arr_prophet, arr_lightgbm, arr_chronos
+        arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima
     """
     result_rows = []
 
@@ -150,13 +150,13 @@ def pivot_itsg_to_wide(df: pd.DataFrame) -> pd.DataFrame:
         # Individual models
         for model_name, col in MODEL_COL_MAP.items():
             if col.startswith("__"):
-                continue  # handled above (ensemble) or skipped (DHR)
+                continue  # handled above (ensemble) or skipped
             match = grp[grp["model"] == model_name]
             if not match.empty:
                 row[col] = float(match["forecast"].iloc[0]) if pd.notna(match["forecast"].iloc[0]) else None
 
         # If ensemble missing but individual models exist, compute simple mean as Most_Likely
-        individual_vals = [row.get(c) for c in ["arr_ets","arr_prophet","arr_lightgbm","arr_chronos"]
+        individual_vals = [row.get(c) for c in ["arr_ets","arr_prophet","arr_lightgbm","arr_mstl_v2","arr_dhr_arima"]
                            if row.get(c) is not None]
         if row["Most_Likely"] is None and individual_vals:
             row["Most_Likely"] = float(np.mean(individual_vals))
@@ -166,7 +166,7 @@ def pivot_itsg_to_wide(df: pd.DataFrame) -> pd.DataFrame:
     wide_df = pd.DataFrame(result_rows)
 
     # Ensure all model columns exist (fill None if a model didn't produce output)
-    for col in ["Most_Likely","Worst_Case","Best_Case","arr_ets","arr_prophet","arr_lightgbm","arr_chronos"]:
+    for col in ["Most_Likely","Worst_Case","Best_Case","arr_ets","arr_prophet","arr_lightgbm","arr_mstl_v2","arr_dhr_arima"]:
         if col not in wide_df.columns:
             wide_df[col] = None
 
@@ -291,11 +291,13 @@ def merge_actuals_and_tag(wide: pd.DataFrame,
             "arr_ets":       float(row.get("arr_ets"))       if pd.notna(row.get("arr_ets"))       else None,
             "arr_prophet":   float(row.get("arr_prophet"))   if pd.notna(row.get("arr_prophet"))   else None,
             "arr_lightgbm":  float(row.get("arr_lightgbm"))  if pd.notna(row.get("arr_lightgbm"))  else None,
-            "arr_chronos":   float(row.get("arr_chronos"))   if pd.notna(row.get("arr_chronos"))   else None,
+            "arr_mstl_v2":   float(row.get("arr_mstl_v2"))   if pd.notna(row.get("arr_mstl_v2"))   else None,
+            "arr_dhr_arima": float(row.get("arr_dhr_arima")) if pd.notna(row.get("arr_dhr_arima")) else None,
             "mape_ets":      None,   # filled from MLflow in Cell 6
             "mape_prophet":  None,
             "mape_lightgbm": None,
-            "mape_chronos":  None,
+            "mape_mstl_v2":  None,
+            "mape_dhr_arima":None,
             "forecast_type": fc_type,
             "run_date":      RUN_DATE,
         })
@@ -353,9 +355,10 @@ def load_itsg_mape_from_mlflow() -> dict:
             "wape_lgb_p50":      "mape_lightgbm",
             "wape_lightgbm":     "mape_lightgbm",
             "mape_lightgbm":     "mape_lightgbm",
-            "wape_mstl_v2":      "mape_chronos",
-            "mape_mstl_v2":      "mape_chronos",
-            "mape_chronos":      "mape_chronos",
+            "wape_mstl_v2":      "mape_mstl_v2",
+            "mape_mstl_v2":      "mape_mstl_v2",
+            "wape_dhr_arima":    "mape_dhr_arima",
+            "mape_dhr_arima":    "mape_dhr_arima",
         }
         for mlflow_key, col in METRIC_MAP.items():
             full_key = f"metrics.{mlflow_key}"
@@ -386,30 +389,32 @@ else:
 # COMMAND ----------
 
 OUTPUT_SCHEMA = StructType([
-    StructField("ds",            DateType(),   True),
-    StructField("product",       StringType(), True),
-    StructField("sales_market",  StringType(), True),
-    StructField("Actuals",       DoubleType(), True),
-    StructField("Most_Likely",   DoubleType(), True),
-    StructField("Worst_Case",    DoubleType(), True),
-    StructField("Best_Case",     DoubleType(), True),
-    StructField("arr_ets",       DoubleType(), True),
-    StructField("arr_prophet",   DoubleType(), True),
-    StructField("arr_lightgbm",  DoubleType(), True),
-    StructField("arr_chronos",   DoubleType(), True),
-    StructField("mape_ets",      DoubleType(), True),
-    StructField("mape_prophet",  DoubleType(), True),
-    StructField("mape_lightgbm", DoubleType(), True),
-    StructField("mape_chronos",  DoubleType(), True),
-    StructField("forecast_type", StringType(), True),
-    StructField("run_date",      DateType(),   True),
+    StructField("ds",             DateType(),   True),
+    StructField("product",        StringType(), True),
+    StructField("sales_market",   StringType(), True),
+    StructField("Actuals",        DoubleType(), True),
+    StructField("Most_Likely",    DoubleType(), True),
+    StructField("Worst_Case",     DoubleType(), True),
+    StructField("Best_Case",      DoubleType(), True),
+    StructField("arr_ets",        DoubleType(), True),
+    StructField("arr_prophet",    DoubleType(), True),
+    StructField("arr_lightgbm",   DoubleType(), True),
+    StructField("arr_mstl_v2",    DoubleType(), True),
+    StructField("arr_dhr_arima",  DoubleType(), True),
+    StructField("mape_ets",       DoubleType(), True),
+    StructField("mape_prophet",   DoubleType(), True),
+    StructField("mape_lightgbm",  DoubleType(), True),
+    StructField("mape_mstl_v2",   DoubleType(), True),
+    StructField("mape_dhr_arima", DoubleType(), True),
+    StructField("forecast_type",  StringType(), True),
+    StructField("run_date",       DateType(),   True),
 ])
 
 # Coerce types
 numeric_cols = [
     "Actuals","Most_Likely","Worst_Case","Best_Case",
-    "arr_ets","arr_prophet","arr_lightgbm","arr_chronos",
-    "mape_ets","mape_prophet","mape_lightgbm","mape_chronos",
+    "arr_ets","arr_prophet","arr_lightgbm","arr_mstl_v2","arr_dhr_arima",
+    "mape_ets","mape_prophet","mape_lightgbm","mape_mstl_v2","mape_dhr_arima",
 ]
 for c in numeric_cols:
     final_pd[c] = pd.to_numeric(final_pd[c], errors="coerce")
@@ -432,11 +437,13 @@ spark.sql(f"""
         arr_ets       DOUBLE      COMMENT 'ETS point forecast',
         arr_prophet   DOUBLE      COMMENT 'Prophet point forecast',
         arr_lightgbm  DOUBLE      COMMENT 'LightGBM quantile P50 forecast',
-        arr_chronos   DOUBLE      COMMENT 'MSTL_v2 forecast',
+        arr_mstl_v2   DOUBLE      COMMENT 'MSTL_v2 point forecast',
+        arr_dhr_arima DOUBLE      COMMENT 'DHR-ARIMA point forecast',
         mape_ets      DOUBLE      COMMENT 'Walk-forward WAPE — ETS',
         mape_prophet  DOUBLE      COMMENT 'Walk-forward WAPE — Prophet',
         mape_lightgbm DOUBLE      COMMENT 'Walk-forward WAPE — LightGBM',
-        mape_chronos  DOUBLE      COMMENT 'Walk-forward WAPE — MSTL_v2',
+        mape_mstl_v2  DOUBLE      COMMENT 'Walk-forward WAPE — MSTL_v2',
+        mape_dhr_arima DOUBLE     COMMENT 'Walk-forward WAPE — DHR-ARIMA',
         forecast_type STRING      COMMENT 'actuals | rolling | roy',
         run_date      DATE        COMMENT 'Notebook run date (partition key)'
     )
@@ -447,6 +454,19 @@ spark.sql(f"""
     )
 """)
 
+# Add new columns if table was created before this schema version
+for alter_col, alter_comment in [
+    ("arr_mstl_v2",   "MSTL_v2 point forecast"),
+    ("arr_dhr_arima", "DHR-ARIMA point forecast"),
+    ("mape_mstl_v2",  "Walk-forward WAPE - MSTL_v2"),
+    ("mape_dhr_arima","Walk-forward WAPE - DHR-ARIMA"),
+]:
+    try:
+        spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS ({alter_col} DOUBLE COMMENT '{alter_comment}')")
+        print(f"[combined_writer] Added column {alter_col} to {OUT_TABLE}")
+    except Exception:
+        pass  # Column already exists
+
 # Idempotent: delete ITSG rows for today's run_date, then re-insert
 spark.sql(f"""
     DELETE FROM {OUT_TABLE}
@@ -454,7 +474,7 @@ spark.sql(f"""
       AND run_date = '{RUN_DATE}'
 """)
 
-out_sdf.write.mode("append").saveAsTable(OUT_TABLE)
+out_sdf.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(OUT_TABLE)
 spark.sql(f"OPTIMIZE {OUT_TABLE} ZORDER BY (run_date, product)")
 
 written = spark.sql(f"""
@@ -478,46 +498,50 @@ for mkt in final_pd["sales_market"].unique():
     mape_ets_val       = mape_vals.get("mape_ets")
     mape_prophet_val   = mape_vals.get("mape_prophet")
     mape_lightgbm_val  = mape_vals.get("mape_lightgbm")
-    mape_chronos_val   = mape_vals.get("mape_chronos")
+    mape_mstl_v2_val   = mape_vals.get("mape_mstl_v2")
+    mape_dhr_arima_val = mape_vals.get("mape_dhr_arima")
 
     candidates = {
-        "ETS":        mape_ets_val,
-        "Prophet":    mape_prophet_val,
-        "LightGBM":   mape_lightgbm_val,
-        "MSTL_v2":    mape_chronos_val,
+        "ETS":       mape_ets_val,
+        "Prophet":   mape_prophet_val,
+        "LightGBM":  mape_lightgbm_val,
+        "MSTL_v2":   mape_mstl_v2_val,
+        "DHR_ARIMA": mape_dhr_arima_val,
     }
     valid = {k: v for k, v in candidates.items() if v is not None}
     best_model = min(valid, key=valid.get) if valid else None
     best_mape  = valid[best_model]        if valid else None
 
     lb_rows.append({
-        "product":       "ITSG",
-        "sales_market":  mkt,
-        "mape_ets":      mape_ets_val,
-        "mape_prophet":  mape_prophet_val,
-        "mape_lightgbm": mape_lightgbm_val,
-        "mape_chronos":  mape_chronos_val,
-        "best_mape":     best_mape,
-        "best_model":    best_model,
-        "run_date":      RUN_DATE,
+        "product":        "ITSG",
+        "sales_market":   mkt,
+        "mape_ets":       mape_ets_val,
+        "mape_prophet":   mape_prophet_val,
+        "mape_lightgbm":  mape_lightgbm_val,
+        "mape_mstl_v2":   mape_mstl_v2_val,
+        "mape_dhr_arima": mape_dhr_arima_val,
+        "best_mape":      best_mape,
+        "best_model":     best_model,
+        "run_date":       RUN_DATE,
     })
 
 lb_pd = pd.DataFrame(lb_rows)
 
 LB_SCHEMA = StructType([
-    StructField("product",       StringType(), True),
-    StructField("sales_market",  StringType(), True),
-    StructField("mape_ets",      DoubleType(), True),
-    StructField("mape_prophet",  DoubleType(), True),
-    StructField("mape_lightgbm", DoubleType(), True),
-    StructField("mape_chronos",  DoubleType(), True),
-    StructField("best_mape",     DoubleType(), True),
-    StructField("best_model",    StringType(), True),
-    StructField("run_date",      DateType(),   True),
+    StructField("product",        StringType(), True),
+    StructField("sales_market",   StringType(), True),
+    StructField("mape_ets",       DoubleType(), True),
+    StructField("mape_prophet",   DoubleType(), True),
+    StructField("mape_lightgbm",  DoubleType(), True),
+    StructField("mape_mstl_v2",   DoubleType(), True),
+    StructField("mape_dhr_arima", DoubleType(), True),
+    StructField("best_mape",      DoubleType(), True),
+    StructField("best_model",     StringType(), True),
+    StructField("run_date",       DateType(),   True),
 ])
 
 lb_pd["run_date"] = pd.to_datetime(lb_pd["run_date"]).dt.date
-for c in ["mape_ets","mape_prophet","mape_lightgbm","mape_chronos","best_mape"]:
+for c in ["mape_ets","mape_prophet","mape_lightgbm","mape_mstl_v2","mape_dhr_arima","best_mape"]:
     lb_pd[c] = pd.to_numeric(lb_pd[c], errors="coerce")
 
 lb_sdf = spark.createDataFrame(lb_pd, schema=LB_SCHEMA)
@@ -529,18 +553,26 @@ spark.sql(f"""
         mape_ets      DOUBLE,
         mape_prophet  DOUBLE,
         mape_lightgbm DOUBLE,
-        mape_chronos  DOUBLE,
+        mape_mstl_v2  DOUBLE,
+        mape_dhr_arima DOUBLE,
         best_mape     DOUBLE,
         best_model    STRING,
         run_date      DATE
     ) USING DELTA
 """)
 
+for alter_col in ["mape_mstl_v2", "mape_dhr_arima"]:
+    try:
+        spark.sql(f"ALTER TABLE {LB_TABLE} ADD COLUMNS ({alter_col} DOUBLE)")
+        print(f"[combined_writer] Added column {alter_col} to {LB_TABLE}")
+    except Exception:
+        pass  # Column already exists
+
 spark.sql(f"DELETE FROM {LB_TABLE} WHERE product = 'ITSG' AND run_date = '{RUN_DATE}'")
-lb_sdf.write.mode("append").saveAsTable(LB_TABLE)
+lb_sdf.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(LB_TABLE)
 
 print(f"✅  Leaderboard → {LB_TABLE}")
-lb_pd[["product","sales_market","mape_ets","mape_prophet","mape_lightgbm","mape_chronos","best_model","best_mape"]].to_string(index=False)
+lb_pd[["product","sales_market","mape_ets","mape_prophet","mape_lightgbm","mape_mstl_v2","mape_dhr_arima","best_model","best_mape"]].to_string(index=False)
 
 # COMMAND ----------
 # MAGIC %md ## Cell 9 — GRANT service principal + sanity check
