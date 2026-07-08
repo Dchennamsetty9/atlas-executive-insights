@@ -14,7 +14,10 @@ Primary source table:
 """
 
 import os
+import json
+import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query
@@ -22,12 +25,17 @@ from fastapi import APIRouter, Query
 from services.databricks_connection import execute_query, token_available
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
+logger = logging.getLogger(__name__)
 
 GOLD_CATALOG = os.getenv("DATABRICKS_CATALOG", "datagroup_mdl")
 GOLD_SCHEMA = os.getenv("DATABRICKS_SCHEMA", "mdl_sales_analytics")
 FORECAST_OUTPUT_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`forecast_prophet`"
 FORECAST_INSIGHTS_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_v2`"
 FORECAST_LEADERBOARD_TABLE = f"`{GOLD_CATALOG}`.`{GOLD_SCHEMA}`.`arr_forecast_v2_leaderboard`"
+AI_INSIGHTS_JSON_PATH = os.getenv(
+    "AI_INSIGHTS_JSON_PATH",
+    f"/Volumes/{GOLD_CATALOG}/{GOLD_SCHEMA}/forecast_assets/ai_insights_latest.json",
+)
 
 
 def _live_mode_available() -> bool:
@@ -198,6 +206,106 @@ def _insight_defaults() -> dict:
     }
 
 
+def _selected_product(product: Optional[str], product_line: Optional[str]) -> Optional[str]:
+    selected = product_line if product_line not in (None, "", "All") else product
+    if selected in (None, "", "All"):
+        return None
+    return str(selected)
+
+
+def _dict_get_case_insensitive(obj: dict, key: str):
+    if key in obj:
+        return obj[key]
+    key_l = key.lower()
+    for k, v in obj.items():
+        if str(k).lower() == key_l:
+            return v
+    return None
+
+
+def _pick_asset_segment(asset: dict, selected_product: Optional[str]) -> dict:
+    """Pick the best product-scoped block from asset JSON if available."""
+    if not selected_product:
+        if isinstance(asset.get("data"), dict):
+            return asset["data"]
+        return asset
+
+    product = selected_product.strip()
+    product_l = product.lower()
+
+    for container_key in ("by_product", "products", "product_insights", "segments"):
+        container = asset.get(container_key)
+        if isinstance(container, dict):
+            picked = _dict_get_case_insensitive(container, product)
+            if isinstance(picked, dict):
+                return picked
+        if isinstance(container, list):
+            for row in container:
+                if not isinstance(row, dict):
+                    continue
+                row_product = str(
+                    row.get("product")
+                    or row.get("product_line")
+                    or row.get("name")
+                    or ""
+                ).strip().lower()
+                if row_product == product_l:
+                    return row
+
+    if isinstance(asset.get("data"), dict):
+        return asset["data"]
+    return asset
+
+
+def _load_ai_insights_from_uc_asset(product: Optional[str], product_line: Optional[str]) -> Optional[dict]:
+    """
+    Load AI insights from the UC Volume JSON asset and normalise to frontend shape.
+    Returns None when file is not available or payload is invalid.
+    """
+    path = Path(AI_INSIGHTS_JSON_PATH)
+    if not path.exists() or not path.is_file():
+        return None
+
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            asset = json.load(fp)
+    except Exception as exc:
+        logger.warning("[forecast/intelligence] failed to read asset %s: %s", AI_INSIGHTS_JSON_PATH, exc)
+        return None
+
+    if not isinstance(asset, dict):
+        return None
+
+    selected = _selected_product(product, product_line)
+    scoped = _pick_asset_segment(asset, selected)
+    if not isinstance(scoped, dict):
+        return None
+
+    defaults = _insight_defaults()
+
+    payload = {
+        "run_date": scoped.get("run_date") or asset.get("run_date") or asset.get("generated_at") or "—",
+        "momentum": scoped.get("momentum") or scoped.get("trend_status") or "STABLE",
+        "risk_level": scoped.get("risk_level") or "MODERATE RISK",
+        "model_confidence": scoped.get("model_confidence") or scoped.get("confidence") or 72,
+        "best_model": scoped.get("best_model") or "Prophet",
+        "best_mape": scoped.get("best_mape") or scoped.get("mape") or 19.4,
+        "ensemble_mape": scoped.get("ensemble_mape") or scoped.get("best_mape") or scoped.get("mape") or 19.4,
+        "forecast_most_likely": scoped.get("forecast_most_likely") or scoped.get("most_likely") or 0,
+        "forecast_low": scoped.get("forecast_low") or scoped.get("worst_case") or 0,
+        "forecast_high": scoped.get("forecast_high") or scoped.get("best_case") or 0,
+        "upside": scoped.get("upside") or scoped.get("upside_dollar"),
+        "downside": scoped.get("downside") or scoped.get("downside_dollar"),
+        "narrative": scoped.get("narrative") or scoped.get("summary") or "",
+        "key_drivers": scoped.get("key_drivers") or defaults["key_drivers"],
+        "executive_actions": scoped.get("executive_actions") or defaults["executive_actions"],
+        "downside_risks": scoped.get("downside_risks") or defaults["downside_risks"],
+        "upside_opportunities": scoped.get("upside_opportunities") or defaults["upside_opportunities"],
+    }
+
+    return {"source": "live_asset", "data": payload}
+
+
 def _demo_insights(metric: str = "won_pipeline") -> dict:
     """
     Demo fallback — always returns {source, data} shape matching ForecastIntelligence.jsx.
@@ -343,6 +451,11 @@ async def get_forecast_insights(
     Derive executive forecast intelligence from arr_forecast_v2.
     This endpoint is resilient and always returns a usable payload.
     """
+    # Preferred path: read the UC Volume JSON generated by the Panel Writer.
+    asset_payload = _load_ai_insights_from_uc_asset(product, product_line)
+    if asset_payload:
+        return asset_payload
+
     model_used = _normalize_model_name(model)
     if model_used != "prophet":
         model_used = "prophet"
