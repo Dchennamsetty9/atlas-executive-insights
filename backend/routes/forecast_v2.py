@@ -99,11 +99,10 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
 
 def _live() -> bool:
     force_live = os.getenv("FORCE_LIVE_DATA", "").lower() == "true"
-    has_host = bool(os.getenv("DATABRICKS_HOST") or os.getenv("DATABRICKS_SERVER_HOSTNAME"))
-    # In Databricks Apps we may rely on OAuth/service-principal auth without a PAT.
-    # FORCE_LIVE_DATA should bypass the token precheck so we attempt real queries
-    # and return concrete errors instead of silently showing demo mode.
-    return force_live or (has_host and token_available())
+    # The connector already resolves host defaults and multiple auth modes
+    # (forwarded user token, PAT, or OAuth M2M). Requiring explicit host env vars
+    # here causes false demo-mode fallbacks even when live Databricks auth exists.
+    return force_live or token_available()
 
 
 def _validate_forecast_type(forecast_type: str) -> str:

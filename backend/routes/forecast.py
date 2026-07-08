@@ -36,12 +36,8 @@ AI_INSIGHTS_JSON_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_ass
 
 
 def _live_mode_available() -> bool:
-    on_databricks = bool(
-        os.getenv("DATABRICKS_HOST")
-        or os.getenv("DATABRICKS_SERVER_HOSTNAME")
-    )
     force_live = os.getenv("FORCE_LIVE_DATA", "false").lower() == "true"
-    return token_available() and (on_databricks or force_live)
+    return force_live or token_available()
 
 
 def _f(value, default: float = 0.0) -> float:
