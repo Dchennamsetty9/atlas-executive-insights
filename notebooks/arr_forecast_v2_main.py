@@ -589,8 +589,11 @@ def forecast_slice_monthly(product_group: str, geo: str,
     lo_ens = we*lo_ets + wp*lo_ph + wl*lo_lgb
     hi_ens = we*hi_ets + wp*hi_ph + wl*hi_lgb
 
-    worst = np.minimum(lo_ens, fc_ens * 0.88)
-    best  = np.maximum(hi_ens, fc_ens * 1.12)
+    # Use the model-derived P10/P90 directly — NO synthetic ±% clamp.
+    # The ensemble prediction interval is already wider than any fixed offset
+    # (typically ±20–30%+ for quarterly horizons); clamping destroys accuracy.
+    worst = lo_ens
+    best  = hi_ens
 
     # Monthly forecast date spine
     last_month = dates[-1]
@@ -604,8 +607,8 @@ def forecast_slice_monthly(product_group: str, geo: str,
         "fc_prophet":    np.maximum(fc_ph,  0),
         "fc_lgb":        np.maximum(fc_lgb, 0),
         "fc_ensemble":   np.maximum(fc_ens, 0),
-        "lo_ensemble":   np.maximum(worst,  0),
-        "hi_ensemble":   np.maximum(best,   0),
+        "lo_ensemble":   np.maximum(worst,  0),   # real P10
+        "hi_ensemble":   np.maximum(best,   0),   # real P90
         "smape_ets":     sm_ets,
         "smape_prophet": sm_ph,
         "smape_lgb":     sm_lgb,
@@ -633,10 +636,11 @@ for product_group, geo in SLICES:
                 "sales_market":  geo,
                 "Actuals":       wk["value"],
                 "Most_Likely":   None, "Worst_Case": None, "Best_Case": None,
+                "p10":           None, "p90": None,
                 "arr_ets":       None, "arr_prophet": None, "arr_lightgbm": None,
-                "arr_chronos":   None,  # filled by companion notebook
+                "arr_mstl_v2":   None, "arr_dhr_arima": None,
                 "mape_ets":      None, "mape_prophet": None,
-                "mape_lightgbm": None, "mape_chronos":  None,
+                "mape_lightgbm": None, "mape_mstl_v2": None, "mape_dhr_arima": None,
                 "forecast_type": "actuals",
             })
 
@@ -669,22 +673,30 @@ for product_group, geo in SLICES:
             weekly_best   = monthly_to_weekly(row["month_start"], row["hi_ensemble"])
 
             for i, wk in enumerate(weekly_fc):
+                # Worst/Best from real model P10/P90 — no synthetic clamp fallback.
+                # If weekly distribution produces a shorter list, use the last available value.
+                w_val = weekly_worst[min(i, len(weekly_worst)-1)]["value"] if weekly_worst else wk["value"]
+                b_val = weekly_best[min(i, len(weekly_best)-1)]["value"]   if weekly_best  else wk["value"]
                 all_fc_rows.append({
                     "ds":            wk["ds"].date(),
                     "product":       product_group,
                     "sales_market":  geo,
                     "Actuals":       None,
                     "Most_Likely":   wk["value"],
-                    "Worst_Case":    weekly_worst[i]["value"]  if i < len(weekly_worst) else wk["value"]*0.88,
-                    "Best_Case":     weekly_best[i]["value"]   if i < len(weekly_best)  else wk["value"]*1.12,
+                    "Worst_Case":    w_val,
+                    "Best_Case":     b_val,
+                    "p10":           w_val,   # alias — same as Worst_Case (P10)
+                    "p90":           b_val,   # alias — same as Best_Case  (P90)
                     "arr_ets":       weekly_ets[i]["value"]    if i < len(weekly_ets)   else None,
                     "arr_prophet":   weekly_ph[i]["value"]     if i < len(weekly_ph)    else None,
                     "arr_lightgbm":  weekly_lgb[i]["value"]    if i < len(weekly_lgb)   else None,
-                    "arr_chronos":   None,   # companion notebook fills this
+                    "arr_mstl_v2":   None,   # filled by atlas_combined_writer / companion
+                    "arr_dhr_arima": None,   # filled by atlas_combined_writer / companion
                     "mape_ets":      sm_ets,
                     "mape_prophet":  sm_ph,
                     "mape_lightgbm": sm_lgb,
-                    "mape_chronos":  None,
+                    "mape_mstl_v2":  None,
+                    "mape_dhr_arima":None,
                     "forecast_type": fc_type,
                 })
 
@@ -701,28 +713,32 @@ print(combined_pd.groupby(["product","sales_market","forecast_type"]).size().to_
 
 # COMMAND ----------
 OUTPUT_SCHEMA = StructType([
-    StructField("ds",            DateType(),   True),
-    StructField("product",       StringType(), True),
-    StructField("sales_market",  StringType(), True),
-    StructField("Actuals",       DoubleType(), True),
-    StructField("Most_Likely",   DoubleType(), True),
-    StructField("Worst_Case",    DoubleType(), True),
-    StructField("Best_Case",     DoubleType(), True),
-    StructField("arr_ets",       DoubleType(), True),
-    StructField("arr_prophet",   DoubleType(), True),
-    StructField("arr_lightgbm",  DoubleType(), True),
-    StructField("arr_chronos",   DoubleType(), True),
-    StructField("mape_ets",      DoubleType(), True),
-    StructField("mape_prophet",  DoubleType(), True),
-    StructField("mape_lightgbm", DoubleType(), True),
-    StructField("mape_chronos",  DoubleType(), True),
-    StructField("forecast_type", StringType(), True),
-    StructField("run_date",      DateType(),   True),
+    StructField("ds",             DateType(),   True),
+    StructField("product",        StringType(), True),
+    StructField("sales_market",   StringType(), True),
+    StructField("Actuals",        DoubleType(), True),
+    StructField("Most_Likely",    DoubleType(), True),
+    StructField("Worst_Case",     DoubleType(), True),
+    StructField("Best_Case",      DoubleType(), True),
+    StructField("p10",            DoubleType(), True),
+    StructField("p90",            DoubleType(), True),
+    StructField("arr_ets",        DoubleType(), True),
+    StructField("arr_prophet",    DoubleType(), True),
+    StructField("arr_lightgbm",   DoubleType(), True),
+    StructField("arr_mstl_v2",    DoubleType(), True),
+    StructField("arr_dhr_arima",  DoubleType(), True),
+    StructField("mape_ets",       DoubleType(), True),
+    StructField("mape_prophet",   DoubleType(), True),
+    StructField("mape_lightgbm",  DoubleType(), True),
+    StructField("mape_mstl_v2",   DoubleType(), True),
+    StructField("mape_dhr_arima", DoubleType(), True),
+    StructField("forecast_type",  StringType(), True),
+    StructField("run_date",       DateType(),   True),
 ])
 
-numeric_cols = ["Actuals","Most_Likely","Worst_Case","Best_Case",
-                "arr_ets","arr_prophet","arr_lightgbm","arr_chronos",
-                "mape_ets","mape_prophet","mape_lightgbm","mape_chronos"]
+numeric_cols = ["Actuals","Most_Likely","Worst_Case","Best_Case","p10","p90",
+                "arr_ets","arr_prophet","arr_lightgbm","arr_mstl_v2","arr_dhr_arima",
+                "mape_ets","mape_prophet","mape_lightgbm","mape_mstl_v2","mape_dhr_arima"]
 for c in numeric_cols:
     combined_pd[c] = pd.to_numeric(combined_pd[c], errors="coerce")
 
@@ -737,30 +753,49 @@ spark.sql(f"""
         product       STRING      COMMENT 'Total / UCC / ITSG',
         sales_market  STRING      COMMENT 'Total / NA / EMEA / APAC / LATAM',
         Actuals       DOUBLE      COMMENT 'Blended SFDC+MC actuals (null for future weeks)',
-        Most_Likely   DOUBLE      COMMENT 'sMAPE-weighted ensemble median',
+        Most_Likely   DOUBLE      COMMENT 'sMAPE-weighted ensemble median (P50)',
         Worst_Case    DOUBLE      COMMENT 'Ensemble P10 lower bound',
         Best_Case     DOUBLE      COMMENT 'Ensemble P90 upper bound',
+        p10           DOUBLE      COMMENT 'Prediction interval lower bound (P10)',
+        p90           DOUBLE      COMMENT 'Prediction interval upper bound (P90)',
         arr_ets       DOUBLE      COMMENT 'ETS point forecast (log1p-transformed HW)',
         arr_prophet   DOUBLE      COMMENT 'Prophet point forecast with pipeline regressors',
         arr_lightgbm  DOUBLE      COMMENT 'LightGBM direct multi-output (no error compounding)',
-        arr_chronos   DOUBLE      COMMENT 'Chronos-T5-Small (filled by companion notebook)',
+        arr_mstl_v2   DOUBLE      COMMENT 'MSTL_v2 point forecast',
+        arr_dhr_arima DOUBLE      COMMENT 'DHR-ARIMA point forecast',
         mape_ets      DOUBLE      COMMENT '3-month holdout sMAPE — ETS',
         mape_prophet  DOUBLE      COMMENT '3-month holdout sMAPE — Prophet',
         mape_lightgbm DOUBLE      COMMENT '3-month holdout sMAPE — LightGBM',
-        mape_chronos  DOUBLE      COMMENT '3-month holdout sMAPE — Chronos',
+        mape_mstl_v2  DOUBLE      COMMENT '3-month holdout sMAPE — MSTL_v2',
+        mape_dhr_arima DOUBLE     COMMENT '3-month holdout sMAPE — DHR-ARIMA',
         forecast_type STRING      COMMENT 'actuals | rolling | roy',
         run_date      DATE        COMMENT 'Notebook run date'
     )
     USING DELTA
-    COMMENT 'ARR v2 5-model ensemble. Monthly training, weekly output. GoTo Central merged into ITSG. MC actuals override SFDC for closed months. sMAPE target < 15%.'
+    COMMENT 'ARR v2 multi-model ensemble. Monthly training, weekly output. Real P10/P90 prediction intervals.'
     TBLPROPERTIES (
         'delta.autoOptimize.optimizeWrite'='true',
         'delta.autoOptimize.autoCompact'='true'
     )
 """)
 
-spark.sql(f"DELETE FROM {OUT_TABLE} WHERE run_date = '{RUN_DATE}'")
-out_sdf.write.mode("append").saveAsTable(OUT_TABLE)
+# Add new columns if table exists from a previous schema version
+for _col, _comment in [
+    ("p10",           "Prediction interval lower bound (P10)"),
+    ("p90",           "Prediction interval upper bound (P90)"),
+    ("arr_mstl_v2",   "MSTL_v2 point forecast"),
+    ("arr_dhr_arima", "DHR-ARIMA point forecast"),
+    ("mape_mstl_v2",  "3-month holdout sMAPE — MSTL_v2"),
+    ("mape_dhr_arima","3-month holdout sMAPE — DHR-ARIMA"),
+]:
+    try:
+        spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS ({_col} DOUBLE COMMENT '{_comment}')")
+        print(f"[arr_forecast_v2_main] Added column {_col} to {OUT_TABLE}")
+    except Exception:
+        pass  # Column already exists
+
+spark.sql(f"DELETE FROM {OUT_TABLE} WHERE product IN ('UCC','Total') AND run_date = '{RUN_DATE}'")
+out_sdf.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(OUT_TABLE)
 print(f"✅  {out_sdf.count()} rows → {OUT_TABLE}")
 
 # COMMAND ----------

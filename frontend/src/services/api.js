@@ -180,6 +180,14 @@ export const apiService = {
   getForecastV2GovernanceLog: () => api.get('/api/forecast/v2/governance/log'),
   createForecastV2GovernanceLog: (payload) => api.post('/api/forecast/v2/governance/log', payload),
 
+  getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null) => {
+    const params = { forecast_type: forecastType };
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
+    return api.get('/api/forecast/v2/confidence-bands', { params });
+  },
+
   // Action command center
   getActions: (status = null) => {
     const params = {}

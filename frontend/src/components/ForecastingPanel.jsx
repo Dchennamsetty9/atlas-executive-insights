@@ -785,6 +785,7 @@ const ForecastingPanel = () => {
   const [driverBridge, setDriverBridge] = useState(null);
   const [riskRadar,   setRiskRadar]   = useState([]);
   const [meetingMode, setMeetingMode] = useState(null);
+  const [confidenceBands, setConfidenceBands] = useState(null);
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
   const [actionDraft, setActionDraft] = useState({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
@@ -803,7 +804,7 @@ const ForecastingPanel = () => {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov] = await Promise.allSettled([
+      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb] = await Promise.allSettled([
         apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2Historical(null, activePl, null, selectedYear),
@@ -818,6 +819,7 @@ const ForecastingPanel = () => {
         apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
         apiService.getActions('pending'),
         apiService.getForecastV2GovernanceLog(),
+        apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter),
       ]);
       if (wk.status === 'fulfilled') {
         setWeekly(wk.value?.rows ?? []);
@@ -840,6 +842,7 @@ const ForecastingPanel = () => {
       if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
       if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
       if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
+      if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
       if (firstReject) {
@@ -1408,6 +1411,48 @@ const ForecastingPanel = () => {
 
           {tab === 'Exec Mode' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* CI Fan Chart — source: real model P10/P90 from arr_forecast_v2 p10/p90 columns */}
+              <CardWrap>
+                <SectionTitle>Prediction Interval Fan — Source Model P10 / P50 / P90</SectionTitle>
+                {(() => {
+                  const cb = confidenceBands;
+                  const p10 = cb?.p10  ?? weeklyKpis?.worst_case ?? 0;
+                  const p50 = cb?.most_likely ?? weeklyKpis?.most_likely ?? 0;
+                  const p90 = cb?.p90  ?? weeklyKpis?.best_case  ?? 0;
+                  const isDemo = cb?.source === 'demo' || !cb;
+                  const hasData = p50 > 0;
+                  const spread = p90 - p10;
+                  const maxVal = p90 * 1.08;
+                  const bar = (val, color, label, pct) => (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                      <div style={{ width: 60, fontSize: 10, color: '#64748b', textAlign: 'right', flexShrink: 0 }}>{label}</div>
+                      <div style={{ flex: 1, height: 24, background: 'rgba(255,255,255,0.04)', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.4s ease' }} />
+                      </div>
+                      <div style={{ width: 72, fontSize: 12, fontWeight: 700, color, textAlign: 'right', flexShrink: 0 }}>{fmtM(val)}</div>
+                    </div>
+                  );
+                  return (
+                    <div>
+                      {isDemo && <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 10, padding: '6px 10px', background: 'rgba(245,158,11,0.08)', borderRadius: 6, border: '1px solid rgba(245,158,11,0.2)' }}>⚠ Demo — run Panel Writer to populate real P10/P90 columns</div>}
+                      {!hasData && <div style={{ fontSize: 11, color: '#64748b' }}>No confidence-band data for current selection.</div>}
+                      {hasData && (
+                        <div>
+                          {bar(p10, '#ef4444', 'P10 (Worst)',  maxVal > 0 ? (p10 / maxVal) * 100 : 0)}
+                          {bar(p50, '#f1f5f9', 'P50 (Likely)', maxVal > 0 ? (p50 / maxVal) * 100 : 0)}
+                          {bar(p90, '#10b981', 'P90 (Best)',   maxVal > 0 ? (p90 / maxVal) * 100 : 0)}
+                          <div style={{ display: 'flex', gap: 20, marginTop: 12, padding: '10px 14px', background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
+                            <div style={{ fontSize: 11, color: '#94a3b8' }}>Spread (P10→P90): <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(spread)}</span></div>
+                            <div style={{ fontSize: 11, color: '#94a3b8' }}>Spread / P50: <span style={{ color: p50 > 0 ? (spread/p50 > 0.3 ? '#ef4444' : spread/p50 > 0.15 ? '#f59e0b' : '#10b981') : '#64748b', fontWeight: 700 }}>{p50 > 0 ? `${((spread/p50)*100).toFixed(1)}%` : '—'}</span></div>
+                            <div style={{ fontSize: 11, color: '#94a3b8' }}>Source: <span style={{ color: cb?.source === 'live' ? '#10b981' : '#f59e0b', fontWeight: 700 }}>{cb?.source === 'live' ? 'Live (model P10/P90)' : 'Demo'}</span></div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </CardWrap>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                 <CardWrap>
                   <SectionTitle>Forecast Confidence Score</SectionTitle>

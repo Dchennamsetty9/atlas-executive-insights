@@ -849,6 +849,74 @@ async def get_historical(
     return {"source": "live", "rows": rows}
 
 
+# ── GET /confidence-bands ───────────────────────────────────────────────────────
+@router.get("/confidence-bands")
+async def get_confidence_bands(
+    product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    forecast_type: str          = Query("rolling"),
+    year:         Optional[int] = Query(None),
+    quarter:      Optional[int] = Query(None),
+):
+    """
+    Percentile prediction-interval totals for the selected period.
+    Returns {p10, p90, most_likely} summed over all weeks in the filter window.
+    These come directly from the source model P10/P90 stored in the p10/p90 columns —
+    not synthetic ±% offsets — so they match the UCC/ITSG notebook executive summaries.
+    """
+    if not _live():
+        return {
+            "source": "demo",
+            "p10": 11_817_000, "most_likely": 14_588_000, "p90": 18_546_000,
+            "product": "Total", "period": "Q3 2026",
+        }
+
+    forecast_type = _validate_forecast_type(forecast_type)
+    pf = _product_filter(product, product_line)
+    gf = _geo_filter(sales_market)
+    selected_year = year if year else datetime.date.today().year
+    date_filter = f"AND {_quarter_filter(quarter, selected_year)}" if quarter else f"AND {_year_filter(selected_year)}"
+
+    # Check whether p10/p90 columns exist (schema migration guard)
+    p10_col = "p10" if "p10" in (await _lb_columns()) else "Worst_Case"
+    p90_col = "p90" if p10_col == "p10" else "Best_Case"
+
+    sql = f"""
+        SELECT
+            SUM(COALESCE(CAST({p10_col}    AS DOUBLE), 0)) AS p10,
+            SUM(COALESCE(CAST(Most_Likely  AS DOUBLE), 0)) AS most_likely,
+            SUM(COALESCE(CAST({p90_col}    AS DOUBLE), 0)) AS p90,
+            SUM(COALESCE(CAST(Worst_Case   AS DOUBLE), 0)) AS worst_case,
+            SUM(COALESCE(CAST(Best_Case    AS DOUBLE), 0)) AS best_case
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          AND forecast_type = '{forecast_type}'
+          {pf} {gf}
+          {date_filter}
+    """
+
+    try:
+        rows = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/confidence-bands] query failed: %s", exc)
+        return {"source": "demo", "error": str(exc), "p10": None, "most_likely": None, "p90": None}
+
+    r = rows[0] if rows else {}
+    p10_val  = _f(r.get("p10") or r.get("worst_case"))
+    ml_val   = _f(r.get("most_likely"))
+    p90_val  = _f(r.get("p90") or r.get("best_case"))
+
+    return {
+        "source": "live",
+        "p10":         round(p10_val, 0),
+        "most_likely": round(ml_val, 0),
+        "p90":         round(p90_val, 0),
+        "worst_case":  round(_f(r.get("worst_case")), 0),
+        "best_case":   round(_f(r.get("best_case")), 0),
+    }
+
+
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
 @router.get("/leaderboard")
 async def get_leaderboard():

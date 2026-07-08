@@ -288,6 +288,8 @@ def merge_actuals_and_tag(wide: pd.DataFrame,
             "Most_Likely":   float(row.get("Most_Likely")) if pd.notna(row.get("Most_Likely")) else None,
             "Worst_Case":    float(row.get("Worst_Case"))  if pd.notna(row.get("Worst_Case"))  else None,
             "Best_Case":     float(row.get("Best_Case"))   if pd.notna(row.get("Best_Case"))   else None,
+            "p10":           float(row.get("Worst_Case"))  if pd.notna(row.get("Worst_Case"))  else None,
+            "p90":           float(row.get("Best_Case"))   if pd.notna(row.get("Best_Case"))   else None,
             "arr_ets":       float(row.get("arr_ets"))       if pd.notna(row.get("arr_ets"))       else None,
             "arr_prophet":   float(row.get("arr_prophet"))   if pd.notna(row.get("arr_prophet"))   else None,
             "arr_lightgbm":  float(row.get("arr_lightgbm"))  if pd.notna(row.get("arr_lightgbm"))  else None,
@@ -396,6 +398,8 @@ OUTPUT_SCHEMA = StructType([
     StructField("Most_Likely",    DoubleType(), True),
     StructField("Worst_Case",     DoubleType(), True),
     StructField("Best_Case",      DoubleType(), True),
+    StructField("p10",            DoubleType(), True),
+    StructField("p90",            DoubleType(), True),
     StructField("arr_ets",        DoubleType(), True),
     StructField("arr_prophet",    DoubleType(), True),
     StructField("arr_lightgbm",   DoubleType(), True),
@@ -412,7 +416,7 @@ OUTPUT_SCHEMA = StructType([
 
 # Coerce types
 numeric_cols = [
-    "Actuals","Most_Likely","Worst_Case","Best_Case",
+    "Actuals","Most_Likely","Worst_Case","Best_Case","p10","p90",
     "arr_ets","arr_prophet","arr_lightgbm","arr_mstl_v2","arr_dhr_arima",
     "mape_ets","mape_prophet","mape_lightgbm","mape_mstl_v2","mape_dhr_arima",
 ]
@@ -460,6 +464,8 @@ for alter_col, alter_comment in [
     ("arr_dhr_arima", "DHR-ARIMA point forecast"),
     ("mape_mstl_v2",  "Walk-forward WAPE - MSTL_v2"),
     ("mape_dhr_arima","Walk-forward WAPE - DHR-ARIMA"),
+    ("p10",           "Prediction interval lower bound (P10)"),
+    ("p90",           "Prediction interval upper bound (P90)"),
 ]:
     try:
         spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS ({alter_col} DOUBLE COMMENT '{alter_comment}')")
