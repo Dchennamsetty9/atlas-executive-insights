@@ -117,8 +117,8 @@ export const apiService = {
     if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/weekly', { params });
   },
-  getForecastV2YTD: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
-    const params = { forecast_type: forecastType };
+  getForecastV2YTD: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null, model = 'ensemble') => {
+    const params = { forecast_type: forecastType, model };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
@@ -134,15 +134,17 @@ export const apiService = {
     if (year) params.year = year;
     return api.get('/api/forecast/v2/historical', { params });
   },
-  getForecastV2ByProduct: (forecastType = 'rolling', salesMarket = null, year = null, quarter = null) => {
-    const params = { forecast_type: forecastType };
+  getForecastV2ByProduct: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
+    const params = { model, forecast_type: forecastType };
+    if (product && product !== 'All') params.product = product;
+    if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
     if (year) params.year = year;
     if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/by-product', { params });
   },
-  getForecastV2Monthly: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
-    const params = { forecast_type: forecastType };
+  getForecastV2Monthly: (forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null, model = 'ensemble') => {
+    const params = { forecast_type: forecastType, model };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
@@ -159,14 +161,14 @@ export const apiService = {
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/confidence', { params })
   },
-  getForecastV2DriverBridge: (year = null, quarter = null) => {
-    const params = {}
+  getForecastV2DriverBridge: (year = null, quarter = null, model = 'ensemble') => {
+    const params = { model }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/driver-bridge', { params })
   },
-  getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20) => {
-    const params = { forecast_type: forecastType, limit }
+  getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20, model = 'ensemble') => {
+    const params = { forecast_type: forecastType, limit, model }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/risk-radar', { params })
@@ -180,8 +182,8 @@ export const apiService = {
   getForecastV2GovernanceLog: () => api.get('/api/forecast/v2/governance/log'),
   createForecastV2GovernanceLog: (payload) => api.post('/api/forecast/v2/governance/log', payload),
 
-  getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null) => {
-    const params = { forecast_type: forecastType };
+  getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null, model = 'ensemble') => {
+    const params = { forecast_type: forecastType, model };
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (year) params.year = year;
     if (quarter) params.quarter = quarter;

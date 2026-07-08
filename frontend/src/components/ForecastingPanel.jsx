@@ -806,20 +806,20 @@ const ForecastingPanel = () => {
     try {
       const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb] = await Promise.allSettled([
         apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
-        apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
         apiService.getForecastV2Historical(null, activePl, null, selectedYear),
-        apiService.getForecastV2ByProduct(fcType, null, selectedYear, selectedQuarter),
-        apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2ByProduct(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
+        apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
         apiService.getForecastV2Leaderboard(),
         apiService.getForecastV2Models(),
         apiService.getForecastV2Freshness(),
         apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
-        apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter),
-        apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20),
+        apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
+        apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
         apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
         apiService.getActions('pending'),
         apiService.getForecastV2GovernanceLog(),
-        apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter),
+        apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
       ]);
       if (wk.status === 'fulfilled') {
         setWeekly(wk.value?.rows ?? []);

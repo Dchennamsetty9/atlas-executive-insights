@@ -16,7 +16,7 @@ Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 All values are constrained to the Growth-bookings-aligned v2 tables.
 """
 
-import asyncio, os, datetime, logging
+import asyncio, os, datetime, logging, json
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, HTTPException, Depends
@@ -34,6 +34,7 @@ FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
+INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
@@ -391,6 +392,26 @@ class GovernanceLogRequest(BaseModel):
     scenario_name: Optional[str] = None
 
 
+# ── GET /intelligence ──────────────────────────────────────────────────────────
+@router.get("/intelligence")
+async def get_intelligence():
+    """Read pre-computed AI insights from UC Volume JSON."""
+    try:
+        with open(INSIGHTS_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload
+    except FileNotFoundError:
+        return {
+            "error": "Insights file not found",
+            "narrative": "AI Insights unavailable - run Panel Writer notebook.",
+        }
+    except json.JSONDecodeError:
+        return {
+            "error": "Invalid JSON",
+            "narrative": "AI Insights corrupted - re-run Panel Writer.",
+        }
+
+
 # ── GET /weekly ─────────────────────────────────────────────────────────────────
 @router.get("/weekly")
 async def get_weekly(
@@ -477,6 +498,7 @@ async def get_monthly(
     product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
+    model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
 ):
@@ -485,6 +507,12 @@ async def get_monthly(
         return _demo("months")
 
     forecast_type = _validate_forecast_type(forecast_type)
+    model = _validate_model(model)
+    source = _model_source(model)
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
 
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
@@ -514,11 +542,11 @@ async def get_monthly(
             quarter(ds)                  AS qtr,
             month(ds)                    AS mth,
             date_format(ds, 'MMMM')      AS month_name,
-            SUM(Worst_Case)              AS arr_worst,
-            SUM(Most_Likely)             AS arr_likely,
-            SUM(Best_Case)               AS arr_best
+            SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {FC_TABLE}
-        WHERE forecast_type = '{forecast_type}'
+        WHERE forecast_type = '{eff_forecast_type}'
           AND {_latest_run()}
           {pf} {gf}
           {date_filter}
@@ -554,7 +582,12 @@ async def get_monthly(
             "arr_best":   _f(r.get("arr_best")),
         })
 
-    return {"source": "live", "months": months}
+    return {
+        "source": "live",
+        "model": model,
+        "forecast_type": eff_forecast_type,
+        "months": months,
+    }
 
 
 # ── GET /ytd ────────────────────────────────────────────────────────────────────
@@ -564,6 +597,7 @@ async def get_ytd(
     product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
     forecast_type: str           = Query("rolling"),
+    model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
 ):
@@ -572,6 +606,12 @@ async def get_ytd(
         return _demo("rows")
 
     forecast_type = _validate_forecast_type(forecast_type)
+    model = _validate_model(model)
+    source = _model_source(model)
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
 
     year = year if year else datetime.date.today().year
     pf   = _product_filter(product, product_line)
@@ -592,11 +632,11 @@ async def get_ytd(
 
     fc_sql = f"""
         SELECT CAST(ds AS STRING) AS d,
-               SUM(Worst_Case)  AS worst,
-               SUM(Most_Likely) AS likely,
-               SUM(Best_Case)   AS best
+             SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,
+             SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
+             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
         FROM {FC_TABLE}
-        WHERE forecast_type = '{forecast_type}'
+         WHERE forecast_type = '{eff_forecast_type}'
           {date_filter}
           AND {_latest_run()}
           {pf} {gf}
@@ -633,12 +673,19 @@ async def get_ytd(
             "ytd_best":   round(cum_b, 0) if fc else None,
         })
 
-    return {"source": "live", "rows": rows}
+    return {
+        "source": "live",
+        "model": model,
+        "forecast_type": eff_forecast_type,
+        "rows": rows,
+    }
 
 
 # ── GET /by-product ─────────────────────────────────────────────────────────────
 @router.get("/by-product")
 async def get_by_product(
+    product:       Optional[str] = Query(None),
+    product_line:  Optional[str] = Query(None),
     model:         str = Query("ensemble"),
     forecast_type: str = Query("rolling"),
     sales_market:  Optional[str] = Query(None),
@@ -693,6 +740,8 @@ async def get_by_product(
         where_parts.append("COALESCE(CAST(Actuals AS DOUBLE), 0) = 0")
     where_parts.append(qf)
 
+    pf = _product_filter(product, product_line)
+
     prod_sql = f"""
         SELECT
             product,
@@ -701,6 +750,7 @@ async def get_by_product(
             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE {' AND '.join(where_parts)}
+          {pf}
           AND sales_market = 'Total'
           AND product IN ('UCC','ITSG')
         GROUP BY product
@@ -716,6 +766,7 @@ async def get_by_product(
             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE {' AND '.join(where_parts)}
+          {pf}
           AND product = 'Total'
           AND {norm_geo_expr} IN ('NA','EMEA','APAC','LATAM','Unknown')
         GROUP BY {norm_geo_expr}
@@ -856,6 +907,7 @@ async def get_confidence_bands(
     product_line: Optional[str] = Query(None),
     sales_market: Optional[str] = Query(None),
     forecast_type: str          = Query("rolling"),
+    model:        str           = Query("ensemble"),
     year:         Optional[int] = Query(None),
     quarter:      Optional[int] = Query(None),
 ):
@@ -873,25 +925,29 @@ async def get_confidence_bands(
         }
 
     forecast_type = _validate_forecast_type(forecast_type)
+    model = _validate_model(model)
+    source = _model_source(model)
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
     selected_year = year if year else datetime.date.today().year
     date_filter = f"AND {_quarter_filter(quarter, selected_year)}" if quarter else f"AND {_year_filter(selected_year)}"
 
-    # Check whether p10/p90 columns exist (schema migration guard)
-    p10_col = "p10" if "p10" in (await _lb_columns()) else "Worst_Case"
-    p90_col = "p90" if p10_col == "p10" else "Best_Case"
+    # For non-ensemble selections, use the selected model's lower/upper bands.
+    p10_col = source["lower_col"]
+    p90_col = source["upper_col"]
+    p50_col = source["most_likely_col"]
 
     sql = f"""
         SELECT
             SUM(COALESCE(CAST({p10_col}    AS DOUBLE), 0)) AS p10,
-            SUM(COALESCE(CAST(Most_Likely  AS DOUBLE), 0)) AS most_likely,
+                        SUM(COALESCE(CAST({p50_col}    AS DOUBLE), 0)) AS most_likely,
             SUM(COALESCE(CAST({p90_col}    AS DOUBLE), 0)) AS p90,
             SUM(COALESCE(CAST(Worst_Case   AS DOUBLE), 0)) AS worst_case,
             SUM(COALESCE(CAST(Best_Case    AS DOUBLE), 0)) AS best_case
         FROM {FC_TABLE}
         WHERE {_latest_run()}
-          AND forecast_type = '{forecast_type}'
+                    AND forecast_type = '{eff_forecast_type}'
           {pf} {gf}
           {date_filter}
     """
@@ -909,6 +965,8 @@ async def get_confidence_bands(
 
     return {
         "source": "live",
+        "model": model,
+        "forecast_type": eff_forecast_type,
         "p10":         round(p10_val, 0),
         "most_likely": round(ml_val, 0),
         "p90":         round(p90_val, 0),
@@ -1071,6 +1129,7 @@ async def get_confidence(
 
 @router.get("/driver-bridge")
 async def get_driver_bridge(
+    model: Optional[str] = Query("ensemble"),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
 ):
@@ -1089,11 +1148,14 @@ async def get_driver_bridge(
 
     selected_year = year if year else datetime.date.today().year
     date_filter = _quarter_filter(quarter, selected_year) if quarter else _year_filter(selected_year)
+    model_key = _validate_model(model or "ensemble")
+    source = _model_source(model_key)
+    value_col = source["most_likely_col"]
     try:
         rows = await asyncio.to_thread(execute_query, f"""
             SELECT
                 SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_total,
-                SUM(CASE WHEN forecast_type IN ('rolling','roy') THEN COALESCE(CAST(Most_Likely AS DOUBLE),0) ELSE 0 END) AS plan_total
+                SUM(CASE WHEN forecast_type IN ('rolling','roy') THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_total
             FROM {FC_TABLE}
             WHERE {_latest_run()} AND {date_filter}
               AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
@@ -1124,6 +1186,7 @@ async def get_driver_bridge(
 @router.get("/risk-radar")
 async def get_risk_radar(
     forecast_type: str = Query("rolling"),
+    model: str = Query("ensemble"),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
     limit: int = Query(20),
@@ -1133,6 +1196,12 @@ async def get_risk_radar(
         return {"source": "demo", "items": []}
 
     forecast_type = _validate_forecast_type(forecast_type)
+    model = _validate_model(model)
+    source = _model_source(model)
+    eff_forecast_type = _effective_forecast_type(model, forecast_type)
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
     selected_year = year if year else datetime.date.today().year
     date_filter = _quarter_filter(quarter, selected_year) if quarter else _year_filter(selected_year)
     try:
@@ -1140,12 +1209,12 @@ async def get_risk_radar(
             SELECT
               product,
               {_normalized_market_expr('sales_market')} AS sales_market,
-              SUM(COALESCE(CAST(Most_Likely AS DOUBLE),0)) AS likely,
-              SUM(COALESCE(CAST(Worst_Case AS DOUBLE),0)) AS worst,
-              SUM(COALESCE(CAST(Best_Case AS DOUBLE),0)) AS best
+              SUM(COALESCE(CAST({value_col} AS DOUBLE),0)) AS likely,
+              SUM(COALESCE(CAST({lower_col} AS DOUBLE),0)) AS worst,
+              SUM(COALESCE(CAST({upper_col} AS DOUBLE),0)) AS best
             FROM {FC_TABLE}
             WHERE {_latest_run()}
-              AND forecast_type = '{forecast_type}'
+              AND forecast_type = '{eff_forecast_type}'
               AND {date_filter}
               AND product <> 'Total'
               AND {_normalized_market_expr('sales_market')} <> 'Total'
@@ -1171,7 +1240,12 @@ async def get_risk_radar(
             })
 
         items.sort(key=lambda x: x["risk_dollar_impact"], reverse=True)
-        return {"source": "live", "items": items[:max(1, min(limit, 50))]}
+        return {
+            "source": "live",
+            "model": model,
+            "forecast_type": eff_forecast_type,
+            "items": items[:max(1, min(limit, 50))],
+        }
     except Exception as exc:
         logger.warning("[forecast/risk-radar] query failed: %s", exc)
         return _demo("items", error=str(exc))
@@ -1185,8 +1259,8 @@ async def get_meeting_mode(
 ):
     """Board/exec snapshot with top risks and priority actions."""
     confidence = await get_confidence(model=model, year=year, quarter=quarter)
-    bridge = await get_driver_bridge(year=year, quarter=quarter)
-    radar = await get_risk_radar(year=year, quarter=quarter)
+    bridge = await get_driver_bridge(model=model, year=year, quarter=quarter)
+    radar = await get_risk_radar(model=model, year=year, quarter=quarter)
     freshness = await get_freshness()
     top_risks = (radar.get("items") or [])[:3]
     moves = [
