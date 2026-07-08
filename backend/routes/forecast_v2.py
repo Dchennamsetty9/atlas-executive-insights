@@ -740,6 +740,8 @@ async def get_by_product(
     where_parts.append(qf)
 
     pf = _product_filter(product, product_line)
+    selected_product = _selected_product(product, product_line)
+    geo_product = "Total" if selected_product == "Total" else selected_product.replace(chr(39), chr(39) * 2)
 
     prod_sql = f"""
         SELECT
@@ -765,8 +767,7 @@ async def get_by_product(
             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE {' AND '.join(where_parts)}
-          {pf}
-          AND product = 'Total'
+                    AND product = '{geo_product}'
           AND {norm_geo_expr} IN ('NA','EMEA','APAC','LATAM','Unknown')
         GROUP BY {norm_geo_expr}
         ORDER BY arr_likely DESC
