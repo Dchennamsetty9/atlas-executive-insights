@@ -770,6 +770,7 @@ const ForecastingPanel = () => {
   const [selectedQuarter, setSelectedQuarter] = useState(null);
 
   const [weekly,      setWeekly]      = useState(null);
+  const [weeklyKpis,  setWeeklyKpis]  = useState(null);
   const [ytd,         setYtd]         = useState(null);
   const [historical,  setHistorical]  = useState(null);
   const [byProduct,   setByProduct]   = useState(null);
@@ -817,6 +818,7 @@ const ForecastingPanel = () => {
       ]);
       if (wk.status === 'fulfilled') {
         setWeekly(wk.value?.rows ?? []);
+        setWeeklyKpis(wk.value?.kpis ?? null);
         setSource(wk.value?.source ?? null);
         if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
           setError(`Forecast data fallback: ${wk.value.error}`);
@@ -1227,24 +1229,19 @@ const ForecastingPanel = () => {
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
                 : weeklyView && weeklyView.length > 0 && (() => {
-                      const selectedYearStr = String(selectedYear);
-                      const scenarioRows = weeklyView.filter(r => r.arr_likely != null || r.arr_actual != null);
-                      const ytdActual = [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
-                        ?? weeklyView
-                          .filter(r => r.arr_actual != null && r.date?.startsWith(selectedYearStr))
-                          .reduce((s, r) => s + Number(r.arr_actual || 0), 0);
-
-                      const scenarioTotal = (field) => scenarioRows.reduce((sum, r) => {
-                        const fallback = field === 'arr_likely' ? r.arr_actual : r.arr_actual;
-                        return sum + Number(r[field] ?? fallback ?? 0);
-                      }, 0);
+                      // Prefer server-computed kpis (quarter-aware, handles closed quarters)
+                      // over client-side row summation (chart rows null forecast fields for actuals).
+                      const kp = weeklyKpis;
+                      const ytdActual = kp?.ytd_actuals
+                        ?? [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
+                        ?? 0;
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                         {[
-                            { label: 'Most Likely', val: scenarioTotal('arr_likely'), color: '#f1f5f9', sub: 'Planning center'    },
-                            { label: 'Best Case',   val: scenarioTotal('arr_best'),   color: '#10b981', sub: '~20% probability'  },
-                            { label: 'Worst Case',  val: scenarioTotal('arr_worst'),  color: '#ef4444', sub: '~15% probability'  },
-                          { label: 'Actuals YTD', val: ytdActual, color: '#f59e0b', sub: 'Realized YTD' },
+                          { label: 'Most Likely', val: kp?.most_likely ?? 0, color: '#f1f5f9', sub: 'Planning center'   },
+                          { label: 'Best Case',   val: kp?.best_case   ?? 0, color: '#10b981', sub: '~20% probability' },
+                          { label: 'Worst Case',  val: kp?.worst_case  ?? 0, color: '#ef4444', sub: '~15% probability' },
+                          { label: 'Actuals YTD', val: ytdActual,            color: '#f59e0b', sub: 'Realized YTD'     },
                         ].map(({ label, val, color, sub }) => (
                           <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
                             <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>

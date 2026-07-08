@@ -246,21 +246,41 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
 
 
 def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
+    """Compute KPI card totals from the kpi_sql result rows.
+
+    The Panel Writer sets Most_Likely/Worst_Case/Best_Case = Actuals for closed
+    (actuals) rows, so we sum ML/BC/WC from ALL rows regardless of forecast_type.
+    For open (rolling/roy) rows the model forecast is already in those columns.
+    This makes closed-quarter and mixed-quarter selections both correct.
+    """
     most_likely = 0.0
     worst_case = 0.0
     best_case = 0.0
     ytd_actuals = 0.0
-    current_year = datetime.date.today().year
 
     for row in rows:
         ftype = str(row.get("forecast_type") or "").strip().lower()
-        ds_val = str(row.get("ds") or "")[:10]
-        if ftype in ("rolling", "roy"):
-            most_likely += _f(row.get("Most_Likely"))
-            worst_case += _f(row.get("Worst_Case"))
-            best_case += _f(row.get("Best_Case"))
-        if ftype == "actuals" and ds_val[:4].isdigit() and int(ds_val[:4]) == current_year:
-            ytd_actuals += _f(row.get("Actuals"))
+        ml = _f(row.get("Most_Likely"))
+        wc = _f(row.get("Worst_Case"))
+        bc = _f(row.get("Best_Case"))
+        act = _f(row.get("Actuals"))
+
+        # Use ML/BC/WC from every row — for actuals rows these equal Actuals;
+        # for rolling/roy rows these hold the model forecast.
+        if ml > 0:
+            most_likely += ml
+            worst_case += wc
+            best_case += bc
+        elif ftype in ("rolling", "roy"):
+            # Explicit forecast row with ML==0 edge case — still count it
+            most_likely += ml
+            worst_case += wc
+            best_case += bc
+
+        # YTD actuals: sum all actuals rows in the result set (already date-filtered
+        # by the caller's kpi_sql — year/quarter filter applied before this function).
+        if ftype == "actuals" and act > 0:
+            ytd_actuals += act
 
     return {
         "most_likely": round(most_likely, 0),
