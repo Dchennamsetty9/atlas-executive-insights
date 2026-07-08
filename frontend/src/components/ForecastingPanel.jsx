@@ -1229,9 +1229,10 @@ const ForecastingPanel = () => {
                 : weeklyView && weeklyView.length > 0 && (() => {
                       const selectedYearStr = String(selectedYear);
                       const scenarioRows = weeklyView.filter(r => r.arr_likely != null || r.arr_actual != null);
-                      const ytdActual = weeklyView
-                        .filter(r => r.arr_actual != null && r.date?.startsWith(selectedYearStr))
-                        .reduce((s, r) => s + Number(r.arr_actual || 0), 0);
+                      const ytdActual = [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
+                        ?? weeklyView
+                          .filter(r => r.arr_actual != null && r.date?.startsWith(selectedYearStr))
+                          .reduce((s, r) => s + Number(r.arr_actual || 0), 0);
 
                       const scenarioTotal = (field) => scenarioRows.reduce((sum, r) => {
                         const fallback = field === 'arr_likely' ? r.arr_actual : r.arr_actual;
