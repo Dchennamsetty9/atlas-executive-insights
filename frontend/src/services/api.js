@@ -131,6 +131,8 @@ export const apiService = {
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    // Omit year to get backend 3-year rolling window for Multi-Year charts;
+    // pass year explicitly only when a specific year's trend is needed.
     if (year) params.year = year;
     return api.get('/api/forecast/v2/historical', { params });
   },
@@ -206,6 +208,9 @@ export const apiService = {
     if (productLine && productLine !== 'All') params.product_line = productLine;
     return api.get('/api/forecast/intelligence', { params });
   },
+
+  // v2 intelligence — reads from Delta table arr_forecast_insights (SP-accessible via all_mdl_ro)
+  getForecastV2Intelligence: () => api.get('/api/forecast/v2/intelligence'),
 
   getRecommendations: () => api.get('/api/recommendations'),
 }

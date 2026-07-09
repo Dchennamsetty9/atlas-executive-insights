@@ -886,13 +886,24 @@ async def get_historical(
     sales_market: Optional[str] = Query(None),
     year:         Optional[int] = Query(None),
 ):
-    """Multi-year weekly actuals for Historical Trend + Seasonality charts."""
+    """Multi-year weekly actuals for Historical Trend + Seasonality charts.
+
+    When year is omitted, returns a rolling 3-year window (current year − 2 to current)
+    so the Multi-Year overlay chart always shows meaningful multi-line data.
+    When year is specified, returns only that year for single-year trend filtering.
+    """
     if not _live():
         return _demo("rows")
 
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
-    yf = _year_filter(year)
+
+    if year:
+        date_clause = f"AND {_year_filter(year)}"
+    else:
+        # Default: last 3 calendar years for multi-year overlay charts
+        current_year = datetime.date.today().year
+        date_clause = f"AND YEAR(ds) BETWEEN {current_year - 2} AND {current_year}"
 
     sql = f"""
         SELECT
@@ -904,7 +915,7 @@ async def get_historical(
         FROM {FC_TABLE}
         WHERE forecast_type = 'actuals'
           AND {_latest_run()}
-          AND {yf}
+          {date_clause}
           {pf} {gf}
         GROUP BY ds, year(ds), weekofyear(ds), quarter(ds)
         ORDER BY ds

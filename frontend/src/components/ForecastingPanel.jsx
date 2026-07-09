@@ -41,6 +41,7 @@ class TabErrorBoundary extends Component {
 const fmtM = (v) => {
   if (v == null || Number.isNaN(Number(v))) return '—';
   const n = Number(v);
+  if (n === 0) return '—';
   if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
   if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
@@ -68,6 +69,24 @@ const formatModelLabel = (name) => MODEL_LABELS[name] || (name ? name.replace(/_
 const YEAR_COLORS  = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
 // 6 notebook models: ensemble, prophet, ets, lightgbm, mstl_v2, dhr_arima
 const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Mstl_v2: '#a78bfa', Dhr_arima: '#fb923c', Ensemble: '#00FF88' };
+// Keyed by lowercase model key (matches MODELS array and API params) — fixes pill color lookup for ets/lightgbm
+const MODEL_KEY_META = {
+  ensemble:  { label: 'Ensemble',  color: '#00FF88' },
+  prophet:   { label: 'Prophet',   color: '#f59e0b' },
+  ets:       { label: 'ETS',       color: '#94a3b8' },
+  mstl_v2:   { label: 'MSTL',      color: '#a78bfa' },
+  dhr_arima: { label: 'DHR-ARIMA', color: '#fb923c' },
+  lightgbm:  { label: 'LightGBM',  color: '#3b82f6' },
+};
+// Maps model key → leaderboard column name for MAPE badge on pill
+const MODEL_LB_KEY = {
+  ensemble:  null,
+  prophet:   'Prophet',
+  ets:       'ETS',
+  mstl_v2:   'MSTL_v2',
+  dhr_arima: 'DHR_ARIMA',
+  lightgbm:  'LightGBM',
+};
 const MOMENTUM_META = {
   STABLE:       { color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
   ACCELERATING: { color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
@@ -227,7 +246,7 @@ const WeeklyChart = ({ rows }) => {
         <Tooltip content={<CustomTooltip />} />
         {splitDate && (
           <ReferenceLine x={splitDate} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4"
-            label={{ value: 'Today →', position: 'insideTopLeft', fill: '#475569', fontSize: 10 }} />
+            label={{ value: 'Forecast →', position: 'insideTopLeft', fill: '#475569', fontSize: 10 }} />
         )}
         {/* Confidence band: transparent floor stacked under colored band */}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
@@ -361,12 +380,13 @@ const MonthlyTable = ({ months }) => {
         <tbody>
           {quarters.map(q => {
             const qm = byQtr[q] || [];
+            // Only sum non-null actuals; leave null so fmtM renders — for fully-open quarters
             const tot = qm.reduce((a, m) => ({
-              arr_actual: (a.arr_actual || 0) + (m.arr_actual || 0),
+              arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
               arr_worst:  a.arr_worst  + m.arr_worst,
               arr_likely: a.arr_likely + m.arr_likely,
               arr_best:   a.arr_best   + m.arr_best,
-            }), { arr_actual: 0, arr_worst: 0, arr_likely: 0, arr_best: 0 });
+            }), { arr_actual: null, arr_worst: 0, arr_likely: 0, arr_best: 0 });
             return [
               ...qm.map((m, i) => (
                 <tr key={`${q}-${m.month}`} style={{ background: i%2===0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
@@ -396,6 +416,29 @@ const MonthlyTable = ({ months }) => {
   );
 };
 
+const GeoBarChart = ({ rows }) => {
+  if (!rows || rows.length === 0) return <EmptyState message="No geo breakdown available" />;
+  const data = rows.map(r => ({
+    name:   r.sales_market,
+    worst:  (r.arr_worst  || 0) / 1e6,
+    likely: (r.arr_likely || 0) / 1e6,
+    best:   (r.arr_best   || 0) / 1e6,
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <BarChart data={data} layout="vertical" margin={{ left: 8, right: 16 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+        <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
+        <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={52} />
+        <Tooltip content={<DarkTip />} />
+        <Bar dataKey="worst"  name="Worst"  fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        <Bar dataKey="likely" name="Likely" fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        <Bar dataKey="best"   name="Best"   fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+};
+
 const AccuracyTable = ({ data }) => {
   // Notebook models: Prophet_trend (→Prophet), MSTL_v2, ETS, DHR_ARIMA (→DHR_ARIMA), LightGBM
   // Chronos NOT in model suite — filter it out if value is null / ≥999
@@ -412,8 +455,16 @@ const AccuracyTable = ({ data }) => {
     ...(hasMstl ? [{ key: 'MSTL_v2', label: formatModelLabel('MSTL_v2') }] : []),
     ...(hasDhr ? [{ key: 'DHR_ARIMA', label: formatModelLabel('DHR_ARIMA') }] : []),
   ];
+  const hiddenModels = [!hasMstl && 'MSTL', !hasDhr && 'DHR-ARIMA'].filter(Boolean).join(', ');
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div>
+      {hiddenModels && (
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, padding: '6px 10px',
+                      background: 'rgba(255,255,255,0.02)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)' }}>
+          ℹ️ {hiddenModels} — columns hidden; leaderboard data unavailable for these models.
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
@@ -445,11 +496,12 @@ const AccuracyTable = ({ data }) => {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 };
 
-// ── AI Insights tab — calls /api/forecast/intelligence via apiService ─────────
+// ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
 const AiInsightsSection = ({ model, prodLine }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -458,11 +510,9 @@ const AiInsightsSection = ({ model, prodLine }) => {
   const loadAi = useCallback(async () => {
     setAiLoading(true); setAiError(null);
     try {
-      const res = await apiService.getForecastIntelligence(
-        'won_pipeline',
-        model === 'ensemble' ? 'prophet' : model,
-        prodLine !== 'All' ? prodLine : null
-      );
+      // AI Insights are pre-computed in Delta table — not model/product-specific;
+      // call v2 endpoint which reads from arr_forecast_insights Delta table.
+      const res = await apiService.getForecastV2Intelligence();
       // Support both wrapped {source, data:{...}} and legacy flat shape
       const d = (res?.data && typeof res.data === 'object') ? res.data : res;
       setAiData({ ...d, _source: res?.source ?? d?.source });
@@ -471,7 +521,9 @@ const AiInsightsSection = ({ model, prodLine }) => {
     } finally {
       setAiLoading(false);
     }
-  }, [model, prodLine]);
+  // Pre-computed Delta table: not model/product-specific — no deps needed;
+  // remove model/prodLine to avoid background refetches on filter changes.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadAi(); }, [loadAi]);
 
@@ -508,6 +560,21 @@ const AiInsightsSection = ({ model, prodLine }) => {
       <p style={{ margin: 0 }}>{aiError}</p>
       <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
                                         background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: 12 }}>Retry</button>
+    </div>
+  );
+
+  // Show actionable empty state when backend returns an error object (table not yet populated)
+  if (aiData?.error && !aiData?.key_drivers?.length) return (
+    <div style={{ padding: '24px', background: 'rgba(245,158,11,0.06)', borderRadius: 10, color: '#f59e0b', textAlign: 'center' }}>
+      <div style={{ fontSize: 24, marginBottom: 8 }}>💭</div>
+      <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{aiData.narrative || aiData.error}</p>
+      <p style={{ margin: '8px 0 0', fontSize: 12, color: '#64748b' }}>
+        Run Cell 10 (Step 7) of the Panel Writer notebook to populate the AI Insights Delta table.
+      </p>
+      <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
+                                        background: 'transparent', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)', fontSize: 12 }}>
+        ↻ Retry
+      </button>
     </div>
   );
 
@@ -611,7 +678,7 @@ const AiInsightsSection = ({ model, prodLine }) => {
         <span style={{ fontSize: 11, color: '#334155' }}>
           {isDemo
             ? '🔵 Demo — connect to Databricks for live insights'
-            : `🟢 Live · Prophet model${aiData?.history_days ? ` · ${aiData.history_days} days of history` : ''}`}
+            : `🟢 Live · Pre-computed insights${aiData?.run_date ? ` · Run ${aiData.run_date}` : ''}`}
         </span>
         <button onClick={loadAi} disabled={aiLoading}
           style={{ padding: '4px 12px', borderRadius: 6, cursor: aiLoading ? 'default' : 'pointer',
@@ -771,6 +838,7 @@ const ForecastingPanel = () => {
   const [prodLine,    setProdLine]    = useState('All');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedQuarter, setSelectedQuarter] = useState(null);
+  const [multiYearView, setMultiYearView] = useState('overlay'); // 'overlay' | 'timeline'
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
@@ -807,7 +875,7 @@ const ForecastingPanel = () => {
       const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb] = await Promise.allSettled([
         apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
-        apiService.getForecastV2Historical(null, activePl, null, selectedYear),
+        apiService.getForecastV2Historical(null, activePl, null),          // omit year → backend returns 3-year window
         apiService.getForecastV2ByProduct(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
         apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
         apiService.getForecastV2Leaderboard(),
@@ -1131,12 +1199,12 @@ const ForecastingPanel = () => {
         {/* Model pills with MAPE badges */}
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {MODELS.map(m => {
-            const capM  = m.charAt(0).toUpperCase() + m.slice(1);
-            const color = MODEL_COLORS[capM] ?? '#f1f5f9';
-            const mape  = m !== 'ensemble' ? modelMapes[capM] : null;
+            const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
+            const lbKey = MODEL_LB_KEY[m];
+            const mape  = lbKey ? modelMapes[lbKey] : null;
             return (
-              <button key={m} onClick={() => setModel(m)} style={pill(model === m, color)}>
-                {capM}
+              <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
+                {meta.label}
                 {mape != null && mape < 999 && (
                   <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
                                  background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
@@ -1207,8 +1275,15 @@ const ForecastingPanel = () => {
 
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
-        {TABS.map(t => (
+        {TABS.map((t, i) => (
           <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+            tabIndex={tab === t ? 0 : -1}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight') { e.preventDefault(); setTab(TABS[(i + 1) % TABS.length]); }
+              else if (e.key === 'ArrowLeft') { e.preventDefault(); setTab(TABS[(i - 1 + TABS.length) % TABS.length]); }
+              else if (e.key === 'Home') { e.preventDefault(); setTab(TABS[0]); }
+              else if (e.key === 'End') { e.preventDefault(); setTab(TABS[TABS.length - 1]); }
+            }}
             style={{
               padding: '10px 18px', fontSize: 12, fontWeight: tab === t ? 700 : 500,
               color: tab === t ? '#f1f5f9' : '#475569',
@@ -1238,10 +1313,9 @@ const ForecastingPanel = () => {
                       // Most Likely = per-model forecast sum from chart rows (arr_likely changes per model pill).
                       // Best/Worst Case = ensemble P10/P90 from backend kpis (constant across models).
                       const kp = weeklyKpis;
-                      const forecastRows = (weeklyView || []).filter(r => r.arr_likely != null);
-                      const modelMl = forecastRows.reduce((s, r) => s + Number(r.arr_likely || 0), 0);
-                      // Fall back to server kpis most_likely only when no chart rows (demo mode)
-                      const ml  = forecastRows.length > 0 ? modelMl : (kp?.most_likely ?? 0);
+                      // Use authoritative backend KPI totals (pre-aggregated server-side,
+                      // not summed from weekly chart rows which would over-count ARR weeks)
+                      const ml  = kp?.most_likely ?? 0;
                       const bc  = kp?.best_case   ?? 0;
                       const wc  = kp?.worst_case  ?? 0;
                       const ytdActual = kp?.ytd_actuals
@@ -1321,29 +1395,48 @@ const ForecastingPanel = () => {
 
           {tab === 'Multi-Year' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <CardWrap>
-                <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
-                <GraphInsight summary={graphInsights.seasonality} />
-                <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  {Object.entries(YEAR_COLORS).map(([yr,c]) => <span key={yr}><span style={{ color: c }}>─</span> {yr}</span>)}
-                </div>
-                {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
-              </CardWrap>
-              <CardWrap>
-                <SectionTitle>Historical Weekly Trend</SectionTitle>
-                <GraphInsight summary={graphInsights.trend} />
-                {loading ? <Skeleton height={220} /> : (
-                  <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                      <XAxis dataKey="date" tickFormatter={d=>d?.slice(0,7)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} interval={12} />
-                      <YAxis tickFormatter={v=>fmtM(v)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} width={58} />
-                      <Tooltip content={<DarkTip />} />
-                      <Line type="monotone" dataKey="arr" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Weekly ARR" isAnimationActive />
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
-              </CardWrap>
+              {/* View mode toggle */}
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                {[{key:'overlay',label:'Year Overlay (ISO Week)'},{key:'timeline',label:'Timeline View'}].map(v => (
+                  <button key={v.key} onClick={() => setMultiYearView(v.key)} style={pill(multiYearView === v.key, '#3b82f6')}>
+                    {v.label}
+                  </button>
+                ))}
+                <span style={{ fontSize: 10, color: '#475569', marginLeft: 8 }}>
+                  {[...new Set((historicalView||[]).map(r=>r.year))].sort().join(', ')} · {historicalView?.length ?? 0} pts
+                </span>
+              </div>
+
+              {multiYearView === 'overlay' && (
+                <CardWrap>
+                  <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+                  <GraphInsight summary={graphInsights.seasonality} />
+                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
+                      <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
+                    ))}
+                  </div>
+                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
+                </CardWrap>
+              )}
+
+              {multiYearView === 'timeline' && (
+                <CardWrap>
+                  <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
+                  <GraphInsight summary={graphInsights.trend} />
+                  {loading ? <Skeleton height={260} /> : (
+                    <ResponsiveContainer width="100%" height={260}>
+                      <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                        <XAxis dataKey="date" tickFormatter={d=>d?.slice(0,7)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} interval={12} />
+                        <YAxis tickFormatter={v=>fmtM(v)} tick={{ fill:'#475569',fontSize:9 }} axisLine={false} tickLine={false} width={58} />
+                        <Tooltip content={<DarkTip />} />
+                        <Line type="monotone" dataKey="arr" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Weekly ARR" isAnimationActive />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardWrap>
+              )}
             </div>
           )}
 
@@ -1381,6 +1474,17 @@ const ForecastingPanel = () => {
                       ))}
                     </tbody>
                   </table>
+                </CardWrap>
+              )}
+              {!loading && byProductView?.by_geo?.length > 0 && (
+                <CardWrap>
+                  <SectionTitle>Forecast by Geography</SectionTitle>
+                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span><span style={{ color: '#ef4444' }}>■</span> Worst</span>
+                    <span><span style={{ color: '#ffffff' }}>■</span> Most Likely</span>
+                    <span><span style={{ color: '#10b981' }}>■</span> Best</span>
+                  </div>
+                  <GeoBarChart rows={byProductView.by_geo} />
                 </CardWrap>
               )}
             </div>
@@ -1481,7 +1585,9 @@ const ForecastingPanel = () => {
               </div>
 
               <CardWrap>
-                <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+                <SectionTitle>Driver Bridge (Plan vs Actual)
+                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
+                </SectionTitle>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
                   <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
@@ -1505,7 +1611,10 @@ const ForecastingPanel = () => {
               </CardWrap>
 
               <CardWrap>
-                <SectionTitle>Scenario Simulator (What-If)</SectionTitle>
+                <SectionTitle>Pipeline Sensitivity Simulator</SectionTitle>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+                  Adjusts pipeline conversion factors relative to baseline — not a direct ARR override. Use as directional sensitivity, not a forecast number.
+                </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Win Rate %: {simWinRate.toFixed(1)}</div>
@@ -1546,7 +1655,7 @@ const ForecastingPanel = () => {
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                        {['Product', 'Geo', 'Likely', 'Worst', 'Risk Impact', 'Risk Level'].map((h) => (
+                        {['Product', 'Geo', 'Likely', 'Worst', 'Risk Impact', 'Spread %', 'Risk Level'].map((h) => (
                           <th key={h} style={{ padding: '6px 10px', textAlign: ['Product', 'Geo', 'Risk Level'].includes(h) ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>
                         ))}
                       </tr>
@@ -1559,6 +1668,9 @@ const ForecastingPanel = () => {
                           <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#e2e8f0' }}>{fmtM(r.likely)}</td>
                           <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f87171' }}>{fmtM(r.worst)}</td>
                           <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#ef4444', fontWeight: 700 }}>{fmtM(r.risk_dollar_impact)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#94a3b8' }}>
+                            {r.confidence_spread_pct != null ? `${Number(r.confidence_spread_pct).toFixed(1)}%` : '—'}
+                          </td>
                           <td style={{ padding: '6px 10px', fontSize: 10, color: r.risk_level === 'high' ? '#ef4444' : r.risk_level === 'moderate' ? '#f59e0b' : '#10b981' }}>{String(r.risk_level || '').toUpperCase()}</td>
                         </tr>
                       ))}
