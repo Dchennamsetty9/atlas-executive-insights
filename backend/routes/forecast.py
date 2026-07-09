@@ -433,6 +433,149 @@ def _normalize_model_name(model: str) -> str:
     return aliases.get(clean, clean)
 
 
+def _fallback_intelligence_payload(
+    *,
+    product: Optional[str],
+    product_line: Optional[str],
+    reason: str,
+) -> dict:
+    """Build a non-empty AI insights payload from live forecast tables when JSON is unavailable."""
+    if not _live_mode_available():
+        return {
+            "source": "fallback",
+            "error": reason,
+            "momentum": "STABLE",
+            "risk_level": "MODERATE",
+            "model_confidence": 65,
+            "best_model": "Prophet",
+            "best_mape": 0,
+            "forecast_most_likely": 0,
+            "forecast_low": 0,
+            "forecast_high": 0,
+            "narrative": "AI insights JSON is unavailable and live Databricks access is currently not configured.",
+            "key_drivers": [
+                "Run Panel Writer notebook to publish ai_insights_latest.json to UC Volume.",
+                "Ensure Databricks auth is available to backend for table-derived fallback.",
+                "Retry AI Insights refresh after artifact and auth are healthy.",
+            ],
+            "downside_risks": [
+                "Missing insights artifact prevents model consensus and CI narrative generation.",
+                "Executive action cards are degraded until JSON output is restored.",
+                "Decision confidence remains limited without precomputed intelligence context.",
+            ],
+            "upside_opportunities": [
+                "Once JSON artifact is restored, cards will show quantified upside/downside scenarios.",
+                "Fallback queries can still populate baseline ARR bounds from live tables.",
+                "Automating notebook schedule health checks will prevent future gaps.",
+            ],
+            "executive_actions": [
+                "Run job3_forecast_scoring and Panel Writer to regenerate ai_insights_latest.json.",
+                "Verify UC Volume path permissions for backend app identity.",
+                "Set alert when the insights artifact is older than 24 hours.",
+            ],
+        }
+
+    clause = _insights_product_clause(product, product_line)
+    try:
+        summary_rows = execute_query(
+            f"""
+            SELECT
+                MAX(CAST(run_date AS STRING)) AS run_date,
+                SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS most_likely,
+                SUM(COALESCE(CAST(Worst_Case AS DOUBLE), 0)) AS worst_case,
+                SUM(COALESCE(CAST(Best_Case AS DOUBLE), 0)) AS best_case
+            FROM {FORECAST_INSIGHTS_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
+              AND forecast_type IN ('rolling', 'roy')
+              {clause}
+            """
+        )
+        top_products = execute_query(
+            f"""
+            SELECT COALESCE(CAST(product AS STRING), 'Unknown') AS product,
+                   SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS likely
+            FROM {FORECAST_INSIGHTS_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {FORECAST_INSIGHTS_TABLE})
+              AND forecast_type IN ('rolling', 'roy')
+              {clause}
+            GROUP BY COALESCE(CAST(product AS STRING), 'Unknown')
+            ORDER BY likely DESC
+            LIMIT 3
+            """
+        )
+
+        s = summary_rows[0] if summary_rows else {}
+        likely = _f(s.get("most_likely"))
+        worst = _f(s.get("worst_case"), likely)
+        best = _f(s.get("best_case"), likely)
+        spread_pct = ((best - worst) / likely * 100.0) if likely > 0 else 0.0
+
+        risk_level = "LOW" if spread_pct < 10 else "MODERATE" if spread_pct < 20 else "HIGH"
+        momentum = "STABLE"
+        conf = max(45, min(92, int(round(100 - min(40, spread_pct * 1.4)))))
+        run_date = str(s.get("run_date") or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+
+        top_lines = [str(r.get("product") or "Unknown") for r in top_products]
+        top_text = ", ".join(top_lines) if top_lines else "Total mix"
+
+        return {
+            "source": "live_query_fallback",
+            "error": reason,
+            "run_date": run_date,
+            "momentum": momentum,
+            "risk_level": risk_level,
+            "model_confidence": conf,
+            "best_model": "Prophet",
+            "best_mape": 0,
+            "forecast_most_likely": round(likely, 0),
+            "forecast_low": round(worst, 0),
+            "forecast_high": round(best, 0),
+            "narrative": (
+                f"Insights JSON is unavailable ({reason}). Showing live fallback from arr_forecast_v2: "
+                f"most likely ${likely/1_000_000:.1f}M, range ${worst/1_000_000:.1f}M-${best/1_000_000:.1f}M."
+            ),
+            "key_drivers": [
+                f"Top product contribution this run: {top_text}.",
+                f"Current planning baseline is ${likely/1_000_000:.1f}M ARR.",
+                "Fallback values are table-derived and refresh with latest run_date.",
+            ],
+            "downside_risks": [
+                f"Scenario downside vs likely: ${(likely - worst)/1_000_000:.1f}M.",
+                f"Band width is {spread_pct:.1f}% of most-likely, indicating {risk_level.lower()} risk.",
+                "Missing JSON artifact suppresses richer model-consensus diagnostics.",
+            ],
+            "upside_opportunities": [
+                f"Scenario upside vs likely: ${(best - likely)/1_000_000:.1f}M.",
+                "Restoring JSON will re-enable precomputed confidence intervals by product and quarter.",
+                "Live fallback still provides current ARR envelope for planning cadence.",
+            ],
+            "executive_actions": [
+                "Re-run Panel Writer notebook to regenerate ai_insights_latest.json.",
+                "Validate UC Volume path and app service principal read permissions.",
+                "Alert on missing or stale insights artifact before executive review windows.",
+            ],
+        }
+    except Exception as exc:
+        logger.warning("[forecast/intelligence] fallback query failed: %s", exc)
+        return {
+            "source": "fallback",
+            "error": f"{reason}; fallback query failed: {exc}",
+            "momentum": "STABLE",
+            "risk_level": "MODERATE",
+            "model_confidence": 55,
+            "best_model": "Prophet",
+            "best_mape": 0,
+            "forecast_most_likely": 0,
+            "forecast_low": 0,
+            "forecast_high": 0,
+            "narrative": "AI insights artifact is unavailable and fallback query failed. Retry after notebook and connectivity checks.",
+            "key_drivers": ["Restore insights artifact", "Verify backend Databricks auth", "Retry refresh"],
+            "downside_risks": ["Missing artifact", "Fallback query failed", "No model-consensus diagnostics"],
+            "upside_opportunities": ["Recover artifact output", "Restore table query access", "Resume quantified executive narratives"],
+            "executive_actions": ["Run Panel Writer", "Check app permissions", "Validate endpoint health"],
+        }
+
+
 @router.get("/insights")
 async def get_forecast_insights(
     metric: str = Query("won_pipeline"),
@@ -446,15 +589,17 @@ async def get_forecast_insights(
             payload = json.load(f)
         return payload
     except FileNotFoundError:
-        return {
-            "error": "Insights file not found",
-            "narrative": "AI Insights unavailable - run Panel Writer notebook.",
-        }
+        return _fallback_intelligence_payload(
+            product=product,
+            product_line=product_line,
+            reason="Insights file not found",
+        )
     except json.JSONDecodeError:
-        return {
-            "error": "Invalid JSON",
-            "narrative": "AI Insights corrupted - re-run Panel Writer.",
-        }
+        return _fallback_intelligence_payload(
+            product=product,
+            product_line=product_line,
+            reason="Invalid JSON",
+        )
 
 
 @router.get("/intelligence")
