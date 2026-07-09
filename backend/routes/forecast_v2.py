@@ -34,6 +34,7 @@ FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
+INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_insights`"
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
@@ -394,20 +395,45 @@ class GovernanceLogRequest(BaseModel):
 # ── GET /intelligence ──────────────────────────────────────────────────────────
 @router.get("/intelligence")
 async def get_intelligence():
-    """Read pre-computed AI insights from UC Volume JSON."""
-    try:
-        with open(INSIGHTS_PATH, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        return payload
-    except FileNotFoundError:
+    """Read pre-computed AI insights from Delta table arr_forecast_insights."""
+    if not _live():
         return {
-            "error": "Insights file not found",
-            "narrative": "AI Insights unavailable - run Panel Writer notebook.",
+            "error": "Not in live mode",
+            "narrative": "AI Insights unavailable — configure Databricks auth.",
         }
-    except json.JSONDecodeError:
+    
+    try:
+        # Query the Delta table for the latest insights JSON payload
+        rows = await asyncio.to_thread(execute_query, f"""
+            SELECT insights_json
+            FROM {INSIGHTS_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {INSIGHTS_TABLE})
+            LIMIT 1
+        """)
+        
+        if not rows:
+            return {
+                "error": "No insights data",
+                "narrative": "AI Insights table is empty — run Panel Writer notebook.",
+            }
+        
+        # Extract and parse the JSON payload
+        json_str = rows[0].get("insights_json")
+        if not json_str:
+            return {
+                "error": "Invalid insights data",
+                "narrative": "AI Insights payload is null — re-run Panel Writer.",
+            }
+        
+        payload = json.loads(json_str)
+        payload["source"] = "live"
+        return payload
+        
+    except Exception as exc:
+        logger.warning("[forecast/v2/intelligence] failed to read table: %s", exc)
         return {
-            "error": "Invalid JSON",
-            "narrative": "AI Insights corrupted - re-run Panel Writer.",
+            "error": "Query failed",
+            "narrative": f"AI Insights read error: {exc}",
         }
 
 
