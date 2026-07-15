@@ -1295,28 +1295,64 @@ async def get_meeting_mode(
     quarter: Optional[int] = Query(None),
 ):
     """Board/exec snapshot with top risks and priority actions."""
-    confidence = await get_confidence(model=model, year=year, quarter=quarter)
-    bridge = await get_driver_bridge(model=model, year=year, quarter=quarter)
-    radar = await get_risk_radar(model=model, year=year, quarter=quarter)
-    freshness = await get_freshness()
-    top_risks = (radar.get("items") or [])[:3]
-    moves = [
-        "Escalate top 3 at-risk slices with regional owners this week.",
-        "Rebalance pipeline coverage toward highest spread geos/products.",
-        "Track closure plan weekly until confidence score improves.",
-    ]
-    return {
-        "source": "live" if confidence.get("source") == "live" else "demo",
-        "confidence": confidence,
-        "freshness": freshness,
-        "variance": {
-            "plan_total": bridge.get("plan_total"),
-            "actual_total": bridge.get("actual_total"),
-            "variance": bridge.get("variance"),
-        },
-        "top_risks": top_risks,
-        "top_moves": moves,
-    }
+    try:
+        confidence = await get_confidence(model=model, year=year, quarter=quarter)
+        bridge = await get_driver_bridge(model=model, year=year, quarter=quarter)
+        # Explicitly pass forecast_type to avoid FastAPI Query default objects when
+        # this endpoint calls get_risk_radar as a plain Python function.
+        radar = await get_risk_radar(forecast_type="rolling", model=model, year=year, quarter=quarter)
+        freshness = await get_freshness()
+        top_risks = (radar.get("items") or [])[:3]
+        moves = [
+            "Escalate top 3 at-risk slices with regional owners this week.",
+            "Rebalance pipeline coverage toward highest spread geos/products.",
+            "Track closure plan weekly until confidence score improves.",
+        ]
+        return {
+            "source": "live" if confidence.get("source") == "live" else "demo",
+            "confidence": confidence,
+            "freshness": freshness,
+            "variance": {
+                "plan_total": bridge.get("plan_total"),
+                "actual_total": bridge.get("actual_total"),
+                "variance": bridge.get("variance"),
+            },
+            "top_risks": top_risks,
+            "top_moves": moves,
+        }
+    except Exception as exc:
+        logger.warning("[forecast/meeting-mode] failed: %s", exc)
+        return {
+            "source": "demo",
+            "error": str(exc),
+            "confidence": {
+                "source": "demo",
+                "confidence_score": 72,
+                "confidence_label": "Medium",
+                "reasons": [
+                    "Fallback mode: unable to compute live confidence.",
+                    "Review Databricks connectivity and table grants.",
+                ],
+            },
+            "freshness": {
+                "source": "demo",
+                "freshness": None,
+                "days_stale": None,
+                "sla_days": 7,
+                "sla_status": "unknown",
+            },
+            "variance": {
+                "plan_total": None,
+                "actual_total": None,
+                "variance": None,
+            },
+            "top_risks": [],
+            "top_moves": [
+                "Escalate top 3 at-risk slices with regional owners this week.",
+                "Rebalance pipeline coverage toward highest spread geos/products.",
+                "Track closure plan weekly until confidence score improves.",
+            ],
+        }
 
 
 @router.get("/governance/log")
