@@ -365,10 +365,7 @@ def _pct(part: float, whole: float) -> float:
 async def _lb_columns() -> set[str]:
     """Return lowercase leaderboard column names for runtime schema compatibility."""
     sql = f"""
-        SELECT LOWER(column_name) AS column_name
-        FROM `{FORECAST_CATALOG}`.information_schema.columns
-        WHERE LOWER(table_schema) = LOWER('{FORECAST_SCHEMA}')
-          AND LOWER(table_name) = 'arr_forecast_v2_leaderboard'
+        SHOW COLUMNS IN `{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`
     """
     try:
         rows = await asyncio.to_thread(execute_query, sql)
@@ -377,9 +374,9 @@ async def _lb_columns() -> set[str]:
         return set()
 
     return {
-        str(r.get("column_name") or "").strip().lower()
+        str(r.get("col_name") or "").strip().lower()
         for r in rows
-        if str(r.get("column_name") or "").strip()
+        if str(r.get("col_name") or "").strip()
     }
 
 
@@ -464,6 +461,12 @@ async def get_intelligence():
         return payload
         
     except Exception as exc:
+        exc_str = str(exc)
+        if "information_schema" in exc_str.lower() or "TABLE_OR_VIEW_NOT_FOUND" in exc_str:
+            return {
+                "error": "No insights data",
+                "narrative": "AI Insights table has not been created yet — run Step 7 of the Panel Writer notebook.",
+            }
         logger.warning("[forecast/v2/intelligence] failed to read table: %s", exc)
         return {
             "error": "Query failed",
