@@ -410,33 +410,23 @@ async def get_intelligence():
         }
     
     try:
-        # Prefer freshest writer output: updated_at when available, then run_date.
-        # Schema can vary by environment, so discover columns first.
-        col_rows = await asyncio.to_thread(execute_query, f"""
-            SELECT LOWER(column_name) AS column_name
-            FROM `{FORECAST_CATALOG}`.information_schema.columns
-            WHERE LOWER(table_schema) = LOWER('{FORECAST_SCHEMA}')
-              AND LOWER(table_name) = 'arr_forecast_insights'
-        """)
-        cols = {
-            str(r.get("column_name") or "").strip().lower()
-            for r in (col_rows or [])
-            if str(r.get("column_name") or "").strip()
-        }
-
-        order_parts = []
-        if "updated_at" in cols:
-            order_parts.append("CAST(updated_at AS TIMESTAMP) DESC")
-        if "run_date" in cols:
-            order_parts.append("CAST(run_date AS TIMESTAMP) DESC")
-        order_sql = ", ".join(order_parts) if order_parts else "1"
-
-        rows = await asyncio.to_thread(execute_query, f"""
-            SELECT *
-            FROM {INSIGHTS_TABLE}
-            ORDER BY {order_sql}
-            LIMIT 1
-        """)
+        # Prefer freshest writer output but avoid information_schema access,
+        # which some service principals cannot read in UC.
+        try:
+            rows = await asyncio.to_thread(execute_query, f"""
+                SELECT *
+                FROM {INSIGHTS_TABLE}
+                ORDER BY CAST(updated_at AS TIMESTAMP) DESC, CAST(run_date AS TIMESTAMP) DESC
+                LIMIT 1
+            """)
+        except Exception:
+            # Fallback for schemas without updated_at.
+            rows = await asyncio.to_thread(execute_query, f"""
+                SELECT *
+                FROM {INSIGHTS_TABLE}
+                ORDER BY CAST(run_date AS TIMESTAMP) DESC
+                LIMIT 1
+            """)
         
         if not rows:
             return {
