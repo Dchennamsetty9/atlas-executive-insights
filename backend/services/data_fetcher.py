@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import pandas as pd
 import os
+import re
 import asyncio
 from services.databricks_connection import token_available, get_connection as get_databricks_connection
 
@@ -540,6 +541,21 @@ class DataFetcher:
         Falls back to an empty DataFrame (caller can fall through to inline Prophet).
         """
         if not self.use_databricks:
+            return pd.DataFrame()
+
+        # Security: geo/product_group/run_date arrive from an unauthenticated query
+        # string and are interpolated into SQL. Validate against known-safe values
+        # (whitelist for dimensions, strict ISO-date regex for run_date) before use;
+        # reject anything else rather than build an injectable query. (Audit T1.2)
+        _valid_geo = self._VALID_GEO | {"Total", "All"}
+        if geo and geo not in _valid_geo:
+            print(f"[DataFetcher] Rejected out-of-whitelist geo={geo!r}")
+            return pd.DataFrame()
+        if product_group and product_group not in {"Total", "All", "UCC", "ITSG"}:
+            print(f"[DataFetcher] Rejected out-of-whitelist product_group={product_group!r}")
+            return pd.DataFrame()
+        if run_date is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(run_date)):
+            print(f"[DataFetcher] Rejected malformed run_date={run_date!r}")
             return pd.DataFrame()
 
         run_filter = (

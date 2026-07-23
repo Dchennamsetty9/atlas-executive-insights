@@ -9,13 +9,14 @@
  * Error safety: TabErrorBoundary wraps each tab body; one tab cannot blank another.
  */
 
-import { useState, useEffect, useCallback, useMemo, Component } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Component } from 'react';
 import {
   ComposedChart, BarChart, LineChart,
   Area, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import { apiService } from '../services/api';
+import { exportCardPng } from '../utils/chartExport';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
 class TabErrorBoundary extends Component {
@@ -80,7 +81,7 @@ const MODEL_KEY_META = {
 };
 // Maps model key → leaderboard column name for MAPE badge on pill
 const MODEL_LB_KEY = {
-  ensemble:  null,
+  ensemble:  'Ensemble',
   prophet:   'Prophet',
   ets:       'ETS',
   mstl_v2:   'MSTL_v2',
@@ -139,23 +140,73 @@ const EmptyState = ({ message = 'Awaiting next forecast run' }) => (
   </div>
 );
 
-const CardWrap = ({ children }) => (
-  <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: 12, padding: 16 }}>{children}</div>
-);
+// CardWrap — optional downloadName renders a sleek ⬇ PNG button (captures the card's chart SVG)
+const CardWrap = ({ children, downloadName }) => {
+  const ref = useRef(null);
+  return (
+    <div ref={ref} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: 12, padding: 16, position: 'relative' }}>
+      {downloadName && (
+        <button onClick={() => exportCardPng(ref, downloadName)} title="Download chart as PNG"
+          aria-label="Download chart as PNG" data-export-hide
+          style={{ position: 'absolute', top: 10, right: 12, width: 26, height: 24, display: 'flex',
+                   alignItems: 'center', justifyContent: 'center', borderRadius: 6, cursor: 'pointer',
+                   background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                   color: '#64748b', fontSize: 12, lineHeight: 1, padding: 0, zIndex: 2 }}>
+          ⬇
+        </button>
+      )}
+      {children}
+    </div>
+  );
+};
 
 const SectionTitle = ({ children }) => (
   <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase',
                 letterSpacing: '0.06em', marginBottom: 10 }}>{children}</div>
 );
 
-const GraphInsight = ({ summary }) => {
+// Downsample chart rows to a compact payload for the LLM (≤ maxPoints, nulls stripped)
+const _compactDataPoints = (rows, maxPoints = 40) => {
+  const clean = (rows || []).filter(r => r && typeof r === 'object');
+  if (clean.length <= maxPoints) return clean;
+  const step = Math.ceil(clean.length / maxPoints);
+  return clean.filter((_, i) => i % step === 0 || i === clean.length - 1);
+};
+
+/**
+ * GraphInsight — collapsible insight popup on a chart card.
+ * Always shows the deterministic client-side summary immediately.
+ * If chartType/metricName/dataPoints are provided, lazily fetches a live LLM
+ * annotation (POST /api/ai/chart-annotation) on first expand and caches it;
+ * on failure the deterministic summary simply stands alone (no regression).
+ */
+const GraphInsight = ({ summary, chartType, metricName, dataPoints }) => {
   const [open, setOpen] = useState(false);
-  if (!summary) return null;
+  const [ai, setAi] = useState(null);          // { annotation } once fetched
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiTried, setAiTried] = useState(false);
+  const aiCapable = Boolean(chartType && metricName && dataPoints?.length);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    // Lazy-fetch the LLM annotation once, on first expand only
+    if (next && aiCapable && !aiTried) {
+      setAiTried(true);
+      setAiLoading(true);
+      apiService.getAIChartAnnotation(chartType, _compactDataPoints(dataPoints), metricName)
+        .then((res) => { if (res?.annotation) setAi(res); })
+        .catch(() => { /* deterministic summary stands alone */ })
+        .finally(() => setAiLoading(false));
+    }
+  };
+
+  if (!summary && !aiCapable) return null;
   return (
     <div style={{ marginBottom: 10 }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         style={{
           border: '1px solid rgba(59,130,246,0.22)',
           background: 'rgba(59,130,246,0.08)',
@@ -168,7 +219,7 @@ const GraphInsight = ({ summary }) => {
           letterSpacing: '0.02em',
         }}
       >
-        {open ? '▾' : '▸'} AI Insight
+        {open ? '▾' : '▸'} {aiCapable ? '✨ AI Insight' : 'AI Insight'}
       </button>
       {open && (
         <div
@@ -183,7 +234,24 @@ const GraphInsight = ({ summary }) => {
             padding: '8px 10px',
           }}
         >
-          {summary}
+          {summary && <div>{summary}</div>}
+          {aiCapable && (
+            <div style={{ marginTop: summary ? 8 : 0, paddingTop: summary ? 8 : 0,
+                          borderTop: summary ? '1px solid rgba(148,163,184,0.15)' : 'none' }}>
+              {aiLoading && (
+                <span style={{ color: '#64748b', fontStyle: 'italic' }}>✨ Asking AI about this chart…</span>
+              )}
+              {!aiLoading && ai?.annotation && (
+                <span>
+                  <span style={{ color: '#a78bfa', fontWeight: 700, marginRight: 6 }}>✨ AI:</span>
+                  {ai.annotation}
+                </span>
+              )}
+              {!aiLoading && aiTried && !ai?.annotation && (
+                <span style={{ color: '#475569', fontSize: 11 }}>AI annotation unavailable — showing rule-based summary.</span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -197,17 +265,29 @@ const WeeklyChart = ({ rows }) => {
   const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
 
-  // Build unified dataset — band uses stacking trick: floor (transparent) + range (colored)
-  const data = combined.map(r => ({
-    date: r.date,
-    actual: r.arr_actual ?? null,
-    likely: r.arr_likely ?? null,
-    worst:  r.arr_worst  ?? null,
-    best:   r.arr_best   ?? null,
-    bandFloor: r.arr_worst ?? null,
-    bandRange: (r.arr_best != null && r.arr_worst != null)
-      ? Math.max(0, r.arr_best - r.arr_worst) : null,
-  }));
+  // Build unified dataset — bands use stacking trick: floor (transparent) + range (colored).
+  // Stored Worst_Case/Best_Case are the model's P10/P90 → an 80% prediction interval.
+  // The inner ~50% band (≈P25–P75) is derived by z-score scaling of the P10/P90 spread
+  // around Most Likely (z25/z10 = 0.6745/1.2816 ≈ 0.526) assuming symmetric-ish residuals.
+  const INNER_Z_RATIO = 0.6745 / 1.2816;
+  const data = combined.map(r => {
+    const likely = r.arr_likely ?? null;
+    const worst  = r.arr_worst  ?? null;
+    const best   = r.arr_best   ?? null;
+    const hasBand = likely != null && worst != null && best != null;
+    const innerLo = hasBand ? likely - (likely - worst) * INNER_Z_RATIO : null;
+    const innerHi = hasBand ? likely + (best - likely) * INNER_Z_RATIO : null;
+    return {
+      date: r.date,
+      actual: r.arr_actual ?? null,
+      likely, worst, best,
+      innerLo, innerHi,
+      bandFloor: worst,
+      bandRange: (best != null && worst != null) ? Math.max(0, best - worst) : null,
+      innerFloor: innerLo,
+      innerRange: (innerHi != null && innerLo != null) ? Math.max(0, innerHi - innerLo) : null,
+    };
+  });
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
@@ -218,8 +298,18 @@ const WeeklyChart = ({ rows }) => {
         <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
         {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
         {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Best Case: <b>{fmtM(d.best)}</b></div>}
-        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Worst Case: <b>{fmtM(d.worst)}</b></div>}
+        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.best)}</b></div>}
+        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
+        {d.innerLo != null && d.innerHi != null && (
+          <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
+          </div>
+        )}
+        {d.worst != null && d.best != null && (
+          <div style={{ color: '#60a5fa', marginTop: 2 }}>
+            ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
+          </div>
+        )}
       </div>
     );
   };
@@ -233,8 +323,12 @@ const WeeklyChart = ({ rows }) => {
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
           <linearGradient id="bandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.04} />
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.18} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.03} />
+          </linearGradient>
+          <linearGradient id="innerBandFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.30} />
+            <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.08} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -242,26 +336,36 @@ const WeeklyChart = ({ rows }) => {
                tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false}
                interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={64} />
+               axisLine={false} tickLine={false} width={78}
+               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
         <Tooltip content={<CustomTooltip />} />
         {splitDate && (
-          <ReferenceLine x={splitDate} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4"
-            label={{ value: 'Forecast →', position: 'insideTopLeft', fill: '#475569', fontSize: 10 }} />
+          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4"
+            label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />
         )}
-        {/* Confidence band: transparent floor stacked under colored band */}
+        {splitDate && (
+          <ReferenceLine x={splitDate} stroke="none"
+            label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
+        )}
+        {/* Outer 80% band (P10–P90): transparent floor stacked under colored band */}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
               legendType="none" connectNulls dot={false} />
         <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)"
+              legendType="none" connectNulls dot={false} />
+        {/* Inner ~50% band (≈P25–P75, z-scaled from P10/P90) drawn on top for nested effect */}
+        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent"
+              legendType="none" connectNulls dot={false} />
+        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)"
               legendType="none" connectNulls dot={false} />
         {/* Actuals — gradient fill area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
         {/* Forecast lines */}
-        <Line type="monotone" dataKey="worst"  name="Worst Case"  stroke="#ef4444"
+        <Line type="monotone" dataKey="worst"  name="Risk Floor"   stroke="#ef4444"
               strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
-        <Line type="monotone" dataKey="likely" name="Most Likely" stroke="#e2e8f0"
+        <Line type="monotone" dataKey="likely" name="Most Likely"  stroke="#e2e8f0"
               strokeWidth={3} dot={false} connectNulls />
-        <Line type="monotone" dataKey="best"   name="Best Case"   stroke="#10b981"
+        <Line type="monotone" dataKey="best"   name="Stretch Case" stroke="#10b981"
               strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
       </ComposedChart>
     </ResponsiveContainer>
@@ -283,15 +387,16 @@ const RunningTotalsChart = ({ rows }) => {
         <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
                axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={64} />
+               axisLine={false} tickLine={false} width={78}
+               label={{ value: 'Cumulative Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
         <Tooltip content={<DarkTip />} />
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst"  name="Worst Case"  stroke="#ef4444"
+        <Line type="monotone" dataKey="ytd_worst"  name="Risk Floor"   stroke="#ef4444"
               strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
+        <Line type="monotone" dataKey="ytd_likely" name="Most Likely"  stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best"   name="Best Case"   stroke="#10b981"
+        <Line type="monotone" dataKey="ytd_best"   name="Stretch Case" stroke="#10b981"
               strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
       </ComposedChart>
     </ResponsiveContainer>
@@ -312,7 +417,8 @@ const MultiYearChart = ({ rows }) => {
       <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
         <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} />
+        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
+               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 9, style: { textAnchor: 'middle' } }} />
         <Tooltip content={<DarkTip />} />
         {years.map(yr => (
           <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
@@ -339,9 +445,9 @@ const ByProductChart = ({ byProduct, byLine }) => {
             <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
             <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
             <Tooltip content={<DarkTip />} />
-            <Bar dataKey="worst"  name="Worst"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="likely" name="Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="best"   name="Best"    fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+            <Bar dataKey="worst"  name="Risk Floor"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+            <Bar dataKey="likely" name="Most Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+            <Bar dataKey="best"   name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -372,7 +478,7 @@ const MonthlyTable = ({ months }) => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {['Year','Qtr','Month','Actuals','Worst Case','Most Likely','Best Case'].map(h => (
+            {['Year','Qtr','Month','Actuals','Risk Floor','Most Likely','Stretch Case'].map(h => (
               <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>{h}</th>
             ))}
           </tr>
@@ -431,9 +537,9 @@ const GeoBarChart = ({ rows }) => {
         <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
         <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={52} />
         <Tooltip content={<DarkTip />} />
-        <Bar dataKey="worst"  name="Worst"  fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-        <Bar dataKey="likely" name="Likely" fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-        <Bar dataKey="best"   name="Best"   fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        <Bar dataKey="worst"  name="Risk Floor"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        <Bar dataKey="likely" name="Most Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        <Bar dataKey="best"   name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -447,10 +553,12 @@ const AccuracyTable = ({ data }) => {
     { key: 'Prophet', label: formatModelLabel('Prophet') },
     { key: 'LightGBM', label: formatModelLabel('LightGBM') },
   ];
-  // Also show MSTL_v2 and DHR_ARIMA when leaderboard contains those columns
+  // Also show MSTL_v2 / DHR_ARIMA / Ensemble when leaderboard contains those columns
   const hasMstl = data?.some(r => r['MSTL_v2'] != null && r['MSTL_v2'] < 999);
   const hasDhr  = data?.some(r => r['DHR_ARIMA'] != null && r['DHR_ARIMA'] < 999);
+  const hasEns  = data?.some(r => r['Ensemble'] != null && r['Ensemble'] < 999);
   const models = [
+    ...(hasEns ? [{ key: 'Ensemble', label: 'Ensemble ★' }] : []),
     ...ALL_MODELS,
     ...(hasMstl ? [{ key: 'MSTL_v2', label: formatModelLabel('MSTL_v2') }] : []),
     ...(hasDhr ? [{ key: 'DHR_ARIMA', label: formatModelLabel('DHR_ARIMA') }] : []),
@@ -458,6 +566,12 @@ const AccuracyTable = ({ data }) => {
   const hiddenModels = [!hasMstl && 'MSTL', !hasDhr && 'DHR-ARIMA'].filter(Boolean).join(', ');
   return (
     <div>
+      {hasEns && (
+        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
+          ★ Ensemble MAPE is realized accuracy — past forecasts vs weeks that later closed as actuals.
+          Individual models are scored on holdout validation.
+        </div>
+      )}
       {hiddenModels && (
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, padding: '6px 10px',
                       background: 'rgba(255,255,255,0.02)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)' }}>
@@ -691,8 +805,309 @@ const AiInsightsSection = ({ model, prodLine }) => {
   );
 };
 
+// ── Backtest: Forecast vs Reality (trust view) — /api/forecast/v2/backtest ────
+const HORIZONS = [1, 4, 8, 13];
+
+const BacktestSection = ({ model, prodLine, salesMarket }) => {
+  const [horizon, setHorizon] = useState(4);
+  const [data, setData]       = useState(null);
+  const [btLoading, setBtLoading] = useState(false);
+  const [btError, setBtError]     = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setBtLoading(true); setBtError(null);
+      try {
+        const res = await apiService.getForecastV2Backtest(
+          horizon, model,
+          prodLine !== 'All' ? prodLine : null,
+          salesMarket && salesMarket !== 'All' ? salesMarket : null,
+        );
+        if (!cancelled) setData(res);
+      } catch (e) {
+        if (!cancelled) setBtError(e.message || 'Failed to load backtest');
+      } finally {
+        if (!cancelled) setBtLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [horizon, model, prodLine, salesMarket]);
+
+  const rows = (data?.rows || []).map(r => ({
+    ...r,
+    bandFloor: r.worst,
+    bandRange: (r.best != null && r.worst != null) ? Math.max(0, r.best - r.worst) : null,
+  }));
+  const s = data?.summary || {};
+  const isLive = data?.source === 'live';
+
+  // Coverage semantics: band is P10–P90 → calibrated intervals catch ~80% of actuals
+  const covColor = s.coverage_pct == null ? '#64748b'
+    : s.coverage_pct >= 70 ? '#10b981' : s.coverage_pct >= 50 ? '#f59e0b' : '#ef4444';
+  const biasStr = s.bias_pct == null ? '—'
+    : `${s.bias_pct > 0 ? '+' : ''}${s.bias_pct}% ${s.bias_pct > 0 ? '(over-forecast)' : s.bias_pct < 0 ? '(under-forecast)' : ''}`;
+
+  const chip = (label, value, color) => (
+    <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.07)', minWidth: 120 }}>
+      <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color, lineHeight: 1 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <CardWrap downloadName="forecast_vs_reality">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                       color: isLive ? '#10b981' : '#f59e0b',
+                       background: isLive ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
+                       border: `1px solid ${isLive ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.2)'}` }}>
+          {isLive ? 'LIVE' : 'DEMO'}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
+        Each point compares the forecast made <b style={{ color: '#94a3b8' }}>{horizon} week{horizon > 1 ? 's' : ''} in advance</b> against
+        the actual that later closed. Band coverage should approach ~80% if the P10–P90 intervals are calibrated.
+      </div>
+
+      {/* Horizon pills */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 10, color: '#475569', marginRight: 4 }}>Forecast horizon:</span>
+        {HORIZONS.map(h => (
+          <button key={h} onClick={() => setHorizon(h)}
+            style={{ padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                     border: `1px solid ${horizon === h ? '#3b82f6' : 'rgba(255,255,255,0.08)'}`,
+                     background: horizon === h ? 'rgba(59,130,246,0.12)' : 'rgba(255,255,255,0.03)',
+                     color: horizon === h ? '#93c5fd' : '#475569' }}>
+            {h} wk ahead
+          </button>
+        ))}
+      </div>
+
+      {btError && (
+        <div style={{ padding: '14px', borderRadius: 8, color: '#ef4444', background: 'rgba(239,68,68,0.06)', fontSize: 12 }}>
+          ⚠ {btError}
+        </div>
+      )}
+
+      {btLoading ? <Skeleton height={260} /> : rows.length === 0 && !btError ? (
+        <EmptyState message="No closed weeks with retained forecasts at this horizon yet" />
+      ) : rows.length > 0 && (
+        <>
+          {/* Stat chips */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+            {chip('Weeks scored', s.weeks_scored ?? '—', '#f1f5f9')}
+            {chip('Band coverage (target ~80%)', s.coverage_pct != null ? `${s.coverage_pct}%` : '—', covColor)}
+            {chip(`MAPE @ ${horizon}wk`, s.mape_pct != null ? `${s.mape_pct}%` : '—', s.mape_pct != null ? mapeColor(s.mape_pct) : '#64748b')}
+            {chip('Bias', biasStr, s.bias_pct == null ? '#64748b' : Math.abs(s.bias_pct) < 5 ? '#10b981' : '#f59e0b')}
+          </div>
+
+          <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <span><span style={{ color: '#f59e0b' }}>─</span> Actual (closed)</span>
+            <span><span style={{ color: '#e2e8f0' }}>- -</span> Predicted {horizon}wk prior</span>
+            <span style={{ color: '#3b82f6' }}>▒ Predicted 80% band</span>
+          </div>
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart data={rows} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="btBandFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.20} />
+                  <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.04} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+              <XAxis dataKey="ds" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }}
+                     axisLine={false} tickLine={false} interval="preserveStartEnd" />
+              <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
+                     axisLine={false} tickLine={false} width={78}
+                     label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+              <Tooltip content={<DarkTip />} />
+              <Area type="monotone" dataKey="bandFloor" stackId="bt" stroke="none" fill="transparent"
+                    legendType="none" connectNulls dot={false} name="P10" />
+              <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill="url(#btBandFill)"
+                    legendType="none" connectNulls dot={false} name="P10–P90 range" />
+              <Line type="monotone" dataKey="predicted" name={`Predicted (${horizon}wk prior)`} stroke="#e2e8f0"
+                    strokeWidth={2} strokeDasharray="6 4" dot={{ r: 2.5, fill: '#e2e8f0' }} connectNulls />
+              <Line type="monotone" dataKey="actual" name="Actual" stroke="#f59e0b"
+                    strokeWidth={2.5} dot={{ r: 3, fill: '#f59e0b' }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </>
+      )}
+    </CardWrap>
+  );
+};
+
+// ── Model Lab: per-model P10/P50/P90 from V5 notebook tables ──────────────────
+// Module-level pill style (the main panel has its own identical local copy;
+// module-level components like ModelLabSection can't see that closure).
+const pillStyle = (active, color) => ({
+  padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+  cursor: 'pointer', transition: 'all 0.15s ease', display: 'flex', alignItems: 'center', gap: 5,
+  border:      `1px solid ${active ? (color ?? 'rgba(255,255,255,0.4)') : 'rgba(255,255,255,0.08)'}`,
+  background:  active ? `${(color ?? '#ffffff')}1a` : 'rgba(255,255,255,0.03)',
+  color:       active ? (color ?? '#f1f5f9') : '#475569',
+});
+const ML_COLORS = ['#00FF88', '#f59e0b', '#3b82f6', '#a78bfa', '#fb923c', '#22d3ee', '#f472b6'];
+const mlLabel = (m) => {
+  if (!m) return '';
+  if (m === 'Adaptive_Ensemble') return 'Ensemble ★';
+  return m.replace(/_/g, ' ').replace(/\btrend\b/i, '').replace(/\bv2\b/i, '').trim();
+};
+
+const ModelLabSection = ({ product, salesMarket }) => {
+  const [grain, setGrain]     = useState('total');
+  const [data, setData]       = useState(null);
+  const [sel, setSel]         = useState(null);
+  const [mlLoading, setMlLoading] = useState(false);
+  const [mlError, setMlError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setMlLoading(true); setMlError(null);
+      try {
+        const res = await apiService.getForecastV2ModelLab(product, grain, salesMarket);
+        if (cancelled) return;
+        setData(res);
+        setSel((prev) => (res?.models?.includes(prev) ? prev : (res?.recommended_model || res?.models?.[0] || null)));
+      } catch (e) {
+        if (!cancelled) setMlError(e.message || 'Failed to load model forecasts');
+      } finally {
+        if (!cancelled) setMlLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [product, grain, salesMarket]);
+
+  const rows = data?.rows || [];
+  const models = data?.models || [];
+  const isDemo = data?.source !== 'live';
+  const colorOf = useMemo(() => {
+    const map = {};
+    models.forEach((m, i) => { map[m] = m === 'Adaptive_Ensemble' ? '#00FF88' : ML_COLORS[(i % ML_COLORS.length)]; });
+    return map;
+  }, [models]);
+
+  // Fan for the selected model (its own P10/P50/P90)
+  const fan = useMemo(() => {
+    const r = rows.filter((x) => x.model === sel).sort((a, b) => a.ds.localeCompare(b.ds));
+    return r.map((x) => ({
+      date: x.ds, p10: x.p10, p50: x.p50, p90: x.p90,
+      bandFloor: x.p10,
+      bandRange: (x.p90 != null && x.p10 != null) ? Math.max(0, x.p90 - x.p10) : null,
+    }));
+  }, [rows, sel]);
+
+  // All-model P50 overlay (disagreement view)
+  const compare = useMemo(() => {
+    const byDate = {};
+    for (const x of rows) {
+      if (!byDate[x.ds]) byDate[x.ds] = { date: x.ds };
+      byDate[x.ds][x.model] = x.p50;
+    }
+    return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+  }, [rows]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Model Lab — {product} · V5 forecast models
+        </span>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                       color: isDemo ? '#f59e0b' : '#10b981',
+                       background: isDemo ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.1)',
+                       border: `1px solid ${isDemo ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.3)'}` }}>
+          {isDemo ? 'DEMO' : 'LIVE'}
+        </span>
+        {data?.run_date && <span style={{ fontSize: 10, color: '#475569' }}>run {String(data.run_date).slice(0,10)}</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          {[{k:'total',l:'Total'},{k:'market',l:'By Market'}].map(g => (
+            <button key={g.k} onClick={() => setGrain(g.k)} style={pillStyle(grain === g.k, '#3b82f6')}>{g.l}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5, marginTop: -6 }}>
+        Sourced from the V5 notebooks' output tables (weekly run). Each model carries its <b style={{color:'#94a3b8'}}>own</b> P10–P90
+        band, so switching model changes the uncertainty range, not just the center line.
+        {grain === 'market' && salesMarket && salesMarket !== 'All' ? ` Region: ${salesMarket}.` : ''}
+      </div>
+
+      {mlError && (
+        <div style={{ padding: '14px', borderRadius: 8, color: '#ef4444', background: 'rgba(239,68,68,0.06)', fontSize: 12 }}>⚠ {mlError}</div>
+      )}
+
+      {/* Model selector pills */}
+      {models.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {models.map((m) => (
+            <button key={m} onClick={() => setSel(m)} style={pillStyle(sel === m, colorOf[m])}>{mlLabel(m)}</button>
+          ))}
+        </div>
+      )}
+
+      <CardWrap downloadName={`model_lab_${product}_${sel || ''}`}>
+        <SectionTitle>{mlLabel(sel)} — Forecast with its own confidence band</SectionTitle>
+        {mlLoading ? <Skeleton height={300} /> : fan.length === 0 ? (
+          <EmptyState message="No model forecast for this selection yet" />
+        ) : (
+          <ResponsiveContainer width="100%" height={320}>
+            <ComposedChart data={fan} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="mlBand" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={colorOf[sel] || '#3b82f6'} stopOpacity={0.22} />
+                  <stop offset="100%" stopColor={colorOf[sel] || '#3b82f6'} stopOpacity={0.04} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+              <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+              <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} width={78}
+                     label={{ value: 'Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+              <Tooltip content={<DarkTip />} />
+              <Area type="monotone" dataKey="bandFloor" stackId="mlb" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} name="P10" />
+              <Area type="monotone" dataKey="bandRange" stackId="mlb" stroke="none" fill="url(#mlBand)" legendType="none" connectNulls dot={false} name="P10–P90 range" />
+              <Line type="monotone" dataKey="p50" name="Most Likely (P50)" stroke={colorOf[sel] || '#e2e8f0'} strokeWidth={2.5} dot={false} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </CardWrap>
+
+      <CardWrap downloadName={`model_lab_${product}_comparison`}>
+        <SectionTitle>Model Comparison — where the models agree & disagree (P50)</SectionTitle>
+        {mlLoading ? <Skeleton height={240} /> : compare.length === 0 ? (
+          <EmptyState message="No model data for this selection yet" />
+        ) : (
+          <>
+            <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              {models.map((m) => (
+                <span key={m}><span style={{ color: colorOf[m] }}>─</span> {mlLabel(m)}</span>
+              ))}
+            </div>
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={compare} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} width={72} />
+                <Tooltip content={<DarkTip />} />
+                {models.map((m) => (
+                  <Line key={m} type="monotone" dataKey={m} name={mlLabel(m)} stroke={colorOf[m]}
+                        strokeWidth={m === 'Adaptive_Ensemble' ? 3 : 1.5}
+                        strokeDasharray={m === 'Adaptive_Ensemble' ? undefined : '4 3'} dot={false} connectNulls />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </>
+        )}
+      </CardWrap>
+    </div>
+  );
+};
+
 // ── Main panel ────────────────────────────────────────────────────────────────
-const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'AI Insights', 'Exec Mode'];
+const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Exec Mode'];
 // 6 notebook models: Adaptive_Ensemble, Prophet_trend, ETS, LightGBM (Global_LGB_Q50), MSTL_v2, DHR_ARIMA
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
@@ -821,7 +1236,7 @@ const _buildDemoByProduct = () => ({
 // Models: Prophet (→Prophet_trend), MSTL_v2, ETS, DHR_ARIMA, LightGBM (→Global_LGB_Q50)
 // Chronos column removed — not in model suite; best_model uses Prophet for UCC (14.4% WAPE)
 const _buildDemoLeaderboard = () => [
-  { product: 'Total', sales_market: 'Total', ETS: 17.1, Prophet: 16.2, MSTL_v2: 19.8, DHR_ARIMA: 23.6, LightGBM: 18.3, best_mape: 16.2, best_model: 'Prophet' },
+  { product: 'Total', sales_market: 'Total', Ensemble: 14.8, ETS: 17.1, Prophet: 16.2, MSTL_v2: 19.8, DHR_ARIMA: 23.6, LightGBM: 18.3, best_mape: 16.2, best_model: 'Prophet' },
   { product: 'UCC',   sales_market: 'Total', ETS: 15.6, Prophet: 14.4, MSTL_v2: 17.0, DHR_ARIMA: 22.5, LightGBM: 20.7, best_mape: 14.4, best_model: 'Prophet' },
   { product: 'ITSG',  sales_market: 'Total', ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 34.1, best_model: 'ETS' },
   { product: 'Total', sales_market: 'NA',   ETS: 17.5, Prophet: 16.7, MSTL_v2: 20.1, DHR_ARIMA: 24.0, LightGBM: 18.8, best_mape: 16.7, best_model: 'Prophet' },
@@ -839,6 +1254,8 @@ const ForecastingPanel = () => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedQuarter, setSelectedQuarter] = useState(null);
   const [multiYearView, setMultiYearView] = useState('overlay'); // 'overlay' | 'timeline'
+  const [modelsOpen, setModelsOpen] = useState(false); // non-ensemble model pills expanded
+  const [salesMarket, setSalesMarket] = useState('All'); // region filter (All/NA/EMEA/APAC/LATAM)
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
@@ -854,6 +1271,8 @@ const ForecastingPanel = () => {
   const [riskRadar,   setRiskRadar]   = useState([]);
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
+  const [trust,       setTrust]       = useState(null);   // band-coverage stats (backtest @4wk)
+  const [runDelta,    setRunDelta]    = useState(null);   // what changed since last run
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
   const [actionDraft, setActionDraft] = useState({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
@@ -868,16 +1287,17 @@ const ForecastingPanel = () => {
   const [simCoverage, setSimCoverage] = useState(3.2);
 
   const activePl = prodLine !== 'All' ? prodLine : null;
+  const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb] = await Promise.allSettled([
-        apiService.getForecastV2Weekly(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
-        apiService.getForecastV2YTD(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
-        apiService.getForecastV2Historical(null, activePl, null),          // omit year → backend returns 3-year window
-        apiService.getForecastV2ByProduct(model, fcType, null, activePl, null, selectedYear, selectedQuarter),
-        apiService.getForecastV2Monthly(fcType, null, activePl, null, selectedYear, selectedQuarter, model),
+      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb, bt, rd] = await Promise.allSettled([
+        apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+        apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+        apiService.getForecastV2Historical(null, activePl, activeGeo),     // omit year → backend returns 3-year window
+        apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+        apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
         apiService.getForecastV2Leaderboard(),
         apiService.getForecastV2Models(),
         apiService.getForecastV2Freshness(),
@@ -888,6 +1308,8 @@ const ForecastingPanel = () => {
         apiService.getActions('pending'),
         apiService.getForecastV2GovernanceLog(),
         apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
+        apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
+        apiService.getForecastV2RunDelta(activePl, activeGeo),
       ]);
       if (wk.status === 'fulfilled') {
         setWeekly(wk.value?.rows ?? []);
@@ -911,6 +1333,8 @@ const ForecastingPanel = () => {
       if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
       if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
       if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
+      if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
+      if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
 
       const firstReject = [wk, yt].find(r => r.status === 'rejected');
       if (firstReject) {
@@ -923,7 +1347,7 @@ const ForecastingPanel = () => {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, fcType, activePl, selectedYear, selectedQuarter]);
+  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -1075,7 +1499,7 @@ const ForecastingPanel = () => {
       (r.sales_market === 'Total' || r.sales_market === 'All')
     );
     return totalRow
-      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, MSTL_v2: totalRow.MSTL_v2, DHR_ARIMA: totalRow.DHR_ARIMA }
+      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, MSTL_v2: totalRow.MSTL_v2, DHR_ARIMA: totalRow.DHR_ARIMA, Ensemble: totalRow.Ensemble }
       : {};
   }, [leaderboardView]);
 
@@ -1172,9 +1596,14 @@ const ForecastingPanel = () => {
             }}>
               {source === 'live' ? 'LIVE' : source === 'demo' ? 'DEMO' : '—'}
             </span>
+            {(freshness?.freshness || activeModelFreshness) && (
+              <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>
+                as of {freshness?.freshness || activeModelFreshness}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 10, color: '#475569', marginTop: 3 }}>
-            {activeModelDisplay} · {activeModelFreshness ? `Updated ${activeModelFreshness}` : 'Refresh date unavailable'} · Growth ARR
+            {activeModelDisplay} · Growth ARR
           </div>
         </div>
         <button onClick={fetchAll} disabled={loading}
@@ -1189,69 +1618,112 @@ const ForecastingPanel = () => {
       <div style={{ padding: '10px 14px', marginBottom: 10, borderRadius: 10,
                     background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
                     display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {FC_TYPES.map(f => (
-            <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>
-          ))}
-        </div>
-        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
-
-        {/* Model pills with MAPE badges */}
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {MODELS.map(m => {
-            const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
-            const lbKey = MODEL_LB_KEY[m];
-            const mape  = lbKey ? modelMapes[lbKey] : null;
-            return (
-              <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
-                {meta.label}
-                {mape != null && mape < 999 && (
-                  <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
-                                 background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                    {Number(mape).toFixed(1)}%
-                  </span>
-                )}
+        {/* ── Group 1: PRODUCT (leftmost — the first thing leadership scans) ── */}
+        <div>
+          <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>PRODUCT</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {PROD_LINES.map(pl => (
+              <button key={pl} onClick={() => setProdLine(pl)}
+                style={pill(prodLine === pl, pl === 'UCC' ? '#3b82f6' : pl === 'ITSG' ? '#10b981' : null)}>
+                {pl}
               </button>
-            );
-          })}
+            ))}
+          </div>
         </div>
-        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+        <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
 
-        <div style={{ display: 'flex', gap: 4 }}>
-          {PROD_LINES.map(pl => (
-            <button key={pl} onClick={() => setProdLine(pl)}
-              style={pill(prodLine === pl, pl === 'UCC' ? '#3b82f6' : pl === 'ITSG' ? '#10b981' : null)}>
-              {pl}
+        {/* ── Group 1b: REGION (sales_market slice from the forecast table) ── */}
+        <div>
+          <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>REGION</div>
+          <select value={salesMarket} onChange={(e) => setSalesMarket(e.target.value)}
+            style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                     color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
+            <option value="All">All Regions</option>
+            <option value="NA">NA</option>
+            <option value="EMEA">EMEA</option>
+            <option value="APAC">APAC</option>
+            <option value="LATAM">LATAM</option>
+          </select>
+        </div>
+        <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+
+        {/* ── Group 2: TIME PERIOD (window + year + quarter together) ── */}
+        <div>
+          <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+            {FC_TYPES.map(f => (
+              <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>
+            ))}
+            <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}
+              style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                       color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
+              {[2026, 2025, 2024, 2023].map(yr => <option key={yr} value={yr}>{yr}</option>)}
+            </select>
+            <select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)}
+              style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                       color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
+              <option value="">Full Year</option>
+              <option value="1">Q1 (Jan–Mar)</option>
+              <option value="2">Q2 (Apr–Jun)</option>
+              <option value="3">Q3 (Jul–Sep)</option>
+              <option value="4">Q4 (Oct–Dec)</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+
+        {/* ── Group 3: MODEL — Ensemble recommended; others expand on hover/click ── */}
+        <div>
+          <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>FORECAST MODEL</div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
+               onMouseLeave={() => setModelsOpen(false)}>
+            <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
+              Ensemble ★
+              <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
+              {modelMapes.Ensemble != null && modelMapes.Ensemble < 999 && (
+                <span style={{ fontSize: 9, color: model === 'ensemble' ? mapeColor(modelMapes.Ensemble) : '#475569',
+                               background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
+                  {Number(modelMapes.Ensemble).toFixed(1)}%
+                </span>
+              )}
             </button>
-          ))}
+            {/* Symmetric hover: expands on hover/click, collapses when the pointer
+                leaves the group. Stays pinned open while a non-ensemble model is
+                selected so the active choice is never hidden. */}
+            {(modelsOpen || model !== 'ensemble') ? (
+              MODELS.filter(m => m !== 'ensemble').map(m => {
+                const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
+                const lbKey = MODEL_LB_KEY[m];
+                const mape  = lbKey ? modelMapes[lbKey] : null;
+                return (
+                  <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
+                    {meta.label}
+                    {mape != null && mape < 999 && (
+                      <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
+                                     background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
+                        {Number(mape).toFixed(1)}%
+                      </span>
+                    )}
+                  </button>
+                );
+              })
+            ) : (
+              <button onClick={() => setModelsOpen(true)} onMouseEnter={() => setModelsOpen(true)}
+                title="Show individual models"
+                style={{ ...pill(false), color: '#64748b', fontStyle: 'italic' }}>
+                other models ▸
+              </button>
+            )}
+          </div>
         </div>
-        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
-
-        {/* Year & Quarter dropdowns */}
-        <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}
-          style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                   color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-          {[2026, 2025, 2024, 2023].map(yr => <option key={yr} value={yr}>{yr}</option>)}
-        </select>
-
-        <select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)}
-          style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                   color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-          <option value="">All Quarters</option>
-          <option value="1">Q1 (Jan–Mar)</option>
-          <option value="2">Q2 (Apr–Jun)</option>
-          <option value="3">Q3 (Jul–Sep)</option>
-          <option value="4">Q4 (Oct–Dec)</option>
-        </select>
       </div>
 
       {/* ── Status banners ─────────────────────────────────────────────────── */}
-      {freshness && (
+      {/* Freshness banner only when stale — the healthy-case "as of" date lives in the header */}
+      {freshness && freshness.sla_status === 'breached' && (
         <div style={{ padding: '8px 14px', marginBottom: 8, borderRadius: 8, fontSize: 12,
-                      color: freshness.sla_status === 'breached' ? '#ef4444' : '#10b981',
-                      background: freshness.sla_status === 'breached' ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
-                      border: freshness.sla_status === 'breached' ? '1px solid rgba(239,68,68,0.2)' : '1px solid rgba(16,185,129,0.2)' }}>
-          ⏱ Forecast Freshness: {freshness.freshness || 'unknown'} · {freshness.days_stale ?? '—'} day(s) stale · SLA {freshness.sla_status || 'unknown'}
+                      color: '#ef4444', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+          ⏱ Forecast data is {freshness.days_stale ?? '—'} day(s) old (last run {freshness.freshness || 'unknown'}) — expected weekly refresh has been missed.
         </div>
       )}
       {isDemo && !loading && (
@@ -1272,6 +1744,33 @@ const ForecastingPanel = () => {
           ⚠ {error}
         </div>
       )}
+
+      {/* ── Context banner — persistent on every tab ───────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    padding: '8px 14px', borderRadius: 10, marginBottom: 10,
+                    background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.18)' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.08em' }}>SHOWING</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9' }}>
+          {prodLine === 'All' ? 'All Products' : prodLine}
+        </span>
+        <span style={{ color: '#334155' }}>·</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9' }}>
+          {salesMarket === 'All' ? 'All Regions' : salesMarket}
+        </span>
+        <span style={{ color: '#334155' }}>·</span>
+        <span style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd' }}>
+          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `Full Year ${selectedYear}`}
+        </span>
+        <span style={{ color: '#334155' }}>·</span>
+        <span style={{ fontSize: 12, color: '#94a3b8' }}>
+          {FC_TYPES.find(f => f.key === fcType)?.label}
+        </span>
+        <span style={{ color: '#334155' }}>·</span>
+        <span style={{ fontSize: 12, color: '#94a3b8' }}>{activeModelDisplay} model</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: '#475569' }}>
+          change via Product / Time Period selectors above
+        </span>
+      </div>
 
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
@@ -1322,6 +1821,9 @@ const ForecastingPanel = () => {
                         ?? [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
                         ?? 0;
 
+                      // Period label so each card states what window it covers
+                      const periodShort = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY ${selectedYear}`;
+
                       // Detect a fully-closed quarter: Panel Writer sets ML=BC=WC=Actuals
                       // when there are no open forecast weeks in the selection.
                       const isClosed = ml > 0 && ml === bc && ml === wc;
@@ -1356,10 +1858,10 @@ const ForecastingPanel = () => {
                       return (
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                           {[
-                            { label: 'Most Likely', val: ml,         color: '#f1f5f9', sub: 'Planning center'   },
-                            { label: 'Best Case',   val: bc,         color: '#10b981', sub: '~20% probability' },
-                            { label: 'Worst Case',  val: wc,         color: '#ef4444', sub: '~15% probability' },
-                            { label: 'Actuals YTD', val: ytdActual,  color: '#f59e0b', sub: 'Realized YTD'     },
+                            { label: 'Most Likely',  val: ml,         color: '#f1f5f9', sub: `${periodShort} outlook — planning center` },
+                            { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · 1-in-5 upside (P90)` },
+                            { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · 1-in-10 downside (P10)` },
+                            { label: 'Actuals YTD',  val: ytdActual,  color: '#f59e0b', sub: `Realized so far in ${selectedYear}` },
                           ].map(({ label, val, color, sub }) => (
                             <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
                               <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
@@ -1372,22 +1874,93 @@ const ForecastingPanel = () => {
                   })()
               }
 
-              <CardWrap>
-                <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
-                <GraphInsight summary={graphInsights.weekly} />
+              {/* What changed since last run — compares the two latest retained vintages */}
+              {runDelta?.available && runDelta?.total && (() => {
+                const d = runDelta.total.delta ?? 0;
+                const pct = runDelta.total.delta_pct;
+                const isFlat = pct != null && Math.abs(pct) < 0.1;
+                const dirColor = isFlat ? '#94a3b8' : d >= 0 ? '#10b981' : '#ef4444';
+                const arrow = isFlat ? '→' : d >= 0 ? '▲' : '▼';
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+                                padding: '10px 16px', borderRadius: 10,
+                                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div>
+                      <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
+                        Since last forecast run
+                        {runDelta.previous_run && runDelta.latest_run &&
+                          ` · ${fmtDate(runDelta.previous_run)} → ${fmtDate(runDelta.latest_run)}`}
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: dirColor }}>
+                        {arrow} {isFlat ? 'Essentially unchanged' : `${d >= 0 ? '+' : '−'}${fmtM(Math.abs(d))}`}
+                        {pct != null && !isFlat && (
+                          <span style={{ fontSize: 11, fontWeight: 600, marginLeft: 6, opacity: 0.8 }}>
+                            ({pct > 0 ? '+' : ''}{pct}%)
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 9, color: '#334155', marginTop: 2 }}>
+                        Ensemble Most Likely · {runDelta.overlap_weeks} overlapping forecast week(s)
+                        {runDelta.source === 'demo' && ' · demo'}
+                      </div>
+                    </div>
+                    {(runDelta.drivers || []).length > 0 && (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto', alignItems: 'center' }}>
+                        <span style={{ fontSize: 9, color: '#475569' }}>Biggest moves:</span>
+                        {runDelta.drivers.map((dr, i) => (
+                          <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 14,
+                                                 color: dr.delta >= 0 ? '#10b981' : '#ef4444',
+                                                 background: dr.delta >= 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+                                                 border: `1px solid ${dr.delta >= 0 ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
+                            {dr.product}{dr.sales_market !== 'Total' ? `/${dr.sales_market}` : ''} {dr.delta >= 0 ? '+' : '−'}{fmtM(Math.abs(dr.delta))}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              <CardWrap downloadName="weekly_forecast_vs_actuals">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
+                  {(() => {
+                    // Interval trust badge — empirical band coverage from /backtest @4wk horizon
+                    const cov = trust?.summary?.coverage_pct;
+                    const n   = trust?.summary?.weeks_scored;
+                    if (cov == null || !n) return null;
+                    const covColor = cov >= 70 && cov <= 92 ? '#10b981' : cov >= 50 ? '#f59e0b' : '#ef4444';
+                    return (
+                      <span title={`Over the last ${n} closed weeks, the actual landed inside the 80% band ${cov}% of the time (forecasts made 4 weeks ahead). Calibrated bands should be near ~80% — much higher means the bands are too wide, much lower means too narrow.`}
+                        style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 20, marginBottom: 10,
+                                 color: covColor, background: `${covColor}14`, border: `1px solid ${covColor}40`,
+                                 cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        🛡 Bands caught {cov}% of last {n} actuals
+                        <span style={{ fontWeight: 400, opacity: 0.75 }}>· target ~80%</span>
+                        {trust?.source === 'demo' && <span style={{ fontWeight: 400, opacity: 0.6 }}>· demo</span>}
+                      </span>
+                    );
+                  })()}
+                </div>
+                <GraphInsight summary={graphInsights.weekly}
+                  chartType="weekly_forecast" metricName="Weekly Growth ARR — actuals vs forecast scenarios"
+                  dataPoints={weeklyView} />
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                   <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-                  <span><span style={{ color: '#ef4444' }}>- -</span> Worst Case</span>
+                  <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
                   <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-                  <span><span style={{ color: '#10b981' }}>- -</span> Best Case</span>
-                  <span style={{ color: '#3b82f6' }}>▒ Confidence band</span>
+                  <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
+                  <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
+                  <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
                 </div>
                 {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
 
-              <CardWrap>
+              <CardWrap downloadName="ytd_cumulative">
                 <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
-                <GraphInsight summary={graphInsights.ytd} />
+                <GraphInsight summary={graphInsights.ytd}
+                  chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path"
+                  dataPoints={ytdView} />
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
             </div>
@@ -1408,9 +1981,11 @@ const ForecastingPanel = () => {
               </div>
 
               {multiYearView === 'overlay' && (
-                <CardWrap>
+                <CardWrap downloadName="historical_seasonality">
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
-                  <GraphInsight summary={graphInsights.seasonality} />
+                  <GraphInsight summary={graphInsights.seasonality}
+                    chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years"
+                    dataPoints={historicalView} />
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
                       <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
@@ -1421,7 +1996,7 @@ const ForecastingPanel = () => {
               )}
 
               {multiYearView === 'timeline' && (
-                <CardWrap>
+                <CardWrap downloadName="historical_trend_timeline">
                   <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
                   <GraphInsight summary={graphInsights.trend} />
                   {loading ? <Skeleton height={260} /> : (
@@ -1442,9 +2017,11 @@ const ForecastingPanel = () => {
 
           {tab === 'By Product' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <CardWrap>
+              <CardWrap downloadName="forecast_by_product">
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
-                <GraphInsight summary={graphInsights.byProduct} />
+                <GraphInsight summary={graphInsights.byProduct}
+                  chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo"
+                  dataPoints={byProductView?.by_product} />
                 {loading ? <Skeleton height={200} /> : byProductView ? <ByProductChart byProduct={byProductView.by_product} byLine={byProductView.by_product_line} /> : <EmptyState />}
               </CardWrap>
               {!loading && byProductView?.by_product && (
@@ -1477,12 +2054,12 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
               {!loading && byProductView?.by_geo?.length > 0 && (
-                <CardWrap>
+                <CardWrap downloadName="forecast_by_geography">
                   <SectionTitle>Forecast by Geography</SectionTitle>
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                    <span><span style={{ color: '#ef4444' }}>■</span> Worst</span>
+                    <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
                     <span><span style={{ color: '#ffffff' }}>■</span> Most Likely</span>
-                    <span><span style={{ color: '#10b981' }}>■</span> Best</span>
+                    <span><span style={{ color: '#10b981' }}>■</span> Stretch Case</span>
                   </div>
                   <GeoBarChart rows={byProductView.by_geo} />
                 </CardWrap>
@@ -1493,7 +2070,9 @@ const ForecastingPanel = () => {
           {tab === 'Monthly' && (
             <CardWrap>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
-              <GraphInsight summary={graphInsights.monthly} />
+              <GraphInsight summary={graphInsights.monthly}
+                chartType="monthly_forecast" metricName="Monthly Growth ARR — actuals vs forecast scenarios"
+                dataPoints={monthlyView} />
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
             </CardWrap>
           )}
@@ -1509,10 +2088,26 @@ const ForecastingPanel = () => {
               </div>
               <CardWrap>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
-                <GraphInsight summary={graphInsights.accuracy} />
+                <GraphInsight summary={graphInsights.accuracy}
+                  chartType="model_accuracy_leaderboard" metricName="Model MAPE by product and geo slice"
+                  dataPoints={leaderboardView} />
                 {loading ? <Skeleton height={240} /> : leaderboardView && leaderboardView.length > 0 ? <AccuracyTable data={leaderboardView} /> : <EmptyState />}
               </CardWrap>
+              <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
             </div>
+          )}
+
+          {tab === 'Model Lab' && (
+            <>
+              {prodLine === 'All' && (
+                <div style={{ padding: '8px 14px', marginBottom: 12, borderRadius: 8, fontSize: 12, color: '#93c5fd',
+                              background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
+                  ℹ Model Lab is per product line (the V5 models run separately for UCC and ITSG).
+                  Showing <b>UCC</b> — pick UCC or ITSG in the PRODUCT selector to switch.
+                </div>
+              )}
+              <ModelLabSection product={prodLine === 'ITSG' ? 'ITSG' : 'UCC'} salesMarket={salesMarket} />
+            </>
           )}
 
           {tab === 'AI Insights' && <AiInsightsSection model={model} prodLine={prodLine} />}
@@ -1534,7 +2129,7 @@ const ForecastingPanel = () => {
                   const maxVal = p90 * 1.08;
                   const bar = (val, color, label, pct) => (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                      <div style={{ width: 60, fontSize: 10, color: '#64748b', textAlign: 'right', flexShrink: 0 }}>{label}</div>
+                      <div style={{ width: 96, fontSize: 10, color: '#64748b', textAlign: 'right', flexShrink: 0 }}>{label}</div>
                       <div style={{ flex: 1, height: 24, background: 'rgba(255,255,255,0.04)', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
                         <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.4s ease' }} />
                       </div>
@@ -1547,9 +2142,9 @@ const ForecastingPanel = () => {
                       {!hasData && <div style={{ fontSize: 11, color: '#64748b' }}>No confidence-band data for current selection.</div>}
                       {hasData && (
                         <div>
-                          {bar(p10, '#ef4444', 'P10 (Worst)',  maxVal > 0 ? (p10 / maxVal) * 100 : 0)}
-                          {bar(p50, '#f1f5f9', 'P50 (Likely)', maxVal > 0 ? (p50 / maxVal) * 100 : 0)}
-                          {bar(p90, '#10b981', 'P90 (Best)',   maxVal > 0 ? (p90 / maxVal) * 100 : 0)}
+                          {bar(p10, '#ef4444', 'Risk Floor (P10)',  maxVal > 0 ? (p10 / maxVal) * 100 : 0)}
+                          {bar(p50, '#f1f5f9', 'Most Likely (P50)', maxVal > 0 ? (p50 / maxVal) * 100 : 0)}
+                          {bar(p90, '#10b981', 'Stretch (P90)',     maxVal > 0 ? (p90 / maxVal) * 100 : 0)}
                           <div style={{ display: 'flex', gap: 20, marginTop: 12, padding: '10px 14px', background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
                             <div style={{ fontSize: 11, color: '#94a3b8' }}>Spread (P10→P90): <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(spread)}</span></div>
                             <div style={{ fontSize: 11, color: '#94a3b8' }}>Spread / P50: <span style={{ color: p50 > 0 ? (spread/p50 > 0.3 ? '#ef4444' : spread/p50 > 0.15 ? '#f59e0b' : '#10b981') : '#64748b', fontWeight: 700 }}>{p50 > 0 ? `${((spread/p50)*100).toFixed(1)}%` : '—'}</span></div>

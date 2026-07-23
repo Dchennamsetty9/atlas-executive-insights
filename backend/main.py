@@ -33,13 +33,32 @@ from models.kpi import KPICard, ChartData, Insight, Forecast
 logger = logging.getLogger(__name__)
 
 
+# Strong refs to fire-and-forget background tasks so the event loop doesn't GC
+# them mid-flight; the done-callback surfaces exceptions that would otherwise be
+# swallowed. (Audit T2.2)
+_BACKGROUND_TASKS: set = set()
+
+
+def _on_background_task_done(task) -> None:
+    _BACKGROUND_TASKS.discard(task)
+    try:
+        exc = task.exception()
+    except Exception:
+        return
+    if exc is not None:
+        logger.warning("Background task failed: %s", exc, exc_info=exc)
+
+
 def _demo_kpis_payload() -> List[Dict[str, Any]]:
     """Fallback KPI payload used when live fetch fails.
 
     Keeps the dashboard responsive (demo mode) instead of returning HTTP 500.
+    Every item carries is_demo=True so the client can label it rather than
+    present fabricated numbers as live data. (Audit T1.3)
     """
     return [
         {
+            "is_demo": True,
             "id": "won_pipeline",
             "title": "Won ACV $",
             "value": 12.4,
@@ -53,6 +72,7 @@ def _demo_kpis_payload() -> List[Dict[str, Any]]:
             "targetAchievement": 83.0,
         },
         {
+            "is_demo": True,
             "id": "won_volume",
             "title": "# of Deals Won",
             "value": 78.0,
@@ -66,6 +86,7 @@ def _demo_kpis_payload() -> List[Dict[str, Any]]:
             "targetAchievement": 91.8,
         },
         {
+            "is_demo": True,
             "id": "ads",
             "title": "ADS",
             "value": 31.4,
@@ -79,6 +100,7 @@ def _demo_kpis_payload() -> List[Dict[str, Any]]:
             "targetAchievement": 104.7,
         },
         {
+            "is_demo": True,
             "id": "active_pipeline",
             "title": "Active Pipeline",
             "value": 12.0,
@@ -351,7 +373,11 @@ async def get_kpis(
             }
             for k in (kpis if isinstance(kpis, list) else [])
         ]
-        asyncio.create_task(_ns.check_thresholds(kpis_for_check))
+        # Retain the task reference so it isn't garbage-collected mid-flight and
+        # log any failure instead of silently dropping it. (Audit T2.2)
+        _alert_task = asyncio.create_task(_ns.check_thresholds(kpis_for_check))
+        _BACKGROUND_TASKS.add(_alert_task)
+        _alert_task.add_done_callback(_on_background_task_done)
 
         print(f"Calculated {len(kpis)} KPIs")
         

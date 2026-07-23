@@ -117,14 +117,21 @@ async def require_authenticated_user(
         # Databricks Apps may forward user/app tokens that are valid for app access
         # but not accepted by /current-user/me. In that case, keep routes usable by
         # deriving a stable pseudonymous user id from the forwarded token.
+        # Security: never accept an unverifiable token as an identity in
+        # production — that is a full auth-bypass if the app is ever reachable
+        # without the Databricks proxy in front. The pseudonymous fallback is
+        # kept ONLY for non-production (dev/staging) convenience, and even then
+        # only when explicitly enabled. (Audit T1.1)
         if (
             os.getenv("DATABRICKS_HOST")
             and exc.status_code == 401
+            and settings.environment != "production"
             and _trusted_forwarded_fallback_enabled()
         ):
             fallback_user = _fallback_user_id_from_token(token)
             logger.warning(
-                "Forwarded token verification failed; using trusted fallback identity %s",
+                "Forwarded token verification failed; using trusted fallback identity %s "
+                "(non-production only)",
                 fallback_user,
             )
             return fallback_user

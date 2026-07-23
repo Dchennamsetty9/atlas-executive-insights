@@ -32,7 +32,9 @@ jobs:
         run: pip install -r ../requirements.txt
 
       - name: Import smoke test (catches dead imports before runtime)
-        run: python -c "import bootstrap; print('bootstrap import OK')"
+        # Import the deployed entrypoint (main:app, per app.yaml/start.py), not
+        # just bootstrap — main.py hosts route wiring CI would otherwise miss. (Audit H3)
+        run: python -c "import main; print('main import OK')"
 
       - name: Run tests
         run: python -m pytest tests -q --tb=short

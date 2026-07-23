@@ -35,6 +35,13 @@ GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
 INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_insights`"
+# V5 notebook outputs (UCC Forecast Foundation V5 + ITSG Growth ARR V5).
+# APP_TABLE is the unified app-facing table both notebooks are designed to write,
+# partitioned by product_group and refreshed each weekly run (run_date_utc).
+# ITSG populates it today; UCC writes the same shape to ucc_forecast_v5.
+APP_TABLE      = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_app_latest`"
+UCC_V5_TABLE   = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_v5`"
+ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
@@ -309,7 +316,7 @@ def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
     }
 
 
-def _model_mape_for_row(row: Dict[str, Any], model: str) -> float | None:
+def _model_mape_for_row(row: Dict[str, Any], model: str) -> Optional[float]:
     source = _model_source(model)
     field = source["mape_field"]
     if not field:
@@ -1012,6 +1019,414 @@ async def get_confidence_bands(
     }
 
 
+# ── GET /backtest ───────────────────────────────────────────────────────────────
+def _demo_backtest_rows(horizon_weeks: int):
+    """Synthetic forecast-vs-actual history for demo mode (12 closed weeks)."""
+    import math
+    today = datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    rows = []
+    base = 11_200_000
+    for i in range(12, 0, -1):
+        ds = monday - datetime.timedelta(weeks=i)
+        actual = base + (12 - i) * 95_000 + math.sin(i / 2.0) * 240_000
+        # Older-horizon forecasts drift further from actuals
+        drift = (1 + horizon_weeks * 0.012) * (1 + math.sin(i / 1.7) * 0.05)
+        predicted = actual * drift
+        rows.append({
+            "ds": ds.isoformat(),
+            "run_date": (ds - datetime.timedelta(weeks=horizon_weeks)).isoformat(),
+            "predicted": round(predicted, 0),
+            "worst": round(predicted * 0.88, 0),
+            "best": round(predicted * 1.14, 0),
+            "actual": round(actual, 0),
+        })
+    return rows
+
+
+def _backtest_summary(rows):
+    """Coverage %, MAPE, and signed bias for forecast-vs-actual pairs."""
+    scored = [r for r in rows if _f(r.get("actual")) > 0 and r.get("predicted") is not None]
+    if not scored:
+        return {"weeks_scored": 0, "coverage_pct": None, "mape_pct": None, "bias_pct": None}
+    n = len(scored)
+    covered = sum(
+        1 for r in scored
+        if _f(r.get("worst")) <= _f(r.get("actual")) <= _f(r.get("best"))
+    )
+    ape = [abs(_f(r["predicted"]) - _f(r["actual"])) / _f(r["actual"]) for r in scored]
+    bias = [(_f(r["predicted"]) - _f(r["actual"])) / _f(r["actual"]) for r in scored]
+    return {
+        "weeks_scored": n,
+        "coverage_pct": round(covered / n * 100, 1),
+        "mape_pct": round(sum(ape) / n * 100, 1),
+        "bias_pct": round(sum(bias) / n * 100, 1),
+    }
+
+
+@router.get("/backtest")
+async def get_backtest(
+    horizon_weeks: int = Query(4, ge=1, le=13),
+    model: str = Query("ensemble"),
+    product: Optional[str] = None,
+    product_line: Optional[str] = None,
+    sales_market: Optional[str] = None,
+):
+    """
+    Forecast-vs-Reality trust view.
+
+    arr_forecast_v2 retains every weekly run (delete-then-append per run_date),
+    so for each week that has since closed as an actual we can look up what the
+    model predicted `horizon_weeks` beforehand. Returns per-week pairs plus
+    summary stats:
+      coverage_pct — share of weeks where the actual landed inside the P10–P90
+                     band (should approach ~80% if intervals are calibrated)
+      mape_pct     — mean absolute % error of the point forecast at this horizon
+      bias_pct     — signed mean % error (positive = systematic over-forecast)
+    """
+    model = _validate_model(model)
+    if not _live():
+        rows = _demo_backtest_rows(horizon_weeks)
+        return {"source": "demo", "model": model, "horizon_weeks": horizon_weeks,
+                "rows": rows, "summary": _backtest_summary(rows)}
+
+    source = _model_source(model)
+    value_col = source["most_likely_col"]
+    pf = _product_filter(product, product_line)
+    gf = _geo_filter(sales_market)
+    lo_days = (horizon_weeks - 1) * 7 + 1
+    hi_days = horizon_weeks * 7
+
+    sql = f"""
+        WITH actuals AS (
+            SELECT CAST(ds AS DATE) AS ds,
+                   MAX(CAST(Actuals AS DOUBLE)) AS actual
+            FROM {FC_TABLE}
+            WHERE forecast_type = 'actuals'
+              AND {_latest_run()}
+              AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+              {pf} {gf}
+            GROUP BY CAST(ds AS DATE)
+        ),
+        fc AS (
+            SELECT CAST(ds AS DATE) AS ds,
+                   CAST(run_date AS DATE) AS run_date,
+                   CAST({value_col} AS DOUBLE) AS predicted,
+                   CAST(Worst_Case AS DOUBLE) AS worst,
+                   CAST(Best_Case AS DOUBLE) AS best,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY CAST(ds AS DATE)
+                       ORDER BY CAST(run_date AS DATE) DESC
+                   ) AS rn
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('rolling', 'roy')
+              AND DATEDIFF(CAST(ds AS DATE), CAST(run_date AS DATE))
+                  BETWEEN {lo_days} AND {hi_days}
+              {pf} {gf}
+        )
+        SELECT CAST(f.ds AS STRING) AS ds,
+               CAST(f.run_date AS STRING) AS run_date,
+               f.predicted, f.worst, f.best, a.actual
+        FROM fc f
+        JOIN actuals a ON f.ds = a.ds
+        WHERE f.rn = 1
+        ORDER BY f.ds
+    """
+
+    try:
+        rows_raw = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/backtest] query failed: %s", exc)
+        rows = _demo_backtest_rows(horizon_weeks)
+        return {"source": "demo", "error": str(exc), "model": model,
+                "horizon_weeks": horizon_weeks,
+                "rows": rows, "summary": _backtest_summary(rows)}
+
+    rows = [
+        {
+            "ds": r.get("ds"),
+            "run_date": r.get("run_date"),
+            "predicted": _f(r.get("predicted")),
+            "worst": _f(r.get("worst")),
+            "best": _f(r.get("best")),
+            "actual": _f(r.get("actual")),
+        }
+        for r in (rows_raw or [])
+    ]
+    return {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
+            "rows": rows, "summary": _backtest_summary(rows)}
+
+
+# ── GET /run-delta ──────────────────────────────────────────────────────────────
+def _demo_run_delta():
+    today = datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    prev_monday = monday - datetime.timedelta(weeks=1)
+    return {
+        "source": "demo", "available": True,
+        "latest_run": monday.isoformat(), "previous_run": prev_monday.isoformat(),
+        "overlap_weeks": 12,
+        "total": {"current": 148_600_000, "previous": 149_800_000,
+                  "delta": -1_200_000, "delta_pct": -0.8},
+        "drivers": [
+            {"product": "UCC",  "sales_market": "NA",   "delta": -820_000},
+            {"product": "ITSG", "sales_market": "EMEA", "delta": -410_000},
+            {"product": "UCC",  "sales_market": "APAC", "delta": 230_000},
+        ],
+    }
+
+
+@router.get("/run-delta")
+async def get_run_delta(
+    product: Optional[str] = None,
+    product_line: Optional[str] = None,
+    sales_market: Optional[str] = None,
+):
+    """
+    'What changed since last run' — compares the two most recent forecast
+    vintages retained in arr_forecast_v2 (ensemble Most_Likely).
+
+    Compares ONLY overlapping future weeks present in both runs; the rolling
+    window slides each Monday, so comparing raw totals would show a phantom
+    'drop' every week as a closed week rolls out of the window.
+
+    Headline = selected product (or Total) at sales_market='Total'.
+    Drivers  = largest absolute moves across sub-slices of the selection.
+    """
+    effective = _selected_product(product, product_line)
+    effective_geo = _normalize_market_value(sales_market)
+    if not _live():
+        return _demo_run_delta()
+
+    norm = _normalized_market_expr("sales_market")
+    sql = f"""
+        WITH runs AS (
+            SELECT DISTINCT CAST(run_date AS DATE) AS rd
+            FROM {FC_TABLE}
+            ORDER BY rd DESC
+            LIMIT 2
+        ),
+        fc AS (
+            SELECT CAST(run_date AS DATE) AS rd, product,
+                   {norm} AS sales_market,
+                   CAST(ds AS DATE) AS ds,
+                   CAST(Most_Likely AS DOUBLE) AS ml
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('rolling', 'roy')
+              AND CAST(run_date AS DATE) IN (SELECT rd FROM runs)
+              AND CAST(ds AS DATE) >= (SELECT MAX(rd) FROM runs)
+        )
+        SELECT a.product, a.sales_market,
+               SUM(a.ml) AS curr_ml,
+               SUM(b.ml) AS prev_ml,
+               COUNT(*) AS overlap_weeks,
+               CAST(MAX(a.rd) AS STRING) AS latest_run,
+               CAST(MAX(b.rd) AS STRING) AS previous_run
+        FROM fc a
+        JOIN fc b
+          ON a.ds = b.ds AND a.product = b.product AND a.sales_market = b.sales_market
+         AND b.rd < a.rd
+        WHERE a.rd = (SELECT MAX(rd) FROM runs)
+        GROUP BY a.product, a.sales_market
+    """
+    try:
+        rows = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/run-delta] query failed: %s", exc)
+        return {**_demo_run_delta(), "error": str(exc)}
+
+    if not rows:
+        # Only one retained run (or no overlap) — nothing to compare yet
+        return {"source": "live", "available": False,
+                "reason": "Fewer than two forecast runs retained — check back after the next Monday run."}
+
+    slices = [{
+        "product":       str(r.get("product") or ""),
+        "sales_market":  str(r.get("sales_market") or ""),
+        "curr":          _f(r.get("curr_ml")),
+        "prev":          _f(r.get("prev_ml")),
+        "overlap_weeks": int(_f(r.get("overlap_weeks"))),
+        "latest_run":    r.get("latest_run"),
+        "previous_run":  r.get("previous_run"),
+    } for r in rows]
+
+    headline = next(
+        (s for s in slices if s["product"] == effective and s["sales_market"] == effective_geo),
+        None,
+    )
+    if headline is None:
+        return {"source": "live", "available": False,
+                "reason": f"No overlapping forecast weeks for {effective}/{effective_geo}."}
+
+    delta = headline["curr"] - headline["prev"]
+    delta_pct = (delta / headline["prev"] * 100) if headline["prev"] else None
+
+    # Drivers: sub-slices of the selection with the largest absolute moves.
+    # Region selected → break down by product within that region;
+    # product selected → break down by region within that product;
+    # both specific  → fully-specified slice, no sub-drivers.
+    if effective != "Total" and effective_geo != "Total":
+        pool = []
+    elif effective_geo != "Total":
+        pool = [s for s in slices if s["product"] != "Total" and s["sales_market"] == effective_geo]
+    elif effective == "Total":
+        pool = [s for s in slices if s["product"] != "Total" and s["sales_market"] == "Total"]
+    else:
+        pool = [s for s in slices if s["product"] == effective and s["sales_market"] != "Total"]
+    drivers = sorted(
+        ({"product": s["product"], "sales_market": s["sales_market"],
+          "delta": round(s["curr"] - s["prev"], 0)} for s in pool),
+        key=lambda d: abs(d["delta"]), reverse=True,
+    )[:3]
+
+    return {
+        "source": "live", "available": True,
+        "latest_run": headline["latest_run"], "previous_run": headline["previous_run"],
+        "overlap_weeks": headline["overlap_weeks"],
+        "total": {
+            "current": round(headline["curr"], 0),
+            "previous": round(headline["prev"], 0),
+            "delta": round(delta, 0),
+            "delta_pct": round(delta_pct, 1) if delta_pct is not None else None,
+        },
+        "drivers": drivers,
+    }
+
+
+# ── GET /model-lab ──────────────────────────────────────────────────────────────
+_MODEL_LAB_MARKETS = {"NA", "EMEA", "APAC", "LATAM", "UNKNOWN"}
+
+
+def _demo_model_lab(product: str, grain: str):
+    """Synthetic per-model forecast for demo mode — Adaptive Ensemble + 3 members."""
+    import math
+    today = datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    base = 12_000_000 if product == "UCC" else 6_500_000
+    models = [
+        ("Adaptive_Ensemble", 1.00, 1),
+        ("Prophet_trend",     1.03, 0),
+        ("MSTL_v2",           0.97, 0),
+        ("DHR_ARIMA",         1.06, 0),
+    ]
+    rows = []
+    for name, bias, rec in models:
+        for i in range(1, 14):
+            ds = monday + datetime.timedelta(weeks=i)
+            p50 = base * bias + i * 90_000 + math.sin(i / 3.0) * 180_000
+            rows.append({
+                "ds": ds.isoformat(), "model": name,
+                "forecast": round(p50, 0), "p50": round(p50, 0),
+                "p10": round(p50 * 0.90, 0), "p90": round(p50 * 1.12, 0),
+                "recommended": rec,
+            })
+    return {
+        "source": "demo", "product": product, "grain": grain,
+        "run_date": monday.isoformat(),
+        "recommended_model": "Adaptive_Ensemble",
+        "models": [m[0] for m in models],
+        "rows": rows,
+    }
+
+
+def _model_lab_sql(table: str, has_pg: bool, product: str, grain: str, market: Optional[str]) -> str:
+    latest_col = "run_date_utc" if has_pg else "run_timestamp_utc"
+    pg_clause = f"AND product_group = '{product}'" if has_pg else ""
+    mkt_clause = ""
+    if grain == "market" and market and market != "All":
+        mkt_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
+    return f"""
+        SELECT
+            CAST(ds AS STRING) AS ds,
+            CAST(model AS STRING) AS model,
+            CAST(sales_market AS STRING) AS sales_market,
+            COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) AS forecast,
+            CAST(p10 AS DOUBLE) AS p10,
+            CAST(p50 AS DOUBLE) AS p50,
+            CAST(p90 AS DOUBLE) AS p90,
+            CAST(recommended_for_exec AS INT) AS recommended,
+            CAST({latest_col} AS STRING) AS run_date
+        FROM {table}
+        WHERE grain_level = '{grain}'
+          {pg_clause}
+          {mkt_clause}
+          AND {latest_col} = (SELECT MAX({latest_col}) FROM {table} WHERE grain_level = '{grain}' {pg_clause})
+        ORDER BY model, ds
+    """
+
+
+@router.get("/model-lab")
+async def get_model_lab(
+    product: str = Query("UCC"),
+    grain: str = Query("total"),
+    sales_market: Optional[str] = None,
+):
+    """
+    Per-model forecast curves with each model's own P10/P50/P90, sourced from the
+    V5 notebook output tables (arr_forecast_app_latest — the unified app table both
+    UCC & ITSG V5 notebooks feed each weekly run; falls back to ucc_forecast_v5 /
+    itsg_forecast_v5). Unlike arr_forecast_v2, bands here are genuinely per-model,
+    so switching model changes the confidence band, not just the center line.
+    """
+    product = (product or "UCC").strip().upper()
+    if product not in {"UCC", "ITSG"}:
+        raise HTTPException(status_code=400, detail="Invalid product (UCC|ITSG)")
+    grain = (grain or "total").strip().lower()
+    if grain not in {"total", "market"}:
+        raise HTTPException(status_code=400, detail="Invalid grain (total|market)")
+    mkt = None
+    if sales_market:
+        mkt = _normalize_market_value(sales_market)
+        if mkt != "Total" and mkt.upper() not in _MODEL_LAB_MARKETS:
+            raise HTTPException(status_code=400, detail="Invalid sales_market")
+
+    if not _live():
+        return _demo_model_lab(product, grain)
+
+    # Try the unified app table first, then the per-product V5 table.
+    candidates = [(APP_TABLE, True)]
+    candidates.append((UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False))
+
+    rows_raw, err = None, None
+    for table, has_pg in candidates:
+        try:
+            rows_raw = await asyncio.to_thread(
+                execute_query, _model_lab_sql(table, has_pg, product, grain, mkt)
+            )
+            if rows_raw:
+                break
+        except Exception as exc:
+            err = str(exc)
+            logger.warning("[forecast/model-lab] %s query failed: %s", table, exc)
+
+    if not rows_raw:
+        demo = _demo_model_lab(product, grain)
+        if err:
+            demo["error"] = err
+        return demo
+
+    rows, models, recommended, run_date = [], [], None, None
+    for r in rows_raw:
+        m = str(r.get("model") or "")
+        if m not in models:
+            models.append(m)
+        if int(_f(r.get("recommended"))) == 1 and recommended is None:
+            recommended = m
+        run_date = run_date or r.get("run_date")
+        rows.append({
+            "ds": r.get("ds"), "model": m,
+            "forecast": _f(r.get("forecast")),
+            "p10": _f(r.get("p10")), "p50": _f(r.get("p50")), "p90": _f(r.get("p90")),
+            "recommended": int(_f(r.get("recommended"))),
+        })
+    return {
+        "source": "live", "product": product, "grain": grain,
+        "sales_market": mkt, "run_date": run_date,
+        "recommended_model": recommended or (models[0] if models else None),
+        "models": models, "rows": rows,
+    }
+
+
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
 @router.get("/leaderboard")
 async def get_leaderboard():
@@ -1058,6 +1473,57 @@ async def get_leaderboard():
         "best_mape":      _f(r.get("best_mape"),       999),
         "best_model":     str(r.get("best_model") or ""),
     } for r in rows_raw]
+
+    # Ensemble realized MAPE per slice — not stored in the leaderboard table
+    # (the ensemble is the blend, not a holdout-scored model), so compute it
+    # empirically: past-run Most_Likely forecasts vs weeks that later closed
+    # as actuals (arr_forecast_v2 retains every weekly run_date). Best-effort:
+    # on failure the leaderboard simply ships without the Ensemble column.
+    try:
+        norm = _normalized_market_expr("sales_market")
+        ens_sql = f"""
+            WITH actuals AS (
+                SELECT product, {norm} AS sales_market,
+                       CAST(ds AS DATE) AS ds,
+                       MAX(CAST(Actuals AS DOUBLE)) AS actual
+                FROM {FC_TABLE}
+                WHERE forecast_type = 'actuals'
+                  AND {_latest_run()}
+                  AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+                GROUP BY product, {norm}, CAST(ds AS DATE)
+            ),
+            fc AS (
+                SELECT product, {norm} AS sales_market,
+                       CAST(ds AS DATE) AS ds,
+                       CAST(Most_Likely AS DOUBLE) AS predicted,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY product, {norm}, CAST(ds AS DATE)
+                           ORDER BY CAST(run_date AS DATE) DESC
+                       ) AS rn
+                FROM {FC_TABLE}
+                WHERE forecast_type IN ('rolling', 'roy')
+                  AND CAST(run_date AS DATE) < CAST(ds AS DATE)
+            )
+            SELECT f.product, f.sales_market,
+                   AVG(ABS(f.predicted - a.actual) / a.actual) * 100 AS mape_ensemble
+            FROM fc f
+            JOIN actuals a
+              ON f.product = a.product AND f.sales_market = a.sales_market AND f.ds = a.ds
+            WHERE f.rn = 1
+            GROUP BY f.product, f.sales_market
+        """
+        ens_rows = await asyncio.to_thread(execute_query, ens_sql)
+        ens_map = {
+            (str(r.get("product") or ""), _normalize_market_value(str(r.get("sales_market") or ""))):
+                _f(r.get("mape_ensemble"), 999)
+            for r in (ens_rows or [])
+        }
+        for row in data:
+            val = ens_map.get((row["product"], row["sales_market"]))
+            if val is not None and val < 999:
+                row["Ensemble"] = round(val, 1)
+    except Exception as exc:
+        logger.warning("[forecast/leaderboard] ensemble realized MAPE failed: %s", exc)
 
     return {"source": "live", "data": data}
 

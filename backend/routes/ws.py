@@ -11,7 +11,7 @@ Usage from frontend:
 import asyncio
 import json
 import logging
-from typing import Set
+from typing import Optional, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -22,7 +22,7 @@ router = APIRouter()
 _clients: Set[WebSocket] = set()
 
 
-async def broadcast_refresh(event_type: str = "refresh", payload: dict | None = None):
+async def broadcast_refresh(event_type: str = "refresh", payload: Optional[dict] = None):
     """Call this from any route/job that refreshes gold-layer data."""
     if not _clients:
         return

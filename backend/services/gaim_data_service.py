@@ -18,6 +18,7 @@ IMPORTANT — Close Rate vs Win Rate:
 
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -115,9 +116,12 @@ class GAIMDataService:
         except Exception:
             pass
         self.available = (not _demo_mode) and DATABRICKS_AVAILABLE and (_on_databricks or _force_live or token_available())
-        # Circuit-breaker: set to False after first connection failure so
-        # subsequent requests return demo data instantly without blocking threads.
-        self._db_reachable = True
+        # Circuit-breaker: trip after a connection failure so subsequent requests
+        # return demo data instantly without blocking threads. Self-heals after a
+        # cooldown so one transient timeout does not pin the process into demo mode
+        # for all users until restart. (Audit T1.5)
+        self._db_tripped_at: Optional[float] = None
+        self._breaker_cooldown_s = 120.0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -139,20 +143,32 @@ class GAIMDataService:
         if filters is None:
             filters = {}
 
-        if self.available and self._db_reachable:
+        if self.available and self._breaker_closed():
             try:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     asyncio.to_thread(self._query_kpis, start_date, end_date, filters),
                     timeout=15.0,  # 15 s: covers 4 queries × 5 s socket timeout + overhead
                 )
+                self._db_tripped_at = None  # success closes the breaker
+                return result
             except asyncio.TimeoutError:
                 print("[GAIMDataService] Databricks query timed out. Circuit breaker open — using demo data.")
-                self._db_reachable = False
+                self._db_tripped_at = time.monotonic()
             except Exception as exc:
                 print(f"[GAIMDataService] Databricks query failed: {exc}. Circuit breaker open — using demo data.")
-                self._db_reachable = False
+                self._db_tripped_at = time.monotonic()
 
         return _demo_kpis()
+
+    def _breaker_closed(self) -> bool:
+        """True if the DB circuit breaker is closed (allow live query). After a
+        trip, stays open for the cooldown, then allows one probe attempt."""
+        if self._db_tripped_at is None:
+            return True
+        if time.monotonic() - self._db_tripped_at >= self._breaker_cooldown_s:
+            self._db_tripped_at = None  # cooldown elapsed → allow a probe
+            return True
+        return False
 
     async def fetch_trend_data(
         self,

@@ -192,6 +192,30 @@ export const apiService = {
     return api.get('/api/forecast/v2/confidence-bands', { params });
   },
 
+  // Backtest — historical forecasts vs closed actuals at a given horizon (trust view)
+  getForecastV2Backtest: (horizonWeeks = 4, model = 'ensemble', productLine = null, salesMarket = null) => {
+    const params = { horizon_weeks: horizonWeeks, model };
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/backtest', { params });
+  },
+
+  // Run delta — what changed between the two most recent forecast runs
+  getForecastV2RunDelta: (productLine = null, salesMarket = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/run-delta', { params });
+  },
+
+  // Model Lab — per-model P10/P50/P90 from the V5 notebook output tables
+  // (arr_forecast_app_latest / ucc_forecast_v5 / itsg_forecast_v5)
+  getForecastV2ModelLab: (product = 'UCC', grain = 'total', salesMarket = null) => {
+    const params = { product, grain };
+    if (grain === 'market' && salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/model-lab', { params });
+  },
+
   // Action command center
   getActions: (status = null) => {
     const params = {}
@@ -211,6 +235,10 @@ export const apiService = {
 
   // v2 intelligence — reads from Delta table arr_forecast_insights (SP-accessible via all_mdl_ro)
   getForecastV2Intelligence: () => api.get('/api/forecast/v2/intelligence'),
+
+  // AI chart annotation — LLM one-line finding for a chart (Databricks Claude via ai_service)
+  getAIChartAnnotation: (chartType, dataPoints, metricName) =>
+    api.post('/api/ai/chart-annotation', { chart_type: chartType, data_points: dataPoints, metric_name: metricName }),
 
   getRecommendations: () => api.get('/api/recommendations'),
 }

@@ -56,6 +56,66 @@ export function exportChartPng(containerRef, filename = 'chart') {
 }
 
 /**
+ * Export an entire card (title + legend + chart) as a PNG download.
+ * Serializes the card's DOM into an SVG <foreignObject> and rasterizes it —
+ * works when styling is inline (as in ForecastingPanel). Elements marked
+ * with data-export-hide are stripped from the capture (e.g. the ⬇ button).
+ * @param {React.RefObject} containerRef - ref attached to the card div
+ * @param {string} filename - output file name (without extension)
+ */
+export function exportCardPng(containerRef, filename = 'card') {
+  const node = containerRef?.current;
+  if (!node) {
+    console.warn('[exportCardPng] No node found in container');
+    return;
+  }
+
+  const { width, height } = node.getBoundingClientRect();
+  const clone = node.cloneNode(true);
+  clone.querySelectorAll('[data-export-hide]').forEach((el) => el.remove());
+
+  // Wrap in an XHTML container so foreignObject renders it
+  const wrapper = document.createElement('div');
+  wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  wrapper.style.cssText = `width:${width}px;height:${height}px;` +
+    'font-family:Inter,system-ui,sans-serif;color:#e2e8f0;box-sizing:border-box;';
+  wrapper.appendChild(clone);
+
+  const serialized = new XMLSerializer().serializeToString(wrapper);
+  const svgStr =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+    `<foreignObject width="100%" height="100%">${serialized}</foreignObject></svg>`;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width * 2;   // 2x for retina
+  canvas.height = height * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  ctx.fillStyle = '#0a0f1e'; // match app dark bg
+  ctx.fillRect(0, 0, width, height);
+
+  const img = new Image();
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    const link = document.createElement('a');
+    link.download = `${filename}-${new Date().toISOString().slice(0, 10)}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+  img.onerror = () => {
+    // Fallback: capture just the chart SVG if foreignObject rasterization fails
+    URL.revokeObjectURL(url);
+    console.warn('[exportCardPng] foreignObject render failed — falling back to chart SVG');
+    exportChartPng(containerRef, filename);
+  };
+  img.src = url;
+}
+
+/**
  * Export data array as a CSV download.
  * @param {Array<Object>} data - array of row objects
  * @param {string[]} columns - keys to include (in order)
