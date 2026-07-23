@@ -410,12 +410,31 @@ async def get_intelligence():
         }
     
     try:
-        # Pull the latest row and then choose the payload column dynamically
-        # because writer jobs may emit either insights_json or payload.
+        # Prefer freshest writer output: updated_at when available, then run_date.
+        # Schema can vary by environment, so discover columns first.
+        col_rows = await asyncio.to_thread(execute_query, f"""
+            SELECT LOWER(column_name) AS column_name
+            FROM `{FORECAST_CATALOG}`.information_schema.columns
+            WHERE LOWER(table_schema) = LOWER('{FORECAST_SCHEMA}')
+              AND LOWER(table_name) = 'arr_forecast_insights'
+        """)
+        cols = {
+            str(r.get("column_name") or "").strip().lower()
+            for r in (col_rows or [])
+            if str(r.get("column_name") or "").strip()
+        }
+
+        order_parts = []
+        if "updated_at" in cols:
+            order_parts.append("CAST(updated_at AS TIMESTAMP) DESC")
+        if "run_date" in cols:
+            order_parts.append("CAST(run_date AS TIMESTAMP) DESC")
+        order_sql = ", ".join(order_parts) if order_parts else "1"
+
         rows = await asyncio.to_thread(execute_query, f"""
             SELECT *
             FROM {INSIGHTS_TABLE}
-            WHERE run_date = (SELECT MAX(run_date) FROM {INSIGHTS_TABLE})
+            ORDER BY {order_sql}
             LIMIT 1
         """)
         
@@ -445,6 +464,11 @@ async def get_intelligence():
                 "error": "Invalid insights data",
                 "narrative": "AI Insights payload format is invalid — re-run Panel Writer.",
             }
+
+        if row.get("run_date") and not payload.get("run_date"):
+            payload["run_date"] = str(row.get("run_date"))
+        if row.get("updated_at"):
+            payload["updated_at"] = str(row.get("updated_at"))
 
         payload["source"] = "live"
         return payload
