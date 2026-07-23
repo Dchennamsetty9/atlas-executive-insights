@@ -410,9 +410,10 @@ async def get_intelligence():
         }
     
     try:
-        # Query the Delta table for the latest insights JSON payload
+        # Pull the latest row and then choose the payload column dynamically
+        # because writer jobs may emit either insights_json or payload.
         rows = await asyncio.to_thread(execute_query, f"""
-            SELECT insights_json
+            SELECT *
             FROM {INSIGHTS_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {INSIGHTS_TABLE})
             LIMIT 1
@@ -424,15 +425,27 @@ async def get_intelligence():
                 "narrative": "AI Insights table is empty — run Panel Writer notebook.",
             }
         
-        # Extract and parse the JSON payload
-        json_str = rows[0].get("insights_json")
-        if not json_str:
+        # Extract and parse the JSON payload from whichever key exists.
+        row = rows[0] or {}
+        json_value = (
+            row.get("insights_json")
+            or row.get("payload")
+            or row.get("insight_payload")
+            or row.get("json_payload")
+        )
+        if json_value is None:
             return {
                 "error": "Invalid insights data",
                 "narrative": "AI Insights payload is null — re-run Panel Writer.",
             }
-        
-        payload = json.loads(json_str)
+
+        payload = json.loads(json_value) if isinstance(json_value, str) else json_value
+        if not isinstance(payload, dict):
+            return {
+                "error": "Invalid insights data",
+                "narrative": "AI Insights payload format is invalid — re-run Panel Writer.",
+            }
+
         payload["source"] = "live"
         return payload
         
