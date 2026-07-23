@@ -615,6 +615,39 @@ const AccuracyTable = ({ data }) => {
   );
 };
 
+const normalizeInsightItems = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => (v == null ? '' : String(v).trim()))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!s) return [];
+
+    // Some writers persist lists as JSON strings in Delta (e.g. "[\"a\", \"b\"]").
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .map((v) => (v == null ? '' : String(v).trim()))
+            .filter(Boolean);
+        }
+      } catch (_e) {
+        // Fall through to delimiter-based parsing.
+      }
+    }
+
+    // Backward compatibility: semicolon/newline/pipe separated phrases.
+    const parts = s.split(/\r?\n|;|\|/).map((v) => v.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : [s];
+  }
+
+  return [];
+};
+
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
 const AiInsightsSection = ({ model, prodLine }) => {
   const [aiData,    setAiData]    = useState(null);
@@ -767,8 +800,8 @@ const AiInsightsSection = ({ model, prodLine }) => {
       {/* 2×2 intelligence grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(255px, 1fr))', gap: 12 }}>
         {SECTIONS.map(sec => {
-          const items = aiData?.[sec.key];
-          if (!items?.length) return null;
+          const items = normalizeInsightItems(aiData?.[sec.key]);
+          if (!items.length) return null;
           return (
             <div key={sec.key} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
                                         borderRadius: 10, padding: '14px 16px' }}>
