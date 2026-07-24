@@ -339,6 +339,57 @@ resources:
 
       max_concurrent_runs: 1
 
+    # ── Forecast Unify & Publish (daily ~07:00 ET) ──
+    # Reads the UCC/ITSG V5 outputs + actuals and publishes the single
+    # forecast_results / forecast_insights tables the dashboard reads. Runs
+    # daily so actuals refresh; assumes the UCC/ITSG model jobs have completed.
+    # To run the whole pipeline in one job, add the model notebooks as upstream
+    # tasks with depends_on (see commented example below).
+    forecast_unify_publish:
+      name: "Forecast Unify & Publish — Daily 7am ET"
+      description: >
+        Consolidates ucc_forecast_v5 + itsg_forecast_v5 + actuals into the unified
+        forecast_results / forecast_insights tables (+ forecast_results_latest view)
+        and grants the app service principal SELECT. Powers all Forecasting-panel tabs.
+
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"     # daily 07:00
+        timezone_id: America/New_York             # 7am ET (handles EST/EDT)
+        pause_status: UNPAUSED
+
+      job_clusters:
+        - job_cluster_key: forecast_unify_cluster
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.large
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+
+      tasks:
+        - task_key: unify_publish
+          job_cluster_key: forecast_unify_cluster
+          notebook_task:
+            notebook_path: notebooks/forecast_unify_publish
+            source: GIT
+      # Pull the notebook straight from GitHub so the repo is the source of truth.
+      git_source:
+        git_url: https://github.com/goto-shared/gaim-executive-app
+        git_provider: gitHub
+        git_branch: main
+      # --- To chain the models before unify, replace the single task above with: ---
+      # tasks:
+      #   - task_key: ucc_model      # notebook_task -> UCC V5 notebook
+      #   - task_key: itsg_model     # notebook_task -> ITSG V5 notebook
+      #   - task_key: unify_publish
+      #     depends_on: [{ task_key: ucc_model }, { task_key: itsg_model }]
+
+      email_notifications:
+        on_failure:
+          - patrick.sliz@goto.com
+          - dileep.chennamsetty@goto.com
+
+      max_concurrent_runs: 1
+
 targets:
   dev:
     mode: development

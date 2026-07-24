@@ -32,9 +32,19 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
+<<<<<<< HEAD
+# Unified source (produced daily by notebooks/forecast_unify_publish). These are
+# compatibility VIEWS over forecast_results / forecast_insights that preserve the
+# original arr_forecast_v2 / leaderboard / insights column shapes, so no endpoint
+# SQL changed. To revert, point these back at the arr_forecast_v2* tables.
+FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_results_v2compat`"
+LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_leaderboard_v2compat`"
+INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_insights_v2compat`"
+=======
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`"
 INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_insights`"
+>>>>>>> origin/main
 # V5 notebook outputs (UCC Forecast Foundation V5 + ITSG Growth ARR V5).
 # APP_TABLE is the unified app-facing table both notebooks are designed to write,
 # partitioned by product_group and refreshed each weekly run (run_date_utc).
@@ -364,8 +374,18 @@ def _pct(part: float, whole: float) -> float:
 
 async def _lb_columns() -> set[str]:
     """Return lowercase leaderboard column names for runtime schema compatibility."""
+    # Derive the bare object name from LB_TABLE so introspection follows the
+    # repoint (now the compat view) instead of a hardcoded table name.
+    _lb_name = LB_TABLE.split(".")[-1].strip("`").lower()
     sql = f"""
+<<<<<<< HEAD
+        SELECT LOWER(column_name) AS column_name
+        FROM `{FORECAST_CATALOG}`.information_schema.columns
+        WHERE LOWER(table_schema) = LOWER('{FORECAST_SCHEMA}')
+          AND LOWER(table_name) = '{_lb_name}'
+=======
         SHOW COLUMNS IN `{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2_leaderboard`
+>>>>>>> origin/main
     """
     try:
         rows = await asyncio.to_thread(execute_query, sql)
