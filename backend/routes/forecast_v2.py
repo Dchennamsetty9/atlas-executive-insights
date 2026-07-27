@@ -32,13 +32,14 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
-# Unified source (produced daily by notebooks/forecast_unify_publish). These are
-# compatibility VIEWS over forecast_results / forecast_insights that preserve the
-# original arr_forecast_v2 / leaderboard / insights column shapes, so no endpoint
-# SQL changed. To revert, point these back at the arr_forecast_v2* tables.
-FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_results_v2compat`"
-LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_leaderboard_v2compat`"
-INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_insights_v2compat`"
+# Default to the legacy tables for production safety. Environments that have the
+# new unified compat views can opt in via env vars without code changes.
+FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
+LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "arr_forecast_v2_leaderboard")
+INSIGHTS_TABLE_NAME = os.getenv("FORECAST_V2_INSIGHTS_TABLE", "arr_forecast_insights")
+FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{FC_TABLE_NAME}`"
+LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{LB_TABLE_NAME}`"
+INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{INSIGHTS_TABLE_NAME}`"
 # V5 notebook outputs (UCC Forecast Foundation V5 + ITSG Growth ARR V5).
 # APP_TABLE is the unified app-facing table both notebooks are designed to write,
 # partitioned by product_group and refreshed each weekly run (run_date_utc).
