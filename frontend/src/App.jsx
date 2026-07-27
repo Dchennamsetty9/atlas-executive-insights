@@ -54,7 +54,8 @@ function AppInner() {
   const [isAnalyzing,   setIsAnalyzing]     = useState(false);
   const [selectedKpi,   setSelectedKpi]     = useState(null);
   const [activeInsightId, setActiveInsightId] = useState(null);
-  const [theme,         setTheme]           = useState(() => localStorage.getItem('atlas-theme') || 'dark');
+  // Force dark as the persisted default; never restore light mode from storage.
+  const [theme,         setTheme]           = useState('dark');
   const [aiOpen,        setAiOpen]          = useState(false);
   const [activeView,    setActiveView]      = useState('business');
   const [countdown,     setCountdown]       = useState(getQuarterCountdown);
@@ -74,7 +75,13 @@ function AppInner() {
   // URL ↔ filter sync
   useUrlFilters();
 
-  useEffect(() => { localStorage.setItem('atlas-theme', theme); }, [theme]);
+  useEffect(() => {
+    if (theme === 'dark') {
+      localStorage.setItem('atlas-theme', 'dark');
+    } else {
+      localStorage.removeItem('atlas-theme');
+    }
+  }, [theme]);
 
   // Refresh countdown every minute
   useEffect(() => {
