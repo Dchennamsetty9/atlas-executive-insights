@@ -16,7 +16,7 @@ Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
 All values are constrained to the Growth-bookings-aligned v2 tables.
 """
 
-import asyncio, os, datetime, logging, json
+import asyncio, os, datetime, logging, json, time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Query, HTTPException, Depends
@@ -50,6 +50,8 @@ ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
+CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "300"))
+_QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
     "ets": {
         "display_name": "ETS",
@@ -116,6 +118,39 @@ def _live() -> bool:
     # (forwarded user token, PAT, or OAuth M2M). Requiring explicit host env vars
     # here causes false demo-mode fallbacks even when live Databricks auth exists.
     return force_live or token_available()
+
+
+def _live_mode_dependency() -> bool:
+    """Dependency wrapper so route handlers don't call _live() directly."""
+    return _live()
+
+
+def _cache_key(endpoint: str, sql: str, **params: Any) -> str:
+    encoded = "&".join(
+        f"{k}={json.dumps(v, sort_keys=True, default=str)}"
+        for k, v in sorted(params.items())
+    )
+    return f"{endpoint}|{sql}|{encoded}"
+
+
+async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str, Any]]:
+    """Small in-process TTL cache for repeated identical read queries."""
+    if CACHE_TTL_SECONDS <= 0:
+        return await asyncio.to_thread(execute_query, sql)
+
+    key = _cache_key(endpoint, sql, **params)
+    now = time.time()
+    if len(_QUERY_CACHE) > 512:
+        expired_keys = [k for k, (ts, _) in _QUERY_CACHE.items() if (now - ts) >= CACHE_TTL_SECONDS]
+        for expired_key in expired_keys:
+            _QUERY_CACHE.pop(expired_key, None)
+    hit = _QUERY_CACHE.get(key)
+    if hit and (now - hit[0]) < CACHE_TTL_SECONDS:
+        return hit[1]
+
+    rows = await asyncio.to_thread(execute_query, sql)
+    _QUERY_CACHE[key] = (now, rows)
+    return rows
 
 
 def _validate_forecast_type(forecast_type: str) -> str:
@@ -373,7 +408,7 @@ async def _lb_columns() -> set[str]:
     SHOW COLUMNS IN {LB_TABLE}
     """
     try:
-        rows = await asyncio.to_thread(execute_query, sql)
+        rows = await _cached_query(sql, endpoint="/leaderboard/columns")
     except Exception as exc:
         logger.warning("[forecast/lb-columns] schema introspection failed: %s", exc)
         return set()
@@ -403,9 +438,11 @@ class GovernanceLogRequest(BaseModel):
 
 # ── GET /intelligence ──────────────────────────────────────────────────────────
 @router.get("/intelligence")
-async def get_intelligence():
+async def get_intelligence(
+    live_mode: bool = Depends(_live_mode_dependency),
+):
     """Read pre-computed AI insights from Delta table arr_forecast_insights."""
-    if not _live():
+    if not live_mode:
         return {
             "error": "Not in live mode",
             "narrative": "AI Insights unavailable — configure Databricks auth.",
@@ -415,20 +452,20 @@ async def get_intelligence():
         # Prefer freshest writer output but avoid information_schema access,
         # which some service principals cannot read in UC.
         try:
-            rows = await asyncio.to_thread(execute_query, f"""
+            rows = await _cached_query(f"""
                 SELECT *
                 FROM {INSIGHTS_TABLE}
                 ORDER BY CAST(updated_at AS TIMESTAMP) DESC, CAST(run_date AS TIMESTAMP) DESC
                 LIMIT 1
-            """)
+            """, endpoint="/intelligence", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, variant="updated_at")
         except Exception:
             # Fallback for schemas without updated_at.
-            rows = await asyncio.to_thread(execute_query, f"""
+            rows = await _cached_query(f"""
                 SELECT *
                 FROM {INSIGHTS_TABLE}
                 ORDER BY CAST(run_date AS TIMESTAMP) DESC
                 LIMIT 1
-            """)
+            """, endpoint="/intelligence", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, variant="run_date")
         
         if not rows:
             return {
@@ -489,12 +526,13 @@ async def get_weekly(
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
+    live_mode:     bool          = Depends(_live_mode_dependency),
 ):
     """
     Weekly actuals + forecast rows for WeeklyForecastChart.
     Actuals rows have Actuals set; forecast rows have Most_Likely/Worst_Case/Best_Case.
     """
-    if not _live():
+    if not live_mode:
         return _demo("rows")
 
     forecast_type = _validate_forecast_type(forecast_type)
@@ -505,6 +543,8 @@ async def get_weekly(
     qtr_filter = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
 
     try:
+        key_product = _selected_product(product, product_line)
+        key_geo = _normalize_market_value(sales_market)
         kpi_sql = f"""
             SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
             FROM {FC_TABLE}
@@ -517,9 +557,9 @@ async def get_weekly(
             ORDER BY ds
         """
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
-                        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter)),
-                        asyncio.to_thread(execute_query, _normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter)),
-            asyncio.to_thread(execute_query, kpi_sql),
+            _cached_query(_normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(_normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(kpi_sql, endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter, metric="kpis"),
         )
     except Exception as exc:
         logger.warning("[forecast/weekly] query failed for model=%s: %s", model, exc)
@@ -568,9 +608,10 @@ async def get_monthly(
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
+    live_mode:     bool          = Depends(_live_mode_dependency),
 ):
     """Monthly Actuals + Worst/Most Likely/Best for Monthly table."""
-    if not _live():
+    if not live_mode:
         return _demo("months")
 
     forecast_type = _validate_forecast_type(forecast_type)
@@ -622,9 +663,11 @@ async def get_monthly(
     """
 
     try:
+        key_product = _selected_product(product, product_line)
+        key_geo = _normalize_market_value(sales_market)
         act_rows, fc_rows = await asyncio.gather(
-            asyncio.to_thread(execute_query, act_sql),
-            asyncio.to_thread(execute_query, fc_sql),
+            _cached_query(act_sql, endpoint="/monthly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(fc_sql, endpoint="/monthly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
         )
     except Exception as exc:
         logger.warning("[forecast/monthly] query failed: %s", exc)
@@ -667,9 +710,10 @@ async def get_ytd(
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
+    live_mode:     bool          = Depends(_live_mode_dependency),
 ):
     """Cumulative YTD actuals + forecast scenarios for Running Totals chart."""
-    if not _live():
+    if not live_mode:
         return _demo("rows")
 
     forecast_type = _validate_forecast_type(forecast_type)
@@ -711,9 +755,11 @@ async def get_ytd(
     """
 
     try:
+        key_product = _selected_product(product, product_line)
+        key_geo = _normalize_market_value(sales_market)
         act_rows, fc_rows = await asyncio.gather(
-            asyncio.to_thread(execute_query, act_sql),
-            asyncio.to_thread(execute_query, fc_sql),
+            _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
         )
     except Exception as exc:
         logger.warning("[forecast/ytd] query failed: %s", exc)
@@ -758,9 +804,10 @@ async def get_by_product(
     sales_market:  Optional[str] = Query(None),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
+    live_mode:     bool          = Depends(_live_mode_dependency),
 ):
     """Total forecast per product group (UCC/ITSG) + by sales_market."""
-    if not _live():
+    if not live_mode:
         return _demo("data")
 
     model = _validate_model(model)
@@ -776,7 +823,9 @@ async def get_by_product(
         # DHR has no legacy equivalent in old schemas; leave NULL if absent.
         dhr_col = _pick_lb_column(lb_cols, "mape_dhr_arima")
 
-        lb_rows_raw = await asyncio.to_thread(execute_query, f"""
+        key_product = _selected_product(product, product_line)
+        key_geo = _normalize_market_value(sales_market)
+        lb_rows_raw = await _cached_query(f"""
             SELECT product, sales_market,
                    mape_ets, mape_prophet, mape_lightgbm,
                    {mstl_col} AS mape_mstl_v2,
@@ -784,7 +833,7 @@ async def get_by_product(
                    best_mape, best_model
             FROM {LB_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
-        """)
+        """, endpoint="/by-product", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter, metric="leaderboard")
     except Exception as exc:
         logger.warning("[forecast/by-product] leaderboard fetch failed (continuing): %s", exc)
         lb_rows_raw = []
@@ -843,8 +892,8 @@ async def get_by_product(
 
     try:
         prod_rows, geo_rows = await asyncio.gather(
-            asyncio.to_thread(execute_query, prod_sql),
-            asyncio.to_thread(execute_query, geo_sql),
+            _cached_query(prod_sql, endpoint="/by-product", model=model, forecast_type=eff_forecast_type, product=key_product, geo="Total", year=year, quarter=quarter, metric="product"),
+            _cached_query(geo_sql, endpoint="/by-product", model=model, forecast_type=eff_forecast_type, product=selected_product, geo=key_geo, year=year, quarter=quarter, metric="geo"),
         )
     except Exception as exc:
         logger.warning("[forecast/by-product] query failed for model=%s: %s", model, exc)
@@ -871,17 +920,26 @@ async def get_by_product(
 
 
 @router.get("/models")
-async def get_models():
+async def get_models(
+    live_mode: bool = Depends(_live_mode_dependency),
+):
     """Return registry-backed forecast models with source table and freshness metadata."""
-    if not _live():
+    if not live_mode:
         return {"source": "demo", "models": []}
 
     # Canonical panel freshness is the arr_forecast_v2 run_date (the table the UI is based on).
     canonical_refresh: Optional[str] = None
     try:
-        canonical_rows = await asyncio.to_thread(
-            execute_query,
+        canonical_rows = await _cached_query(
             f"SELECT MAX(CAST(run_date AS STRING)) AS freshness FROM {FC_TABLE}",
+            endpoint="/models",
+            model="ensemble",
+            forecast_type="rolling",
+            product="Total",
+            geo="Total",
+            year=None,
+            quarter=None,
+            metric="canonical_refresh",
         )
         canonical_refresh = str((canonical_rows[0] if canonical_rows else {}).get("freshness") or "")[:10] or None
     except Exception:
@@ -898,7 +956,7 @@ async def get_models():
             else f"SELECT MAX(CAST(ds AS STRING)) AS freshness FROM {table}"
         )
         try:
-            rows = await asyncio.to_thread(execute_query, freshness_sql)
+            rows = await _cached_query(freshness_sql, endpoint="/models", model=key, forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, metric="table_refresh")
             freshness_cache[table] = str((rows[0] if rows else {}).get("freshness") or "")[:10] or None
         except Exception:
             freshness_cache[table] = None
@@ -927,6 +985,7 @@ async def get_historical(
     product_line: Optional[str] = Query(None),
     sales_market: Optional[str] = Query(None),
     year:         Optional[int] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
 ):
     """Multi-year weekly actuals for Historical Trend + Seasonality charts.
 
@@ -934,7 +993,7 @@ async def get_historical(
     so the Multi-Year overlay chart always shows meaningful multi-line data.
     When year is specified, returns only that year for single-year trend filtering.
     """
-    if not _live():
+    if not live_mode:
         return _demo("rows")
 
     pf = _product_filter(product, product_line)
@@ -964,7 +1023,7 @@ async def get_historical(
     """
 
     try:
-        rows_raw = await asyncio.to_thread(execute_query, sql)
+        rows_raw = await _cached_query(sql, endpoint="/historical", model="ensemble", forecast_type="actuals", product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=year, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/historical] query failed: %s", exc)
         return _demo("rows", error=str(exc))
@@ -989,6 +1048,7 @@ async def get_confidence_bands(
     model:        str           = Query("ensemble"),
     year:         Optional[int] = Query(None),
     quarter:      Optional[int] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
 ):
     """
     Percentile prediction-interval totals for the selected period.
@@ -996,7 +1056,7 @@ async def get_confidence_bands(
     These come directly from the source model P10/P90 stored in the p10/p90 columns —
     not synthetic ±% offsets — so they match the UCC/ITSG notebook executive summaries.
     """
-    if not _live():
+    if not live_mode:
         return {
             "source": "demo",
             "p10": 11_817_000, "most_likely": 14_588_000, "p90": 18_546_000,
@@ -1032,7 +1092,7 @@ async def get_confidence_bands(
     """
 
     try:
-        rows = await asyncio.to_thread(execute_query, sql)
+        rows = await _cached_query(sql, endpoint="/confidence-bands", model=model, forecast_type=eff_forecast_type, product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=selected_year, quarter=quarter)
     except Exception as exc:
         logger.warning("[forecast/confidence-bands] query failed: %s", exc)
         return {"source": "demo", "error": str(exc), "p10": None, "most_likely": None, "p90": None}
@@ -1106,6 +1166,7 @@ async def get_backtest(
     product: Optional[str] = None,
     product_line: Optional[str] = None,
     sales_market: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """
     Forecast-vs-Reality trust view.
@@ -1120,7 +1181,7 @@ async def get_backtest(
       bias_pct     — signed mean % error (positive = systematic over-forecast)
     """
     model = _validate_model(model)
-    if not _live():
+    if not live_mode:
         rows = _demo_backtest_rows(horizon_weeks)
         return {"source": "demo", "model": model, "horizon_weeks": horizon_weeks,
                 "rows": rows, "summary": _backtest_summary(rows)}
@@ -1169,7 +1230,7 @@ async def get_backtest(
     """
 
     try:
-        rows_raw = await asyncio.to_thread(execute_query, sql)
+        rows_raw = await _cached_query(sql, endpoint="/backtest", model=model, forecast_type="rolling", product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=None, quarter=None, horizon_weeks=horizon_weeks)
     except Exception as exc:
         logger.warning("[forecast/backtest] query failed: %s", exc)
         rows = _demo_backtest_rows(horizon_weeks)
@@ -1216,6 +1277,7 @@ async def get_run_delta(
     product: Optional[str] = None,
     product_line: Optional[str] = None,
     sales_market: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """
     'What changed since last run' — compares the two most recent forecast
@@ -1230,7 +1292,7 @@ async def get_run_delta(
     """
     effective = _selected_product(product, product_line)
     effective_geo = _normalize_market_value(sales_market)
-    if not _live():
+    if not live_mode:
         return _demo_run_delta()
 
     norm = _normalized_market_expr("sales_market")
@@ -1265,7 +1327,7 @@ async def get_run_delta(
         GROUP BY a.product, a.sales_market
     """
     try:
-        rows = await asyncio.to_thread(execute_query, sql)
+        rows = await _cached_query(sql, endpoint="/run-delta", model="ensemble", forecast_type="rolling", product=effective, geo=effective_geo, year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/run-delta] query failed: %s", exc)
         return {**_demo_run_delta(), "error": str(exc)}
@@ -1395,6 +1457,7 @@ async def get_model_lab(
     product: str = Query("UCC"),
     grain: str = Query("total"),
     sales_market: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """
     Per-model forecast curves with each model's own P10/P50/P90, sourced from the
@@ -1415,7 +1478,7 @@ async def get_model_lab(
         if mkt != "Total" and mkt.upper() not in _MODEL_LAB_MARKETS:
             raise HTTPException(status_code=400, detail="Invalid sales_market")
 
-    if not _live():
+    if not live_mode:
         return _demo_model_lab(product, grain)
 
     # Try the unified app table first, then the per-product V5 table.
@@ -1425,8 +1488,17 @@ async def get_model_lab(
     rows_raw, err = None, None
     for table, has_pg in candidates:
         try:
-            rows_raw = await asyncio.to_thread(
-                execute_query, _model_lab_sql(table, has_pg, product, grain, mkt)
+            rows_raw = await _cached_query(
+                _model_lab_sql(table, has_pg, product, grain, mkt),
+                endpoint="/model-lab",
+                model="ensemble",
+                forecast_type="rolling",
+                product=product,
+                geo=mkt or "Total",
+                year=None,
+                quarter=None,
+                grain=grain,
+                table=table,
             )
             if rows_raw:
                 break
@@ -1464,9 +1536,11 @@ async def get_model_lab(
 
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
 @router.get("/leaderboard")
-async def get_leaderboard():
+async def get_leaderboard(
+    live_mode: bool = Depends(_live_mode_dependency),
+):
     """MAPE leaderboard — all product × sales_market slices."""
-    if not _live():
+    if not live_mode:
         return _demo("data")
 
     lb_cols = await _lb_columns()
@@ -1492,7 +1566,7 @@ async def get_leaderboard():
     """
 
     try:
-        rows_raw = await asyncio.to_thread(execute_query, sql)
+        rows_raw = await _cached_query(sql, endpoint="/leaderboard", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/leaderboard] query failed: %s", exc)
         return _demo("data", error=str(exc))
@@ -1547,7 +1621,7 @@ async def get_leaderboard():
             WHERE f.rn = 1
             GROUP BY f.product, f.sales_market
         """
-        ens_rows = await asyncio.to_thread(execute_query, ens_sql)
+        ens_rows = await _cached_query(ens_sql, endpoint="/leaderboard", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, metric="ensemble_realized_mape")
         ens_map = {
             (str(r.get("product") or ""), _normalize_market_value(str(r.get("sales_market") or ""))):
                 _f(r.get("mape_ensemble"), 999)
@@ -1564,9 +1638,11 @@ async def get_leaderboard():
 
 
 @router.get("/freshness")
-async def get_freshness():
+async def get_freshness(
+    live_mode: bool = Depends(_live_mode_dependency),
+):
     """Return freshness and SLA status for forecast tables."""
-    if not _live():
+    if not live_mode:
         return {
             "source": "demo",
             "freshness": None,
@@ -1576,9 +1652,15 @@ async def get_freshness():
         }
 
     try:
-        rows = await asyncio.to_thread(
-            execute_query,
+        rows = await _cached_query(
             f"SELECT MAX(CAST(run_date AS DATE)) AS freshness FROM {FC_TABLE}",
+            endpoint="/freshness",
+            model="ensemble",
+            forecast_type="rolling",
+            product="Total",
+            geo="Total",
+            year=None,
+            quarter=None,
         )
         latest = (rows[0] if rows else {}).get("freshness")
         if not latest:
@@ -1602,9 +1684,10 @@ async def get_confidence(
     model: str = Query("ensemble"),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """Forecast confidence score with explainability reasons."""
-    if not _live():
+    if not live_mode:
         return {
             "source": "demo",
             "confidence_score": 72,
@@ -1621,27 +1704,27 @@ async def get_confidence(
     date_filter = _quarter_filter(quarter, selected_year) if quarter else _year_filter(selected_year)
 
     try:
-        lb_rows = await asyncio.to_thread(execute_query, f"""
+        lb_rows = await _cached_query(f"""
             SELECT AVG(CAST(best_mape AS DOUBLE)) AS best_mape
             FROM {LB_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
               AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """)
+        """, endpoint="/confidence", model=model, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter, metric="best_mape")
         best_mape = _f((lb_rows[0] if lb_rows else {}).get("best_mape"), 25.0)
 
-        spread_rows = await asyncio.to_thread(execute_query, f"""
+        spread_rows = await _cached_query(f"""
             SELECT
               AVG(COALESCE(CAST(Best_Case AS DOUBLE),0) - COALESCE(CAST(Worst_Case AS DOUBLE),0)) AS spread,
               AVG(NULLIF(COALESCE(CAST(Most_Likely AS DOUBLE),0), 0)) AS likely
             FROM {FC_TABLE}
             WHERE {_latest_run()} AND forecast_type IN ('rolling','roy') AND {date_filter}
               AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """)
+        """, endpoint="/confidence", model=model, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter, metric="spread")
         spread = _f((spread_rows[0] if spread_rows else {}).get("spread"), 0.0)
         likely = _f((spread_rows[0] if spread_rows else {}).get("likely"), 1.0)
         spread_pct = _pct(spread, likely)
 
-        freshness = await get_freshness()
+        freshness = await get_freshness(live_mode=live_mode)
         stale_penalty = 0 if (freshness.get("days_stale") is None or freshness.get("days_stale") <= 7) else min(20, freshness.get("days_stale", 8) - 7)
 
         raw_score = 100 - (best_mape * 1.3) - (spread_pct * 0.8) - stale_penalty
@@ -1670,9 +1753,10 @@ async def get_driver_bridge(
     model: Optional[str] = Query("ensemble"),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """Plan-vs-actual variance bridge for executive storytelling."""
-    if not _live():
+    if not live_mode:
         return {
             "source": "demo",
             "components": [
@@ -1690,14 +1774,14 @@ async def get_driver_bridge(
     source = _model_source(model_key)
     value_col = source["most_likely_col"]
     try:
-        rows = await asyncio.to_thread(execute_query, f"""
+        rows = await _cached_query(f"""
             SELECT
                 SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_total,
                 SUM(CASE WHEN forecast_type IN ('rolling','roy') THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_total
             FROM {FC_TABLE}
             WHERE {_latest_run()} AND {date_filter}
               AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """)
+        """, endpoint="/driver-bridge", model=model_key, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter)
         actual_total = _f((rows[0] if rows else {}).get("actual_total"), 0.0)
         plan_total = _f((rows[0] if rows else {}).get("plan_total"), 0.0)
         variance = actual_total - plan_total
@@ -1728,9 +1812,10 @@ async def get_risk_radar(
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
     limit: int = Query(20),
+    live_mode: bool = Depends(_live_mode_dependency),
 ):
     """Top at-risk slices ranked by downside dollar impact."""
-    if not _live():
+    if not live_mode:
         return {"source": "demo", "items": []}
 
     forecast_type = _validate_forecast_type(forecast_type)
@@ -1743,21 +1828,21 @@ async def get_risk_radar(
     selected_year = year if year else datetime.date.today().year
     date_filter = _quarter_filter(quarter, selected_year) if quarter else _year_filter(selected_year)
     try:
-        rows = await asyncio.to_thread(execute_query, f"""
-            SELECT
-              product,
-              {_normalized_market_expr('sales_market')} AS sales_market,
-              SUM(COALESCE(CAST({value_col} AS DOUBLE),0)) AS likely,
-              SUM(COALESCE(CAST({lower_col} AS DOUBLE),0)) AS worst,
-              SUM(COALESCE(CAST({upper_col} AS DOUBLE),0)) AS best
-            FROM {FC_TABLE}
-            WHERE {_latest_run()}
-              AND forecast_type = '{eff_forecast_type}'
-              AND {date_filter}
-              AND product <> 'Total'
-              AND {_normalized_market_expr('sales_market')} <> 'Total'
-            GROUP BY product, {_normalized_market_expr('sales_market')}
-        """)
+        rows = await _cached_query(f"""
+                        SELECT
+                            product,
+                            {_normalized_market_expr('sales_market')} AS sales_market,
+                            SUM(COALESCE(CAST({value_col} AS DOUBLE),0)) AS likely,
+                            SUM(COALESCE(CAST({lower_col} AS DOUBLE),0)) AS worst,
+                            SUM(COALESCE(CAST({upper_col} AS DOUBLE),0)) AS best
+                        FROM {FC_TABLE}
+                        WHERE {_latest_run()}
+                            AND forecast_type = '{eff_forecast_type}'
+                            AND {date_filter}
+                            AND product <> 'Total'
+                            AND {_normalized_market_expr('sales_market')} <> 'Total'
+                        GROUP BY product, {_normalized_market_expr('sales_market')}
+        """, endpoint="/risk-radar", model=model, forecast_type=eff_forecast_type, product="Total", geo="Total", year=selected_year, quarter=quarter, limit=limit)
 
         items = []
         for r in rows:
@@ -1797,12 +1882,13 @@ async def get_meeting_mode(
 ):
     """Board/exec snapshot with top risks and priority actions."""
     try:
-        confidence = await get_confidence(model=model, year=year, quarter=quarter)
-        bridge = await get_driver_bridge(model=model, year=year, quarter=quarter)
+        live_mode = _live_mode_dependency()
+        confidence = await get_confidence(model=model, year=year, quarter=quarter, live_mode=live_mode)
+        bridge = await get_driver_bridge(model=model, year=year, quarter=quarter, live_mode=live_mode)
         # Explicitly pass forecast_type to avoid FastAPI Query default objects when
         # this endpoint calls get_risk_radar as a plain Python function.
-        radar = await get_risk_radar(forecast_type="rolling", model=model, year=year, quarter=quarter)
-        freshness = await get_freshness()
+        radar = await get_risk_radar(forecast_type="rolling", model=model, year=year, quarter=quarter, live_mode=live_mode)
+        freshness = await get_freshness(live_mode=live_mode)
         top_risks = (radar.get("items") or [])[:3]
         moves = [
             "Escalate top 3 at-risk slices with regional owners this week.",
@@ -1873,3 +1959,4 @@ async def create_governance_log(
     """Append governance decision entry."""
     payload = user_prefs_service.append_governance_log(user_id, body.model_dump())
     return {"success": True, "data": payload}
+
