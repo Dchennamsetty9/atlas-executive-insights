@@ -1327,12 +1327,13 @@ const ForecastingPanel = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2RunDelta(activePl, activeGeo),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1347,6 +1348,7 @@ const ForecastingPanel = () => {
     if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
+    if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
 
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
