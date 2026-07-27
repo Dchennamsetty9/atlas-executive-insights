@@ -67,7 +67,8 @@ resources:
       description: >
         PAUSED: no backend route currently reads arr_forecast_ensemble or
         arr_forecast_leaderboard. Re-enable when ForecastingPanel is wired to
-        /api/forecast/v2/* which reads arr_forecast_v2 (not this table).
+        /api/forecast/v2/* and production is intentionally switched to this output.
+        Current forecast v2 routes read arr_forecast_v2 / compat views, not this table.
 
       # ── Schedule: paused — outputs are not consumed by the app ──────────────
       schedule:

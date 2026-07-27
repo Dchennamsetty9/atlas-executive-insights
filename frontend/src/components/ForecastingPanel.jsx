@@ -1313,6 +1313,10 @@ const ForecastingPanel = () => {
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
+  const [loadedTabs,  setLoadedTabs]  = useState(new Set());
+  const loadedTabsRef = useRef(new Set());
+  const tabLoadInFlightRef = useRef(new Set());
+  const hasHydratedFiltersRef = useRef(false);
 
   const [simWinRate, setSimWinRate] = useState(31.8);
   const [simCycle, setSimCycle] = useState(45);
@@ -1322,67 +1326,124 @@ const ForecastingPanel = () => {
   const activePl = prodLine !== 'All' ? prodLine : null;
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const [wk, yt, hs, bp, mo, lb, modelsRes, fr, conf, bridge, radar, meeting, act, gov, cb, bt, rd] = await Promise.allSettled([
-        apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
-        apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
-        apiService.getForecastV2Historical(null, activePl, activeGeo),     // omit year → backend returns 3-year window
-        apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
-        apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
-        apiService.getForecastV2Leaderboard(),
-        apiService.getForecastV2Models(),
-        apiService.getForecastV2Freshness(),
-        apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
-        apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
-        apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
-        apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
-        apiService.getActions('pending'),
-        apiService.getForecastV2GovernanceLog(),
-        apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
-        apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-        apiService.getForecastV2RunDelta(activePl, activeGeo),
-      ]);
-      if (wk.status === 'fulfilled') {
-        setWeekly(wk.value?.rows ?? []);
-        setWeeklyKpis(wk.value?.kpis ?? null);
-        setSource(wk.value?.source ?? null);
-        if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
-          setError(`Forecast data fallback: ${wk.value.error}`);
-        }
-      }
-      if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
-      if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
-      if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
-      if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
-      if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
-      if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
-      if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
-      if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
-      if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
-      if (radar.status === 'fulfilled') setRiskRadar(radar.value?.items ?? []);
-      if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
-      if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
-      if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
-      if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
-      if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
-      if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+  const fetchOverviewData = useCallback(async () => {
+    const [wk, yt, modelsRes, fr, cb] = await Promise.allSettled([
+      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2Models(),
+      apiService.getForecastV2Freshness(),
+      apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
+    ]);
 
-      const firstReject = [wk, yt].find(r => r.status === 'rejected');
-      if (firstReject) {
-        setSource('demo');
-        setError(firstReject.reason?.message || 'Some endpoints failed to load');
+    if (wk.status === 'fulfilled') {
+      setWeekly(wk.value?.rows ?? []);
+      setWeeklyKpis(wk.value?.kpis ?? null);
+      setSource(wk.value?.source ?? null);
+      if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
+        setError(`Forecast data fallback: ${wk.value.error}`);
       }
+    }
+    if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
+    if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
+    if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
+    if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
+
+    const firstReject = [wk, yt].find((r) => r.status === 'rejected');
+    if (firstReject) {
+      setSource('demo');
+      setError(firstReject.reason?.message || 'Some endpoints failed to load');
+    }
+  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
+
+  const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
+    if (tabLoadInFlightRef.current.has(targetTab)) return;
+    if (!force && loadedTabsRef.current.has(targetTab)) return;
+
+    tabLoadInFlightRef.current.add(targetTab);
+    setLoading(true);
+    setError(null);
+    try {
+      if (targetTab === 'Overview') {
+        await fetchOverviewData();
+      } else if (targetTab === 'Multi-Year') {
+        const [hs] = await Promise.allSettled([
+          apiService.getForecastV2Historical(null, activePl, activeGeo),
+        ]);
+        if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
+      } else if (targetTab === 'By Product') {
+        const [bp] = await Promise.allSettled([
+          apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+        ]);
+        if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
+      } else if (targetTab === 'Monthly') {
+        const [mo] = await Promise.allSettled([
+          apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+        ]);
+        if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
+      } else if (targetTab === 'Accuracy') {
+        const [lb, bt] = await Promise.allSettled([
+          apiService.getForecastV2Leaderboard(),
+          apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
+        ]);
+        if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
+        if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
+      } else if (targetTab === 'Exec Mode') {
+        const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
+          apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
+          apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
+          apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
+          apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
+          apiService.getActions('pending'),
+          apiService.getForecastV2GovernanceLog(),
+          apiService.getForecastV2RunDelta(activePl, activeGeo),
+        ]);
+        if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
+        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
+        if (radar.status === 'fulfilled') setRiskRadar(radar.value?.items ?? []);
+        if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
+        if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
+        if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
+        if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+      }
+
+      loadedTabsRef.current.add(targetTab);
+      setLoadedTabs(new Set(loadedTabsRef.current));
     } catch (e) {
       setError(e.message);
     } finally {
+      tabLoadInFlightRef.current.delete(targetTab);
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
+  }, [
+    model,
+    fcType,
+    activePl,
+    activeGeo,
+    selectedYear,
+    selectedQuarter,
+    fetchOverviewData,
+  ]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    fetchTabData(tab);
+  }, [tab, fetchTabData]);
+
+  useEffect(() => {
+    if (!hasHydratedFiltersRef.current) {
+      hasHydratedFiltersRef.current = true;
+      return;
+    }
+    loadedTabsRef.current = new Set();
+    setLoadedTabs(new Set());
+    const timer = setTimeout(() => {
+      fetchTabData(tab, { force: true });
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter, fetchTabData]);
+
+  const refreshCurrentTab = useCallback(() => {
+    fetchTabData(tab, { force: true });
+  }, [tab, fetchTabData]);
 
   const activeModelMeta = useMemo(() => (
     (modelRegistry || []).find((entry) => entry.key === model) || null
@@ -1639,7 +1700,7 @@ const ForecastingPanel = () => {
             {activeModelDisplay} · Growth ARR
           </div>
         </div>
-        <button onClick={fetchAll} disabled={loading}
+        <button onClick={refreshCurrentTab} disabled={loading}
           style={{ padding: '5px 14px', borderRadius: 8, fontSize: 11, fontWeight: 600,
                    background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)',
                    color: '#3b82f6', cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.5 : 1 }}>
