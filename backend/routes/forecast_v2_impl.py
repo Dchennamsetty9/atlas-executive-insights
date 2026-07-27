@@ -37,9 +37,11 @@ GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
 LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "arr_forecast_v2_leaderboard")
 INSIGHTS_TABLE_NAME = os.getenv("FORECAST_V2_INSIGHTS_TABLE", "arr_forecast_insights")
+ACCURACY_HISTORY_TABLE_NAME = os.getenv("FORECAST_V2_ACCURACY_HISTORY_TABLE", "ucc_forecast_accuracy_history")
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{FC_TABLE_NAME}`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{LB_TABLE_NAME}`"
 INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{INSIGHTS_TABLE_NAME}`"
+ACCURACY_HISTORY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{ACCURACY_HISTORY_TABLE_NAME}`"
 # V5 notebook outputs (UCC Forecast Foundation V5 + ITSG Growth ARR V5).
 # APP_TABLE is the unified app-facing table both notebooks are designed to write,
 # partitioned by product_group and refreshed each weekly run (run_date_utc).
@@ -122,7 +124,9 @@ def _live() -> bool:
 
 def _live_mode_dependency() -> bool:
     """Dependency wrapper so route handlers don't call _live() directly."""
-    return _live()
+    from routes import forecast_v2 as forecast_v2_pkg
+
+    return forecast_v2_pkg._live()
 
 
 def _cache_key(endpoint: str, sql: str, **params: Any) -> str:
@@ -135,8 +139,10 @@ def _cache_key(endpoint: str, sql: str, **params: Any) -> str:
 
 async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str, Any]]:
     """Small in-process TTL cache for repeated identical read queries."""
+    from routes import forecast_v2 as forecast_v2_pkg
+
     if CACHE_TTL_SECONDS <= 0:
-        return await asyncio.to_thread(execute_query, sql)
+        return await asyncio.to_thread(forecast_v2_pkg.execute_query, sql)
 
     key = _cache_key(endpoint, sql, **params)
     now = time.time()
@@ -148,7 +154,7 @@ async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str
     if hit and (now - hit[0]) < CACHE_TTL_SECONDS:
         return hit[1]
 
-    rows = await asyncio.to_thread(execute_query, sql)
+    rows = await asyncio.to_thread(forecast_v2_pkg.execute_query, sql)
     _QUERY_CACHE[key] = (now, rows)
     return rows
 
@@ -426,6 +432,154 @@ def _pick_lb_column(columns: set[str], *candidates: str) -> str:
         if c and c.lower() in columns:
             return c
     return "NULL"
+
+
+def _pick_column(columns: set[str], *candidates: str) -> Optional[str]:
+    for c in candidates:
+        if c and c.lower() in columns:
+            return c
+    return None
+
+
+async def _table_columns(table_name_sql: str, endpoint: str) -> set[str]:
+    sql = f"""
+    SHOW COLUMNS IN {table_name_sql}
+    """
+    try:
+        rows = await _cached_query(sql, endpoint=endpoint)
+    except Exception as exc:
+        logger.warning("[forecast/table-columns] schema introspection failed for %s: %s", table_name_sql, exc)
+        return set()
+
+    return {
+        str(r.get("col_name") or r.get("column_name") or "").strip().lower()
+        for r in rows
+        if str(r.get("col_name") or r.get("column_name") or "").strip()
+    }
+
+
+def _model_aliases(model: str) -> list[str]:
+    key = (model or "").strip().lower()
+    aliases = {
+        "ensemble": ["ensemble", "adaptive_ensemble", "most_likely"],
+        "prophet": ["prophet", "prophet_trend"],
+        "ets": ["ets"],
+        "lightgbm": ["lightgbm", "lgbm"],
+        "mstl_v2": ["mstl_v2", "mstl"],
+        "dhr_arima": ["dhr_arima", "dhr-arima", "arima"],
+    }
+    return aliases.get(key, [key])
+
+
+async def _backtest_rows_from_accuracy_history(
+    horizon_weeks: int,
+    model: str,
+    product: Optional[str],
+    product_line: Optional[str],
+    sales_market: Optional[str],
+) -> list[Dict[str, Any]]:
+    cols = await _table_columns(ACCURACY_HISTORY_TABLE, endpoint="/backtest/accuracy-history/columns")
+    if not cols:
+        return []
+
+    ds_col = _pick_column(cols, "ds", "week_start", "week_date", "forecast_week", "target_week", "actual_week")
+    run_col = _pick_column(cols, "run_date", "forecast_run_date", "created_at", "generated_at")
+    pred_col = _pick_column(cols, "predicted", "predicted_value", "forecast", "forecast_value", "p50", "most_likely", "yhat")
+    actual_col = _pick_column(cols, "actual", "actuals", "actual_value", "arr_actual")
+    low_col = _pick_column(cols, "worst", "p10", "lower", "lower_bound", "forecast_p10")
+    high_col = _pick_column(cols, "best", "p90", "upper", "upper_bound", "forecast_p90")
+    wape_col = _pick_column(cols, "wape", "wape_pct", "mape", "mape_pct")
+    horizon_col = _pick_column(cols, "horizon_weeks", "weeks_ahead", "horizon", "lead_weeks", "forecast_horizon_weeks")
+    product_col = _pick_column(cols, "product", "product_line", "product_group")
+    market_col = _pick_column(cols, "sales_market", "market", "geo", "region")
+    model_col = _pick_column(cols, "model", "model_name")
+
+    if not ds_col or not pred_col or not actual_col:
+        return []
+
+    def q(name: str) -> str:
+        return f"`{name}`"
+
+    pred_expr = f"CAST({q(pred_col)} AS DOUBLE)"
+    actual_expr = f"CAST({q(actual_col)} AS DOUBLE)"
+
+    if low_col and high_col:
+        low_expr = f"CAST({q(low_col)} AS DOUBLE)"
+        high_expr = f"CAST({q(high_col)} AS DOUBLE)"
+    elif wape_col:
+        wape_frac = f"CASE WHEN ABS(CAST({q(wape_col)} AS DOUBLE)) <= 1 THEN ABS(CAST({q(wape_col)} AS DOUBLE)) ELSE ABS(CAST({q(wape_col)} AS DOUBLE))/100 END"
+        low_expr = f"({pred_expr}) * (1 - {wape_frac})"
+        high_expr = f"({pred_expr}) * (1 + {wape_frac})"
+    else:
+        low_expr = f"({pred_expr}) * 0.92"
+        high_expr = f"({pred_expr}) * 1.08"
+
+    where_parts = [f"COALESCE({actual_expr}, 0) > 0"]
+
+    if horizon_col:
+        where_parts.append(f"CAST({q(horizon_col)} AS INT) = {int(horizon_weeks)}")
+
+    effective_product = _selected_product(product, product_line)
+    if product_col and effective_product != "Total":
+        escaped = effective_product.replace("'", "''")
+        where_parts.append(f"UPPER(TRIM(CAST({q(product_col)} AS STRING))) = UPPER('{escaped}')")
+
+    effective_geo = _normalize_market_value(sales_market)
+    if market_col and effective_geo != "Total":
+        escaped_geo = effective_geo.replace("'", "''")
+        where_parts.append(
+            f"CASE WHEN UPPER(TRIM(CAST({q(market_col)} AS STRING))) = 'UNKNOWN' THEN 'Unknown' ELSE TRIM(CAST({q(market_col)} AS STRING)) END = '{escaped_geo}'"
+        )
+
+    if model_col:
+        aliases = _model_aliases(model)
+        alias_list = ", ".join(f"'{a.replace("'", "''")}'" for a in aliases)
+        where_parts.append(f"LOWER(TRIM(CAST({q(model_col)} AS STRING))) IN ({alias_list})")
+
+    run_expr = f"CAST({q(run_col)} AS STRING)" if run_col else "NULL"
+
+    sql = f"""
+        SELECT
+            CAST(CAST({q(ds_col)} AS DATE) AS STRING) AS ds,
+            {run_expr} AS run_date,
+            {pred_expr} AS predicted,
+            {low_expr} AS worst,
+            {high_expr} AS best,
+            {actual_expr} AS actual
+        FROM {ACCURACY_HISTORY_TABLE}
+        WHERE {' AND '.join(where_parts)}
+        ORDER BY CAST({q(ds_col)} AS DATE)
+        LIMIT 104
+    """
+
+    try:
+        rows_raw = await _cached_query(
+            sql,
+            endpoint="/backtest/accuracy-history",
+            model=model,
+            forecast_type="rolling",
+            product=_selected_product(product, product_line),
+            geo=_normalize_market_value(sales_market),
+            year=None,
+            quarter=None,
+            horizon_weeks=horizon_weeks,
+        )
+    except Exception as exc:
+        logger.warning("[forecast/backtest] accuracy-history fallback failed: %s", exc)
+        return []
+
+    return [
+        {
+            "ds": r.get("ds"),
+            "run_date": r.get("run_date"),
+            "predicted": _f(r.get("predicted")),
+            "worst": _f(r.get("worst")),
+            "best": _f(r.get("best")),
+            "actual": _f(r.get("actual")),
+        }
+        for r in (rows_raw or [])
+        if r.get("ds")
+    ]
 
 
 class GovernanceLogRequest(BaseModel):
@@ -1249,8 +1403,25 @@ async def get_backtest(
         }
         for r in (rows_raw or [])
     ]
-    return {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
-            "rows": rows, "summary": _backtest_summary(rows)}
+
+    source_detail = None
+    if not rows:
+        fallback_rows = await _backtest_rows_from_accuracy_history(
+            horizon_weeks=horizon_weeks,
+            model=model,
+            product=product,
+            product_line=product_line,
+            sales_market=sales_market,
+        )
+        if fallback_rows:
+            rows = fallback_rows
+            source_detail = ACCURACY_HISTORY_TABLE_NAME
+
+    response = {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
+                "rows": rows, "summary": _backtest_summary(rows)}
+    if source_detail:
+        response["source_detail"] = source_detail
+    return response
 
 
 # ── GET /run-delta ──────────────────────────────────────────────────────────────
