@@ -533,7 +533,7 @@ async def _backtest_rows_from_accuracy_history(
 
     if model_col:
         aliases = _model_aliases(model)
-        alias_list = ", ".join(f"'{a.replace("'", "''")}'" for a in aliases)
+        alias_list = ", ".join("'" + a.replace("'", "''") + "'" for a in aliases)
         where_parts.append(f"LOWER(TRIM(CAST({q(model_col)} AS STRING))) IN ({alias_list})")
 
     run_expr = f"CAST({q(run_col)} AS STRING)" if run_col else "NULL"
