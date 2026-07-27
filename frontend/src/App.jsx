@@ -258,19 +258,19 @@ function AppInner() {
               {soundEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
             </button>
 
-            {/* Theme toggle */}
+            {/* Theme lock (dark mode only) */}
             <button
-              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              onClick={() => setTheme('dark')}
+              title="Dark mode is locked"
               style={{
                 background: 'transparent', border: 'none',
-                color: theme === 'dark' ? '#f59e0b' : '#334155',
+                color: '#f59e0b',
                 width: 28, height: 28, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 borderRadius: 6, transition: 'color 0.15s',
               }}
             >
-              {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+              <Moon size={13} />
             </button>
 
             {/* Status dot */}
