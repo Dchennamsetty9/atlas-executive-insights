@@ -729,15 +729,17 @@ async def get_weekly(
                     ORDER BY ds
                 """
         else:
-            # Full year: include both (original logic)
+            # Full year: prevent double-counting by splitting on temporal boundary
+            # Use actuals for past/present, forecasts for future
+            today_str = datetime.date.today().isoformat()
             kpi_sql = f"""
                 SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
                 FROM {FC_TABLE}
                 WHERE {_latest_run()}
                                 {_product_filter(product, product_line)} {_geo_filter(sales_market)}
                   AND (
-                        ({_actuals_year_filter(year)})
-                        OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter})
+                        (forecast_type = 'actuals' AND YEAR(ds) = {year})
+                        OR (forecast_type IN ('rolling', 'roy') AND YEAR(ds) = {year} AND CAST(ds AS DATE) > CAST('{today_str}' AS DATE))
                       )
                 ORDER BY ds
             """
@@ -2044,11 +2046,12 @@ async def get_driver_bridge(
     model_key = _validate_model(model or "ensemble")
     source = _model_source(model_key)
     value_col = source["most_likely_col"]
+    today_str = datetime.date.today().isoformat()
     try:
         rows = await _cached_query(f"""
             SELECT
                 SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_total,
-                SUM(CASE WHEN forecast_type IN ('rolling','roy') THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_total
+                SUM(CASE WHEN forecast_type IN ('rolling','roy') AND CAST(ds AS DATE) > CAST('{today_str}' AS DATE) THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_total
             FROM {FC_TABLE}
             WHERE {_latest_run()} AND {date_filter}
               AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
