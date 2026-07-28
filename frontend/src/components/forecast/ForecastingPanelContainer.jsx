@@ -367,7 +367,12 @@ const ForecastingPanelContainer = () => {
           </Suspense>
         </TabErrorBoundary>
       </div>
-      <style>{`@keyframes fp-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }`}</style>
+      <style>{`
+        @keyframes fp-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+        select { appearance: none; background-color: rgba(15, 23, 42, 0.8) !important; color: #f1f5f9 !important; }
+        select option { background-color: #0f172a !important; color: #f1f5f9 !important; }
+        select option:checked { background: linear-gradient(#3b82f6, #3b82f6) !important; background-color: #3b82f6 !important; color: #ffffff !important; }
+      `}</style>
     </div>
   );
 };
