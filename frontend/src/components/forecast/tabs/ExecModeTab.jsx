@@ -25,6 +25,7 @@ const ExecModeTab = ({
   setDecisionDraft,
   submitDecisionLog,
   governanceLog,
+  runDate,
 }) => {
   const heroLikely = weeklyKpis?.most_likely ?? confidenceBands?.most_likely ?? 0;
   const p10Floor = confidenceBands?.p10 ?? weeklyKpis?.worst_case ?? 0;
@@ -35,7 +36,7 @@ const ExecModeTab = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <CardWrap>
+      <CardWrap downloadName="executive_board_narrative">
         <SectionTitle>Executive Board Narrative</SectionTitle>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
           <div style={{ padding: '12px 14px', borderRadius: 10, background: 'linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.04))', border: '1px solid rgba(59,130,246,0.32)' }}>
@@ -63,7 +64,7 @@ const ExecModeTab = ({
         </div>
       </CardWrap>
 
-      <CardWrap>
+      <CardWrap downloadName="prediction_interval_fan">
         <SectionTitle>Prediction Interval Fan — Source Model P10 / P50 / P90</SectionTitle>
         {(() => {
           const cb = confidenceBands;
@@ -105,21 +106,21 @@ const ExecModeTab = ({
       </CardWrap>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-        <CardWrap>
+        <CardWrap downloadName="forecast_confidence_score">
           <SectionTitle>Forecast Confidence Score</SectionTitle>
           <div style={{ fontSize: 30, fontWeight: 800, color: confidence?.confidence_score >= 85 ? '#10b981' : confidence?.confidence_score >= 65 ? '#f59e0b' : '#ef4444' }}>{confidence?.confidence_score ?? '—'}</div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{confidence?.confidence_label || 'Unknown'} confidence</div>
           <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>{(confidence?.reasons || []).slice(0, 3).map((r, i) => <div key={i} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>• {r}</div>)}</div>
         </CardWrap>
 
-        <CardWrap>
+        <CardWrap downloadName="meeting_snapshot">
           <SectionTitle>Meeting Snapshot</SectionTitle>
           <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Top Moves This Quarter</div>
           {(meetingMode?.top_moves || []).slice(0, 3).map((m, i) => <div key={i} style={{ fontSize: 11, color: '#e2e8f0', marginBottom: 6, lineHeight: 1.5 }}>{i + 1}. {m}</div>)}
         </CardWrap>
       </div>
 
-      <CardWrap>
+      <CardWrap downloadName="driver_bridge">
         <SectionTitle>Driver Bridge (Plan vs Actual)
           <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
         </SectionTitle>
@@ -143,7 +144,7 @@ const ExecModeTab = ({
         </div>
       </CardWrap>
 
-      <CardWrap>
+      <CardWrap downloadName="pipeline_sensitivity_simulator">
         <SectionTitle>Pipeline Sensitivity Simulator</SectionTitle>
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Adjusts pipeline conversion factors relative to baseline — not a direct ARR override. Use as directional sensitivity, not a forecast number.</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
@@ -159,7 +160,7 @@ const ExecModeTab = ({
         </div>
       </CardWrap>
 
-      <CardWrap>
+      <CardWrap downloadName="at_risk_arr_radar">
         <SectionTitle>At-Risk ARR Radar (Top 20)</SectionTitle>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -169,7 +170,7 @@ const ExecModeTab = ({
         </div>
       </CardWrap>
 
-      <CardWrap>
+      <CardWrap downloadName="action_command_center">
         <SectionTitle>Action Command Center</SectionTitle>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 10 }}>
           <input value={actionDraft.text} onChange={(e) => setActionDraft((d) => ({ ...d, text: e.target.value }))} placeholder="Action item" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />
@@ -184,7 +185,7 @@ const ExecModeTab = ({
         </div>
       </CardWrap>
 
-      <CardWrap>
+      <CardWrap downloadName="governance_audit_trail">
         <SectionTitle>Forecast Governance and Audit Trail</SectionTitle>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 2fr auto', gap: 8, marginBottom: 10 }}>
           <input value={decisionDraft.decision} onChange={(e) => setDecisionDraft((d) => ({ ...d, decision: e.target.value }))} placeholder="Decision / override" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', color: '#e2e8f0', borderRadius: 6, padding: '6px 8px', fontSize: 11 }} />

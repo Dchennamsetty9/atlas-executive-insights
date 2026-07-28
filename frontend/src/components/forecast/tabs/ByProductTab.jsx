@@ -2,7 +2,7 @@ import GeoBarChart from '../charts/GeoBarChart';
 import { CardWrap, EmptyState, GraphInsight, SectionTitle, Skeleton, fmtM, mapeColor } from '../common';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
-const ByProductTab = ({ loading, byProductView, graphInsights }) => {
+const ByProductTab = ({ loading, byProductView, graphInsights, runDate }) => {
   const products = byProductView?.by_product || [];
   const ranked = [...products]
     .map((p) => {
@@ -33,7 +33,7 @@ const ByProductTab = ({ loading, byProductView, graphInsights }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <CardWrap downloadName="forecast_by_product">
-        <SectionTitle>Product Trajectories (Small Multiples)</SectionTitle>
+        <SectionTitle>Product Trajectories (Small Multiples) {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
         <GraphInsight summary={graphInsights.byProduct} chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo" dataPoints={byProductView?.by_product} />
         {loading ? <Skeleton height={200} /> : !byProductView ? <EmptyState /> : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
@@ -59,7 +59,7 @@ const ByProductTab = ({ loading, byProductView, graphInsights }) => {
 
       {!loading && byProductView?.by_product && (
         <CardWrap>
-          <SectionTitle>Attainment Gap Ranking</SectionTitle>
+          <SectionTitle>Attainment Gap Ranking {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
@@ -95,7 +95,7 @@ const ByProductTab = ({ loading, byProductView, graphInsights }) => {
 
       {!loading && byProductView?.by_geo?.length > 0 && (
         <CardWrap downloadName="forecast_by_geography">
-          <SectionTitle>Forecast by Geography</SectionTitle>
+          <SectionTitle>Forecast by Geography {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
           <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
             <span><span style={{ color: '#ffffff' }}>■</span> Most Likely</span>

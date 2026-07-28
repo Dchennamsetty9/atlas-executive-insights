@@ -2,7 +2,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import MultiYearChart from '../charts/MultiYearChart';
 import { CardWrap, EmptyState, GraphInsight, SectionTitle, Skeleton, YEAR_COLORS, DarkTip, fmtM } from '../common';
 
-const MultiYearTab = ({ loading, historicalView, graphInsights, multiYearView, setMultiYearView, pill }) => {
+const MultiYearTab = ({ loading, historicalView, graphInsights, multiYearView, setMultiYearView, pill, runDate }) => {
   const latestYear = Math.max(...(historicalView || []).map((r) => Number(r.year || 0)));
   const priorYear = latestYear - 1;
   const latestWeek = Math.max(...(historicalView || []).filter((r) => Number(r.year) === latestYear).map((r) => Number(r.iso_week || 0)));
@@ -24,7 +24,7 @@ const MultiYearTab = ({ loading, historicalView, graphInsights, multiYearView, s
 
       {multiYearView === 'overlay' && (
         <CardWrap downloadName="historical_seasonality">
-          <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+          <SectionTitle>Historical Seasonality — by ISO Week (1–52) {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
           <GraphInsight summary={graphInsights.seasonality} chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years" dataPoints={historicalView} />
           <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {[...new Set((historicalView || []).map((r) => r.year))].sort().map((yr) => <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>)}
@@ -35,7 +35,7 @@ const MultiYearTab = ({ loading, historicalView, graphInsights, multiYearView, s
 
       {multiYearView === 'timeline' && (
         <CardWrap downloadName="historical_trend_timeline">
-          <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
+          <SectionTitle>Historical Weekly Trend — Timeline {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
           <GraphInsight summary={graphInsights.trend} />
           {loading ? <Skeleton height={260} /> : (
             <ResponsiveContainer width="100%" height={260}>

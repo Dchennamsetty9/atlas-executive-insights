@@ -300,14 +300,14 @@ const ForecastingPanelContainer = () => {
 
   const renderTab = () => {
     switch (tab) {
-      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} />;
-      case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} />;
-      case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} />;
-      case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} />;
-      case 'Accuracy': return <AccuracyTab loading={loading} leaderboardView={leaderboardView} graphInsights={graphInsights} model={model} prodLine={prodLine} salesMarket={salesMarket} />;
+      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} runDate={freshnessStamp} />;
+      case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Accuracy': return <AccuracyTab loading={loading} leaderboardView={leaderboardView} graphInsights={graphInsights} model={model} prodLine={prodLine} salesMarket={salesMarket} runDate={freshnessStamp} />;
       case 'Model Lab': return <ModelLabTab prodLine={prodLine} salesMarket={salesMarket} />;
       case 'AI Insights': return <AiInsightsTab />;
-      case 'Exec Mode': return <ExecModeTab confidenceBands={confidenceBands} weeklyKpis={weeklyKpis} confidence={confidence} meetingMode={meetingMode} driverBridge={driverBridge} simWinRate={simWinRate} setSimWinRate={setSimWinRate} simCycle={simCycle} setSimCycle={setSimCycle} simDealSize={simDealSize} setSimDealSize={setSimDealSize} simCoverage={simCoverage} setSimCoverage={setSimCoverage} simulatedScenario={simulatedScenario} riskRadar={riskRadar} actionDraft={actionDraft} setActionDraft={setActionDraft} submitAction={submitAction} actions={actions} markActionDone={markActionDone} decisionDraft={decisionDraft} setDecisionDraft={setDecisionDraft} submitDecisionLog={submitDecisionLog} governanceLog={governanceLog} />;
+      case 'Exec Mode': return <ExecModeTab confidenceBands={confidenceBands} weeklyKpis={weeklyKpis} confidence={confidence} meetingMode={meetingMode} driverBridge={driverBridge} simWinRate={simWinRate} setSimWinRate={setSimWinRate} simCycle={simCycle} setSimCycle={setSimCycle} simDealSize={simDealSize} setSimDealSize={setSimDealSize} simCoverage={simCoverage} setSimCoverage={setSimCoverage} simulatedScenario={simulatedScenario} riskRadar={riskRadar} actionDraft={actionDraft} setActionDraft={setActionDraft} submitAction={submitAction} actions={actions} markActionDone={markActionDone} decisionDraft={decisionDraft} setDecisionDraft={setDecisionDraft} submitDecisionLog={submitDecisionLog} governanceLog={governanceLog} runDate={freshnessStamp} />;
       default: return null;
     }
   };
@@ -336,9 +336,9 @@ const ForecastingPanelContainer = () => {
               <span style={{ color: freshnessState === 'live' ? '#6ee7b7' : freshnessState === 'demo' ? '#fcd34d' : '#94a3b8' }}>{freshnessState === 'live' ? 'Shared live snapshot applied across all tabs' : freshnessState === 'demo' ? 'Demo fallback snapshot applied across all tabs' : 'Awaiting live snapshot metadata across all tabs'}</span>
             </div>
             {isStale && freshnessState === 'live' && (
-              <div style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 14 }}>⚠️</span>
-                <span><b>Data is stale.</b> Forecast last ran {staleness?.value} {staleness?.unit}{staleness?.plural} ago. Expected weekly update: Monday 03:00 UTC</span>
+              <div style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ fontSize: 14 }}>⚠️</span><span><b>Data is stale.</b> Forecast last ran {staleness?.value} {staleness?.unit}{staleness?.plural} ago. Expected weekly update: Monday 03:00 UTC</span></span>
+                <button onClick={refreshCurrentTab} disabled={loading} style={{ padding: '4px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5', cursor: loading ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>{loading ? 'Refreshing…' : 'Refresh now'}</button>
               </div>
             )}
           </>

@@ -13,6 +13,7 @@ const OverviewTab = ({
   trust,
   isDemo,
   graphInsights,
+  runDate,
 }) => {
   const todayIso = new Date().toISOString().slice(0, 10);
   const qtdRows = (weeklyView || []).filter((r) => r.date <= todayIso);
@@ -73,7 +74,7 @@ const OverviewTab = ({
           </div>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
+          <SectionTitle>Weekly Forecast vs Actuals {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
           {(() => {
             const cov = trust?.summary?.coverage_pct;
             const n = trust?.summary?.weeks_scored;
@@ -95,7 +96,7 @@ const OverviewTab = ({
       </CardWrap>
 
       <CardWrap downloadName="ytd_cumulative">
-        <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
+        <SectionTitle>Running Totals — YTD Cumulative {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
         <GraphInsight summary={graphInsights.ytd} chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path" dataPoints={ytdView} />
         {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
       </CardWrap>

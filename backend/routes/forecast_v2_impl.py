@@ -699,17 +699,49 @@ async def get_weekly(
     try:
         key_product = _selected_product(product, product_line)
         key_geo = _normalize_market_value(sales_market)
-        kpi_sql = f"""
-            SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
-            FROM {FC_TABLE}
-            WHERE {_latest_run()}
+        
+        # FIX: Prevent double-counting in quarterly view
+        # When filtering by quarter, determine if it's historical or future
+        # and select ONLY actuals (past) or ONLY forecasts (future) — not both
+        if quarter is not None:
+            today = datetime.date.today()
+            current_quarter = ((today.month - 1) // 3) + 1
+            is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
+            
+            # Past quarter: show actuals only
+            # Future quarter: show forecasts only
+            if is_past_quarter:
+                kpi_sql = f"""
+                    SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                    FROM {FC_TABLE}
+                    WHERE {_latest_run()}
                             {_product_filter(product, product_line)} {_geo_filter(sales_market)}
-              AND (
-                    ({_actuals_year_filter(year)} {f"AND {_quarter_filter(quarter, year)}" if quarter else ""})
-                    OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter})
-                  )
-            ORDER BY ds
-        """
+                      AND forecast_type = 'actuals' AND {qtr_filter}
+                    ORDER BY ds
+                """
+            else:
+                kpi_sql = f"""
+                    SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                    FROM {FC_TABLE}
+                    WHERE {_latest_run()}
+                            {_product_filter(product, product_line)} {_geo_filter(sales_market)}
+                      AND forecast_type IN ('rolling', 'roy') AND {qtr_filter}
+                    ORDER BY ds
+                """
+        else:
+            # Full year: include both (original logic)
+            kpi_sql = f"""
+                SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                FROM {FC_TABLE}
+                WHERE {_latest_run()}
+                                {_product_filter(product, product_line)} {_geo_filter(sales_market)}
+                  AND (
+                        ({_actuals_year_filter(year)})
+                        OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter})
+                      )
+                ORDER BY ds
+            """
+        
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
             _cached_query(_normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
             _cached_query(_normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
@@ -782,47 +814,75 @@ async def get_monthly(
     qf = _quarter_filter(quarter, year) if quarter else ""
     date_filter = f"AND {qf}" if qf else f"AND {yf}"
 
-    act_sql = f"""
-        SELECT
-            year(ds)                     AS yr,
-            quarter(ds)                  AS qtr,
-            month(ds)                    AS mth,
-            date_format(ds, 'MMMM')      AS month_name,
-            SUM(Actuals)                 AS arr_actual
-        FROM {FC_TABLE}
-        WHERE forecast_type = 'actuals'
-          AND {_latest_run()}
-          {pf} {gf}
-          {date_filter}
-        GROUP BY yr, qtr, mth, month_name
-        ORDER BY yr, mth
-    """
+    # FIX: Prevent double-counting in quarterly view
+    # When filtering by quarter, determine if it's historical or future
+    include_actuals = True
+    include_forecasts = True
+    if quarter is not None:
+        today = datetime.date.today()
+        current_quarter = ((today.month - 1) // 3) + 1
+        is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
+        if is_past_quarter:
+            include_forecasts = False  # Past quarter: show actuals only
+        else:
+            include_actuals = False  # Future quarter: show forecasts only
 
-    fc_sql = f"""
-        SELECT
-            year(ds)                     AS yr,
-            quarter(ds)                  AS qtr,
-            month(ds)                    AS mth,
-            date_format(ds, 'MMMM')      AS month_name,
-            SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
-            SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
-        FROM {FC_TABLE}
-        WHERE forecast_type = '{eff_forecast_type}'
-          AND {_latest_run()}
-          {pf} {gf}
-          {date_filter}
-        GROUP BY yr, qtr, mth, month_name
-        ORDER BY yr, mth
-    """
+    act_sql = None
+    if include_actuals:
+        act_sql = f"""
+            SELECT
+                year(ds)                     AS yr,
+                quarter(ds)                  AS qtr,
+                month(ds)                    AS mth,
+                date_format(ds, 'MMMM')      AS month_name,
+                SUM(Actuals)                 AS arr_actual
+            FROM {FC_TABLE}
+            WHERE forecast_type = 'actuals'
+              AND {_latest_run()}
+              {pf} {gf}
+              {date_filter}
+            GROUP BY yr, qtr, mth, month_name
+            ORDER BY yr, mth
+        """
+
+    fc_sql = None
+    if include_forecasts:
+        fc_sql = f"""
+            SELECT
+                year(ds)                     AS yr,
+                quarter(ds)                  AS qtr,
+                month(ds)                    AS mth,
+                date_format(ds, 'MMMM')      AS month_name,
+                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
+                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
+            FROM {FC_TABLE}
+            WHERE forecast_type = '{eff_forecast_type}'
+              AND {_latest_run()}
+              {pf} {gf}
+              {date_filter}
+            GROUP BY yr, qtr, mth, month_name
+            ORDER BY yr, mth
+        """
 
     try:
         key_product = _selected_product(product, product_line)
         key_geo = _normalize_market_value(sales_market)
-        act_rows, fc_rows = await asyncio.gather(
-            _cached_query(act_sql, endpoint="/monthly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
-            _cached_query(fc_sql, endpoint="/monthly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
-        )
+        
+        tasks = []
+        if act_sql:
+            tasks.append(_cached_query(act_sql, endpoint="/monthly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter))
+        else:
+            tasks.append(None)
+        
+        if fc_sql:
+            tasks.append(_cached_query(fc_sql, endpoint="/monthly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter))
+        else:
+            tasks.append(None)
+        
+        results = await asyncio.gather(*tasks)
+        act_rows = results[0] if include_actuals else []
+        fc_rows = results[1] if include_forecasts else []
     except Exception as exc:
         logger.warning("[forecast/monthly] query failed: %s", exc)
         return _demo("months", error=str(exc))
@@ -885,36 +945,63 @@ async def get_ytd(
     qf   = _quarter_filter(quarter, year) if quarter else ""
     date_filter = f"AND {qf}" if qf else f"AND {yf}"
 
-    act_sql = f"""
-        SELECT CAST(ds AS STRING) AS d, SUM(Actuals) AS arr
-        FROM {FC_TABLE}
-        WHERE forecast_type = 'actuals'
-          {date_filter}
-          AND {_latest_run()}
-          {pf} {gf}
-        GROUP BY ds ORDER BY ds
-    """
+    # FIX: Prevent double-counting in quarterly view
+    include_actuals = True
+    include_forecasts = True
+    if quarter is not None:
+        today = datetime.date.today()
+        current_quarter = ((today.month - 1) // 3) + 1
+        is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
+        if is_past_quarter:
+            include_forecasts = False  # Past quarter: show actuals only
+        else:
+            include_actuals = False  # Future quarter: show forecasts only
 
-    fc_sql = f"""
-        SELECT CAST(ds AS STRING) AS d,
-             SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,
-             SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
-             SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
-        FROM {FC_TABLE}
-         WHERE forecast_type = '{eff_forecast_type}'
-          {date_filter}
-          AND {_latest_run()}
-          {pf} {gf}
-        GROUP BY ds ORDER BY ds
-    """
+    act_sql = None
+    if include_actuals:
+        act_sql = f"""
+            SELECT CAST(ds AS STRING) AS d, SUM(Actuals) AS arr
+            FROM {FC_TABLE}
+            WHERE forecast_type = 'actuals'
+              {date_filter}
+              AND {_latest_run()}
+              {pf} {gf}
+            GROUP BY ds ORDER BY ds
+        """
+
+    fc_sql = None
+    if include_forecasts:
+        fc_sql = f"""
+            SELECT CAST(ds AS STRING) AS d,
+                 SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,
+                 SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
+                 SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
+            FROM {FC_TABLE}
+             WHERE forecast_type = '{eff_forecast_type}'
+              {date_filter}
+              AND {_latest_run()}
+              {pf} {gf}
+            GROUP BY ds ORDER BY ds
+        """
 
     try:
         key_product = _selected_product(product, product_line)
         key_geo = _normalize_market_value(sales_market)
-        act_rows, fc_rows = await asyncio.gather(
-            _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
-            _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
-        )
+        
+        tasks = []
+        if act_sql:
+            tasks.append(_cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter))
+        else:
+            tasks.append(None)
+        
+        if fc_sql:
+            tasks.append(_cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter))
+        else:
+            tasks.append(None)
+        
+        results = await asyncio.gather(*tasks)
+        act_rows = results[0] if include_actuals else []
+        fc_rows = results[1] if include_forecasts else []
     except Exception as exc:
         logger.warning("[forecast/ytd] query failed: %s", exc)
         return _demo("rows", error=str(exc))
@@ -971,6 +1058,15 @@ async def get_by_product(
     year = year if year else datetime.date.today().year
     qf   = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
 
+    # FIX: Prevent double-counting in quarterly view
+    use_forecast_type = True
+    if quarter is not None:
+        today = datetime.date.today()
+        current_quarter = ((today.month - 1) // 3) + 1
+        is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
+        if is_past_quarter:
+            use_forecast_type = False  # Past quarter: show actuals only
+
     try:
         lb_cols = await _lb_columns()
         mstl_col = _pick_lb_column(lb_cols, "mape_mstl_v2", "mape_chronos")
@@ -1004,8 +1100,12 @@ async def get_by_product(
 
     where_parts = []
     if source["has_forecast_type"]:
-        where_parts.append(f"forecast_type = '{eff_forecast_type}'")
-        where_parts.append(_latest_run())
+        if use_forecast_type:
+            where_parts.append(f"forecast_type = '{eff_forecast_type}'")
+            where_parts.append(_latest_run())
+        else:
+            where_parts.append("forecast_type = 'actuals'")
+            where_parts.append(_latest_run())
     else:
         where_parts.append("COALESCE(CAST(Actuals AS DOUBLE), 0) = 0")
     where_parts.append(qf)
