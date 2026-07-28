@@ -54,7 +54,13 @@ export const MODEL_LABELS = {
 
 export const formatModelLabel = (name) => MODEL_LABELS[name] || (name ? name.replace(/_/g, ' ') : 'Unknown');
 
-export const YEAR_COLORS = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
+// Dynamic year range: current year - 2 to current year + 1 (future-proof to 2027+)
+const currentYear = new Date().getFullYear();
+const yearRange = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
+const yearColorPalette = ['#64748b', '#06b6d4', '#3b82f6', '#f59e0b'];
+export const YEAR_COLORS = Object.fromEntries(
+  yearRange.map((year, idx) => [year, yearColorPalette[idx]])
+);
 export const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Mstl_v2: '#a78bfa', Dhr_arima: '#fb923c', Ensemble: '#00FF88' };
 export const MODEL_KEY_META = {
   ensemble: { label: 'Ensemble', color: '#00FF88' },
