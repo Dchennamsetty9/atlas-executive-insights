@@ -29,12 +29,23 @@ const NotificationBell = () => {
   const [testSending,   setTestSending]   = useState(false);
   const [testSent,      setTestSent]      = useState(false);
   const dropdownRef = useRef(null);
+  const notificationsEnabled = !['localhost', '127.0.0.1'].includes(window.location.hostname);
 
   // Poll unread count every 60s
   useEffect(() => {
+    if (!notificationsEnabled) {
+      setCount(0);
+      return undefined;
+    }
+
     const fetchCount = async () => {
       try {
         const res  = await fetch('/api/notifications/count');
+        if (!res.ok) {
+          setCount(0);
+          return;
+        }
+
         const data = await res.json();
         setCount(data.unread_count ?? 0);
       } catch { /* ignore */ }
@@ -42,7 +53,7 @@ const NotificationBell = () => {
     fetchCount();
     const id = setInterval(fetchCount, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [notificationsEnabled]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -57,9 +68,19 @@ const NotificationBell = () => {
   }, [open]);
 
   const loadNotifications = useCallback(async () => {
+    if (!notificationsEnabled) {
+      setNotifications([]);
+      return;
+    }
+
     setLoading(true);
     try {
       const res  = await fetch('/api/notifications?limit=20');
+      if (!res.ok) {
+        setNotifications([]);
+        return;
+      }
+
       const data = await res.json();
       setNotifications(data.notifications ?? []);
     } catch {
@@ -67,7 +88,7 @@ const NotificationBell = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [notificationsEnabled]);
 
   const handleOpen = () => {
     setOpen(o => {
@@ -89,6 +110,13 @@ const NotificationBell = () => {
   };
 
   const sendTest = async () => {
+    if (!notificationsEnabled) {
+      setTestSent(true);
+      setTestOpen(false);
+      setTimeout(() => setTestSent(false), 3000);
+      return;
+    }
+
     setTestSending(true);
     try {
       await fetch('/api/notifications/test', {
@@ -113,7 +141,7 @@ const NotificationBell = () => {
       {/* Bell button */}
       <button
         onClick={handleOpen}
-        title="Notifications"
+        title={notificationsEnabled ? 'Notifications' : 'Notifications unavailable in local mode'}
         style={{
           position: 'relative',
           background: open ? 'rgba(59,130,246,0.1)' : 'transparent',
