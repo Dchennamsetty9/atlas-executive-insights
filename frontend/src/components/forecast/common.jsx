@@ -18,6 +18,27 @@ export const fmtDate = (d) => {
   return `${dt.toLocaleString('default', { month: 'short' })} ${dt.getDate()}`;
 };
 
+export const calculateStaleness = (dateStr) => {
+  if (!dateStr) return null;
+  try {
+    const runDate = new Date(dateStr + 'T00:00:00Z');
+    const now = new Date();
+    const diffMs = now - runDate;
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    if (days > 0) return { value: days, unit: 'day', plural: days > 1 ? 's' : '', isStale: days > 7 };
+    return { value: Math.max(0, hours), unit: 'hour', plural: hours !== 1 ? 's' : '', isStale: hours > 48 };
+  } catch { return null; }
+};
+
+export const validateConfidenceBands = (lower, middle, upper) => {
+  if (lower == null || middle == null || upper == null) return { valid: true };
+  const l = Number(lower), m = Number(middle), u = Number(upper);
+  if (isNaN(l) || isNaN(m) || isNaN(u)) return { valid: false, error: 'Invalid numbers' };
+  if (!(l <= m && m <= u)) return { valid: false, error: `Bands out of order (${fmtM(l)} > ${fmtM(m)} > ${fmtM(u)})` };
+  return { valid: true };
+};
+
 export const mapeColor = (v) => (v < 15 ? '#10b981' : v < 25 ? '#f59e0b' : '#ef4444');
 
 export const MODEL_LABELS = {
@@ -87,6 +108,19 @@ export const DarkTip = ({ active, payload, label }) => {
 
 export const Skeleton = ({ height = 14 }) => (
   <div style={{ height, borderRadius: 6, background: 'rgba(255,255,255,0.06)', animation: 'fp-pulse 1.5s ease-in-out infinite', marginBottom: 8 }} />
+);
+
+export const TableSkeleton = () => (
+  <div style={{ padding: '16px' }}>
+    <Skeleton height={24} />
+    {[...Array(5)].map((_, i) => <Skeleton key={i} height={16} />)}
+  </div>
+);
+
+export const ChartSkeleton = ({ height = 300 }) => (
+  <div style={{ height, borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fp-pulse 1.5s ease-in-out infinite' }}>
+    <div style={{ color: '#475569', fontSize: 12 }}>Loading chart...</div>
+  </div>
 );
 
 export const EmptyState = ({ message = 'Awaiting next forecast run' }) => (

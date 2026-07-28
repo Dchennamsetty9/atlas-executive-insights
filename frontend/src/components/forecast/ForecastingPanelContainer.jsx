@@ -2,7 +2,7 @@ import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, use
 import { apiService } from '../../services/api';
 import { FC_TYPES, MODELS, MODEL_LB_KEY, MODEL_KEY_META, PROD_LINES, TABS } from './constants';
 import { buildDemoByProduct, buildDemoHistorical, buildDemoLeaderboard, buildDemoMonthly, buildDemoWeekly, buildDemoYtd } from './demoData';
-import { Skeleton, formatModelLabel, fmtDate, fmtM, mapeColor } from './common';
+import { Skeleton, formatModelLabel, fmtDate, fmtM, mapeColor, calculateStaleness } from './common';
 
 const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
 const MultiYearTab = lazy(() => import('./tabs/MultiYearTab'));
@@ -326,10 +326,24 @@ const ForecastingPanelContainer = () => {
         <button onClick={refreshCurrentTab} disabled={loading} style={{ padding: '5px 14px', borderRadius: 8, fontSize: 11, fontWeight: 600, background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)', color: '#3b82f6', cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.5 : 1 }}>{loading ? '⟳ Loading…' : '⟳ Refresh'}</button>
       </div>
 
-      <div style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 8, background: freshnessState === 'live' ? 'rgba(16,185,129,0.08)' : freshnessState === 'demo' ? 'rgba(245,158,11,0.08)' : 'rgba(148,163,184,0.08)', border: freshnessState === 'live' ? '1px solid rgba(16,185,129,0.22)' : freshnessState === 'demo' ? '1px solid rgba(245,158,11,0.28)' : '1px solid rgba(148,163,184,0.22)', color: freshnessState === 'live' ? '#a7f3d0' : freshnessState === 'demo' ? '#fde68a' : '#cbd5e1', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-        <span>Data freshness: <b style={{ color: freshnessState === 'live' ? '#d1fae5' : freshnessState === 'demo' ? '#fef3c7' : '#e2e8f0' }}>{freshnessStamp || 'awaiting refresh metadata'}</b></span>
-        <span style={{ color: freshnessState === 'live' ? '#6ee7b7' : freshnessState === 'demo' ? '#fcd34d' : '#94a3b8' }}>{freshnessState === 'live' ? 'Shared live snapshot applied across all tabs' : freshnessState === 'demo' ? 'Demo fallback snapshot applied across all tabs' : 'Awaiting live snapshot metadata across all tabs'}</span>
-      </div>
+      {(() => {
+        const staleness = freshnessStamp ? calculateStaleness(freshnessStamp) : null;
+        const isStale = staleness?.isStale;
+        return (
+          <>
+            <div style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 8, background: freshnessState === 'live' ? 'rgba(16,185,129,0.08)' : freshnessState === 'demo' ? 'rgba(245,158,11,0.08)' : 'rgba(148,163,184,0.08)', border: freshnessState === 'live' ? '1px solid rgba(16,185,129,0.22)' : freshnessState === 'demo' ? '1px solid rgba(245,158,11,0.28)' : '1px solid rgba(148,163,184,0.22)', color: freshnessState === 'live' ? '#a7f3d0' : freshnessState === 'demo' ? '#fde68a' : '#cbd5e1', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <span>Data freshness: <b style={{ color: freshnessState === 'live' ? '#d1fae5' : freshnessState === 'demo' ? '#fef3c7' : '#e2e8f0' }}>{freshnessStamp || 'awaiting refresh metadata'}</b> {staleness && <span style={{ fontSize: 10, opacity: 0.8 }}>({staleness.value} {staleness.unit}{staleness.plural} old)</span>}</span>
+              <span style={{ color: freshnessState === 'live' ? '#6ee7b7' : freshnessState === 'demo' ? '#fcd34d' : '#94a3b8' }}>{freshnessState === 'live' ? 'Shared live snapshot applied across all tabs' : freshnessState === 'demo' ? 'Demo fallback snapshot applied across all tabs' : 'Awaiting live snapshot metadata across all tabs'}</span>
+            </div>
+            {isStale && freshnessState === 'live' && (
+              <div style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 14 }}>⚠️</span>
+                <span><b>Data is stale.</b> Forecast last ran {staleness?.value} {staleness?.unit}{staleness?.plural} ago. Expected weekly update: Monday 03:00 UTC</span>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       <div style={{ padding: '10px 14px', marginBottom: 10, borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>PRODUCT</div><div style={{ display: 'flex', gap: 4 }}>{PROD_LINES.map((pl) => <button key={pl} onClick={() => setProdLine(pl)} style={pill(prodLine === pl, pl === 'UCC' ? '#3b82f6' : pl === 'ITSG' ? '#10b981' : null)}>{pl}</button>)}</div></div>
