@@ -365,11 +365,11 @@ async def get_kpis(
         from services.notification_service import notification_service as _ns
         kpis_for_check = [
             {
-                "id":                k.get("id", ""),
-                "title":             k.get("title", "KPI"),
-                "value":             float(k.get("value", 0) or 0),
-                "target":            float(k.get("target", 0) or 0),
-                "targetAchievement": float(k.get("targetAchievement", 100) or 100),
+                "id":                k.id,
+                "title":             k.title,
+                "value":             float(k.value or 0),
+                "target":            float(k.target or 0),
+                "targetAchievement": float(k.targetAchievement or 100),
             }
             for k in (kpis if isinstance(kpis, list) else [])
         ]
