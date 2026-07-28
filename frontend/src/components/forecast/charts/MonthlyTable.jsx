@@ -15,17 +15,21 @@ const MonthlyTable = ({ months }) => {
     return open ? `${open.year}-${open.month}` : null;
   })();
 
-  const spark = (vals) => {
+  const spark = (worst, likely, best) => {
+    const INNER_Z_RATIO = 0.6745 / 1.2816;
+    const innerLo = likely - (likely - worst) * INNER_Z_RATIO;
+    const innerHi = likely + (best - likely) * INNER_Z_RATIO;
+    const vals = [worst, innerLo, likely, innerHi, best];
     const nums = vals.map((v) => Number(v || 0));
     const min = Math.min(...nums);
     const max = Math.max(...nums);
     const span = Math.max(1, max - min);
     const points = nums.map((v, i) => {
-      const x = i * 16;
+      const x = i * 12;
       const y = 24 - ((v - min) / span) * 20;
       return `${x},${y}`;
     }).join(' ');
-    return <svg width="32" height="24" viewBox="0 0 32 24" style={{ overflow: 'visible' }}><polyline fill="none" stroke="#93c5fd" strokeWidth="1.8" points={points} /></svg>;
+    return <svg width="60" height="24" viewBox="0 0 60 24" style={{ overflow: 'visible' }}><polyline fill="none" stroke="#93c5fd" strokeWidth="1.8" points={points} /></svg>;
   };
 
   return (
@@ -72,7 +76,7 @@ const MonthlyTable = ({ months }) => {
                       return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
                     })()}
                   </td>
-                  <td style={{ ...td, textAlign: 'right' }}>{spark([m.arr_worst, m.arr_likely, m.arr_best])}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{spark(m.arr_worst, m.arr_likely, m.arr_best)}</td>
                 </tr>
               )),
               <tr key={`qtot-${q}`} style={{ background: 'rgba(59,130,246,0.06)', borderTop: '1px solid rgba(59,130,246,0.2)' }}>

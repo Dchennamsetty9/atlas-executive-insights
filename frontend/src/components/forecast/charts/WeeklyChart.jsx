@@ -65,6 +65,9 @@ const WeeklyChart = ({ rows }) => {
     );
   };
 
+  const qEndWeeks = ['01-10', '04-03', '07-01', '10-01'];
+  const isInQtr = (d) => qEndWeeks.some((w) => d >= w && d < String(parseInt(w) + 1).padStart(2, '0'));
+
   return (
     <ResponsiveContainer width="100%" height={360}>
       <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
@@ -94,6 +97,10 @@ const WeeklyChart = ({ rows }) => {
             label={{ value: 'TODAY', position: 'insideTop', fill: '#38bdf8', fontSize: 9, fontWeight: 700 }}
           />
         )}
+        {/* Quarter boundary shading */}
+        <ReferenceArea x1="2026-03-31" x2="2026-04-07" fill="rgba(59,130,246,0.04)" stroke="none" />
+        <ReferenceArea x1="2026-06-30" x2="2026-07-07" fill="rgba(59,130,246,0.04)" stroke="none" />
+        <ReferenceArea x1="2026-09-30" x2="2026-10-07" fill="rgba(59,130,246,0.04)" stroke="none" />
         {splitDate && <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4" label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />}
         {splitDate && <ReferenceLine x={splitDate} stroke="none" label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />

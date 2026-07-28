@@ -1,4 +1,4 @@
-import { CartesianGrid, Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { DarkTip, fmtM, YEAR_COLORS } from '../common';
 
 const MultiYearChart = ({ rows, currentYear }) => {
@@ -21,6 +21,7 @@ const MultiYearChart = ({ rows, currentYear }) => {
         <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={(v) => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72} label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 9, style: { textAnchor: 'middle' } }} />
         <Tooltip content={<DarkTip />} />
+        <Legend wrapperStyle={{ paddingTop: 16, fontSize: 12 }} />
         {years.map((yr) => (
           <Line
             key={yr}
