@@ -317,6 +317,93 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
     return normalized
 
 
+def _fill_weekly_gaps(rows: list[Dict[str, Any]], year: int) -> list[Dict[str, Any]]:
+    """Fill missing weeks with zero-value placeholder rows to prevent chart gaps.
+    
+    Generates all weeks from year start to today (or end of year), merging with
+    actual data. Missing weeks get placeholder rows with all numeric values set to 0,
+    type set to null string to indicate interpolation.
+    """
+    import datetime as dt
+    
+    # Extract existing dates from rows
+    existing_dates = {r.get("date") or r.get("ds") for r in rows}
+    
+    if not existing_dates:
+        return rows
+    
+    # Find min/max date to fill range
+    min_date = min(existing_dates)
+    max_date = min(max(existing_dates), dt.date.today().isoformat())
+    
+    # Generate all Mondays (start of ISO week) in range
+    start = dt.datetime.fromisoformat(min_date).date()
+    end = dt.datetime.fromisoformat(max_date).date()
+    
+    # Align to Monday (ISO week start)
+    start = start - dt.timedelta(days=start.weekday())
+    
+    all_mondays = []
+    current = start
+    while current <= end:
+        all_mondays.append(current.isoformat())
+        current += dt.timedelta(days=7)
+    
+    # Build result with existing + fill-in rows
+    result = {}
+    for r in rows:
+        d = r.get("date") or r.get("ds")
+        result[d] = r
+    
+    for monday in all_mondays:
+        if monday not in result:
+            # Create placeholder row for missing week
+            result[monday] = {
+                "date": monday,
+                "type": "",  # Empty type indicates interpolated/zero row
+                "arr_actual": 0,
+                "arr_model": 0,
+                "arr_likely": 0,
+                "arr_worst": 0,
+                "arr_best": 0,
+            }
+    
+    # Return sorted by date
+    return sorted(result.values(), key=lambda x: x.get("date") or "")
+
+
+def _fill_monthly_gaps(months: list[Dict[str, Any]], year: int, include_actuals: bool, include_forecasts: bool) -> list[Dict[str, Any]]:
+    """Fill missing months with zero-value placeholders to prevent table gaps.
+    
+    Generates all 12 months of the year, merging with actual data. Missing months
+    get placeholder rows with zero values.
+    """
+    # Map existing months
+    month_map = {int(m.get("month", 0)): m for m in months}
+    
+    # Generate all 12 months
+    result = []
+    for mth in range(1, 13):
+        if mth in month_map:
+            result.append(month_map[mth])
+        else:
+            # Create placeholder for missing month
+            month_names = ["", "January", "February", "March", "April", "May", "June",
+                           "July", "August", "September", "October", "November", "December"]
+            result.append({
+                "year": year,
+                "quarter": ((mth - 1) // 3) + 1,
+                "month": mth,
+                "month_name": month_names[mth],
+                "arr_actual": 0 if include_actuals else None,
+                "arr_worst": 0 if include_forecasts else None,
+                "arr_likely": 0 if include_forecasts else None,
+                "arr_best": 0 if include_forecasts else None,
+            })
+    
+    return result
+
+
 def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
     """Compute KPI card totals from the kpi_sql result rows.
 
@@ -777,6 +864,7 @@ async def get_weekly(
         })
 
     rows.sort(key=lambda x: x["date"])
+    rows = _fill_weekly_gaps(rows, year)  # Fill missing weeks with zero placeholders
     return {
         "source": "live",
         "model": model,
@@ -908,6 +996,7 @@ async def get_monthly(
             "arr_best":   _f(r.get("arr_best")),
         })
 
+    months = _fill_monthly_gaps(months, year, include_actuals, include_forecasts)
     return {
         "source": "live",
         "model": model,
@@ -1011,22 +1100,33 @@ async def get_ytd(
     act_map = {str(r.get("d") or "")[:10]: _f(r.get("arr")) for r in act_rows}
     fc_map  = {str(r.get("d") or "")[:10]: r for r in fc_rows}
 
+    # Generate all dates in the range (year start to today, or end of period)
+    import datetime as dt
+    year_start = dt.date(year, 1, 1)
+    year_end = min(dt.date.today(), dt.date(year, 12, 31))
+    all_dates = [
+        (year_start + dt.timedelta(days=i)).isoformat()
+        for i in range((year_end - year_start).days + 1)
+    ]
+
+    # Compute cumulative totals, filling gaps with previous values
     cum_a = cum_w = cum_l = cum_b = 0.0
     rows = []
-    for d in sorted(set(list(act_map) + list(fc_map))):
+    for d in all_dates:
         if d in act_map:
             cum_a += act_map[d]
-        fc = fc_map.get(d)
-        if fc:
-            cum_w += _f(fc.get("worst"))
-            cum_l += _f(fc.get("likely"))
-            cum_b += _f(fc.get("best"))
+        if d in fc_map:
+            fc = fc_map[d]
+            cum_w += _f(fc.get("worst", 0))
+            cum_l += _f(fc.get("likely", 0))
+            cum_b += _f(fc.get("best", 0))
+        
         rows.append({
             "date":       d,
-            "ytd_actual": round(cum_a, 0) if d in act_map else None,
-            "ytd_worst":  round(cum_w, 0) if fc else None,
-            "ytd_likely": round(cum_l, 0) if fc else None,
-            "ytd_best":   round(cum_b, 0) if fc else None,
+            "ytd_actual": round(cum_a, 0) if include_actuals else None,
+            "ytd_worst":  round(cum_w, 0) if include_forecasts else None,
+            "ytd_likely": round(cum_l, 0) if include_forecasts else None,
+            "ytd_best":   round(cum_b, 0) if include_forecasts else None,
         })
 
     return {
