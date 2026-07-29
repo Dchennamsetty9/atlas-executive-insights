@@ -141,11 +141,75 @@ const EmptyState = ({ message = 'Awaiting next forecast run' }) => (
 );
 
 // CardWrap — optional downloadName renders a sleek ⬇ PNG button (captures the card's chart SVG)
-const CardWrap = ({ children, downloadName }) => {
+// "Explain this chart" — fetches the precomputed detailed explanation for a graph
+// (forecast_graph_explanations via /graph-explanation) and shows it in a popover.
+const ExplainButton = ({ graphKey, product }) => {
+  const [open, setOpen]       = useState(false);
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [tried, setTried]     = useState(false);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !tried) {
+      setTried(true); setLoading(true);
+      apiService.getForecastV2GraphExplanation(graphKey, product && product !== 'All' ? product : null)
+        .then((res) => setData(res))
+        .catch(() => setData(null))
+        .finally(() => setLoading(false));
+    }
+  };
+
+  return (
+    <div data-export-hide style={{ position: 'absolute', top: 10, right: 44, zIndex: 3 }}>
+      <button onClick={toggle} title="Explain this chart in detail" aria-label="Explain this chart"
+        style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                 borderRadius: 6, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: 0,
+                 color: open ? '#c4b5fd' : '#64748b',
+                 background: open ? 'rgba(168,85,247,0.15)' : 'rgba(255,255,255,0.04)',
+                 border: `1px solid ${open ? 'rgba(168,85,247,0.4)' : 'rgba(255,255,255,0.1)'}` }}>
+        ✨
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', top: 30, right: 0, width: 360, maxHeight: 340, overflowY: 'auto',
+                      background: '#0f172a', border: '1px solid rgba(168,85,247,0.25)', borderRadius: 10,
+                      padding: '14px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)', textAlign: 'left' }}>
+          {loading && <div style={{ fontSize: 12, color: '#64748b' }}>✨ Loading explanation…</div>}
+          {!loading && data && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  ✨ {data.title || 'Explanation'}
+                </span>
+                {data.source === 'demo' && <span style={{ fontSize: 9, color: '#f59e0b' }}>demo</span>}
+              </div>
+              <div style={{ fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>{data.explanation}</div>
+              {(data.bullets || []).length > 0 && (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {data.bullets.map((b, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 7, fontSize: 12, color: '#94a3b8', lineHeight: 1.45 }}>
+                      <span style={{ color: '#a78bfa', flexShrink: 0 }}>▸</span><span>{b}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {data.run_date && <div style={{ fontSize: 9, color: '#334155', marginTop: 10 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
+            </>
+          )}
+          {!loading && !data && <div style={{ fontSize: 12, color: '#ef4444' }}>Explanation unavailable.</div>}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CardWrap = ({ children, downloadName, explainKey, explainProduct }) => {
   const ref = useRef(null);
   return (
     <div ref={ref} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
                   borderRadius: 12, padding: 16, position: 'relative' }}>
+      {explainKey && <ExplainButton graphKey={explainKey} product={explainProduct} />}
       {downloadName && (
         <button onClick={() => exportCardPng(ref, downloadName)} title="Download chart as PNG"
           aria-label="Download chart as PNG" data-export-hide
@@ -890,7 +954,7 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality">
+    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProduct={prodLine}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
@@ -1082,7 +1146,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         </div>
       )}
 
-      <CardWrap downloadName={`model_lab_${product}_${sel || ''}`}>
+      <CardWrap downloadName={`model_lab_${product}_${sel || ''}`} explainKey="model_lab" explainProduct={product}>
         <SectionTitle>{mlLabel(sel)} — Forecast with its own confidence band</SectionTitle>
         {mlLoading ? <Skeleton height={300} /> : fan.length === 0 ? (
           <EmptyState message="No model forecast for this selection yet" />
@@ -1108,7 +1172,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         )}
       </CardWrap>
 
-      <CardWrap downloadName={`model_lab_${product}_comparison`}>
+      <CardWrap downloadName={`model_lab_${product}_comparison`} explainKey="model_lab" explainProduct={product}>
         <SectionTitle>Model Comparison — where the models agree & disagree (P50)</SectionTitle>
         {mlLoading ? <Skeleton height={240} /> : compare.length === 0 ? (
           <EmptyState message="No model data for this selection yet" />
@@ -2017,7 +2081,7 @@ const ForecastingPanel = () => {
                 );
               })()}
 
-              <CardWrap downloadName="weekly_forecast_vs_actuals">
+              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProduct={prodLine}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
                   {(() => {
@@ -2052,7 +2116,7 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
 
-              <CardWrap downloadName="ytd_cumulative">
+              <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProduct={prodLine}>
                 <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
                 <GraphInsight summary={graphInsights.ytd}
                   chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path"
@@ -2077,7 +2141,7 @@ const ForecastingPanel = () => {
               </div>
 
               {multiYearView === 'overlay' && (
-                <CardWrap downloadName="historical_seasonality">
+                <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProduct={prodLine}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
                   <GraphInsight summary={graphInsights.seasonality}
                     chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years"
@@ -2092,7 +2156,7 @@ const ForecastingPanel = () => {
               )}
 
               {multiYearView === 'timeline' && (
-                <CardWrap downloadName="historical_trend_timeline">
+                <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProduct={prodLine}>
                   <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
                   <GraphInsight summary={graphInsights.trend} />
                   {loading ? <Skeleton height={260} /> : (
@@ -2113,7 +2177,7 @@ const ForecastingPanel = () => {
 
           {tab === 'By Product' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <CardWrap downloadName="forecast_by_product">
+              <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProduct={prodLine}>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
                 <GraphInsight summary={graphInsights.byProduct}
                   chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo"
@@ -2150,7 +2214,7 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
               {!loading && byProductView?.by_geo?.length > 0 && (
-                <CardWrap downloadName="forecast_by_geography">
+                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProduct={prodLine}>
                   <SectionTitle>Forecast by Geography</SectionTitle>
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                     <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
@@ -2164,7 +2228,7 @@ const ForecastingPanel = () => {
           )}
 
           {tab === 'Monthly' && (
-            <CardWrap>
+            <CardWrap explainKey="monthly" explainProduct={prodLine}>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
               <GraphInsight summary={graphInsights.monthly}
                 chartType="monthly_forecast" metricName="Monthly Growth ARR — actuals vs forecast scenarios"
@@ -2182,7 +2246,7 @@ const ForecastingPanel = () => {
                   </div>
                 ))}
               </div>
-              <CardWrap>
+              <CardWrap explainKey="accuracy" explainProduct={prodLine}>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
                 <GraphInsight summary={graphInsights.accuracy}
                   chartType="model_accuracy_leaderboard" metricName="Model MAPE by product and geo slice"

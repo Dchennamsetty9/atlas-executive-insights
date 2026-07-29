@@ -208,6 +208,13 @@ export const apiService = {
     return api.get('/api/forecast/v2/run-delta', { params });
   },
 
+  // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish)
+  getForecastV2GraphExplanation: (graph, productLine = null) => {
+    const params = { graph };
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    return api.get('/api/forecast/v2/graph-explanation', { params });
+  },
+
   // Model Lab — per-model P10/P50/P90 from the V5 notebook output tables
   // (arr_forecast_app_latest / ucc_forecast_v5 / itsg_forecast_v5)
   getForecastV2ModelLab: (product = 'UCC', grain = 'total', salesMarket = null) => {

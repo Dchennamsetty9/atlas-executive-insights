@@ -52,6 +52,10 @@ ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
 # Retained forecast-vs-actual vintages produced by the UCC V5 notebook — powers
 # the Forecast-vs-Reality (backtest) view with real history. UCC-only, no geo split.
 UCC_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_accuracy_history`"
+# Precomputed per-graph "explain this chart" text (forecast_unify_publish notebook).
+GRAPH_EXPLAIN_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_graph_explanations`"
+_GRAPH_KEYS = {"weekly", "ytd", "seasonality", "by_product", "monthly",
+               "accuracy", "model_lab", "backtest"}
 # Map the app's model key → the model label stored in the accuracy-history table.
 _ACC_MODEL = {
     "ensemble": "Adaptive_Ensemble", "prophet": "Prophet_trend", "ets": "ETS",
@@ -1677,6 +1681,63 @@ async def get_backtest(
     if source_detail:
         response["source_detail"] = source_detail
     return response
+
+
+# ── GET /graph-explanation ────────────────────────────────────────────────────
+_DEMO_EXPLAIN = {
+    "title": "Chart explanation",
+    "explanation": ("Detailed, data-grounded explanation of this chart. Connect to Databricks and run the "
+                    "forecast_unify_publish notebook to populate precomputed explanations."),
+    "bullets": ["Precomputed per graph and product each run",
+                "Grounded in the current forecast numbers",
+                "Falls back to this sample when the table is empty"],
+}
+
+
+@router.get("/graph-explanation")
+async def get_graph_explanation(
+    graph: str = Query(...),
+    product: Optional[str] = None,
+    product_line: Optional[str] = None,
+):
+    """Precomputed 'explain this chart in detail' text for a given graph + product,
+    written by the forecast_unify_publish notebook into forecast_graph_explanations."""
+    key = (graph or "").strip().lower()
+    if key not in _GRAPH_KEYS:
+        raise HTTPException(status_code=400, detail="Invalid graph key")
+    eff = _selected_product(product, product_line)          # Total | UCC | ITSG
+    prod = "ALL" if eff in ("Total", "All", None) else eff
+
+    if not _live():
+        return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN}
+
+    sql = f"""
+        SELECT title, explanation, bullets, CAST(run_date AS STRING) AS run_date
+        FROM {GRAPH_EXPLAIN_TABLE}
+        WHERE graph_key = '{key}' AND product = '{prod.replace(chr(39), chr(39)*2)}'
+          AND run_date = (SELECT MAX(run_date) FROM {GRAPH_EXPLAIN_TABLE})
+        LIMIT 1
+    """
+    try:
+        rows = await asyncio.to_thread(execute_query, sql)
+    except Exception as exc:
+        logger.warning("[forecast/graph-explanation] query failed: %s", exc)
+        return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN}
+
+    if not rows:
+        return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN,
+                "explanation": "No precomputed explanation for this chart/product yet — check back after the next run."}
+
+    r = rows[0]
+    try:
+        bullets = json.loads(r.get("bullets") or "[]")
+    except Exception:
+        bullets = []
+    return {
+        "source": "live", "graph": key, "product": prod,
+        "title": r.get("title"), "explanation": r.get("explanation"),
+        "bullets": bullets, "run_date": r.get("run_date"),
+    }
 
 
 # ── GET /run-delta ──────────────────────────────────────────────────────────────

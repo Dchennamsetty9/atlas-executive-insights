@@ -55,6 +55,11 @@ RESULTS_V2_VIEW  = f"{CATALOG}.{SCHEMA}.forecast_results_v2compat"
 LEADERBOARD_VIEW = f"{CATALOG}.{SCHEMA}.forecast_leaderboard_v2compat"
 INSIGHTS_V2_VIEW = f"{CATALOG}.{SCHEMA}.forecast_insights_v2compat"
 
+# Per-graph "explain this chart in detail" text, precomputed per (graph, product).
+# The app shows it behind an Explain icon on every chart. Precomputed baseline;
+# a Genie/on-demand path can supersede this later using the same table as fallback.
+GRAPH_EXPLAIN_TABLE = f"{CATALOG}.{SCHEMA}.forecast_graph_explanations"
+
 APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
 REC_MODEL       = "Adaptive_Ensemble"   # the model flagged recommended_for_exec
 ROLLING_WEEKS   = 13
@@ -440,6 +445,121 @@ display(insights_df.select("product", "momentum", "risk_level", "model_confidenc
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Cell 9c — Per-graph "explain this chart" text (precomputed)
+# MAGIC
+# MAGIC Detailed, data-grounded explanations for every chart on the forecasting
+# MAGIC panel, per (graph_key, product). The app reads these behind an Explain icon.
+# MAGIC Deterministic and self-contained — no external LLM dependency — so the
+# MAGIC scheduled job always produces them; a Genie/on-demand layer can supersede later.
+
+# COMMAND ----------
+
+GRAPH_TITLES = {
+    "weekly":      "Weekly Forecast vs Actuals",
+    "ytd":         "Running Totals — YTD Cumulative",
+    "seasonality": "Historical Seasonality by ISO Week",
+    "by_product":  "Forecast by Product Line & Geography",
+    "monthly":     "Monthly Actuals vs Forecast Scenarios",
+    "accuracy":    "Model Accuracy Leaderboard",
+    "model_lab":   "Model Lab — Per-Model Forecast",
+    "backtest":    "Forecast vs Reality (Backtest)",
+}
+
+def _explain(s, label, key):
+    ml, qtd, worst, best = s["most_likely"], s["qtd"], s["worst"], s["best"]
+    fc = max(0.0, ml - qtd)
+    sp = s.get("spread_pct") or 0.0
+    mom = (s.get("momentum") or "stable").lower()
+    yoy, rr, wape, conf = s.get("yoy"), s.get("run_rate"), s.get("wape"), s.get("confidence")
+    yoy_s = (f"{'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s.get('prior'))}") if yoy is not None else "no prior-year baseline"
+    rr_s = f"{_fmt_m(rr)}/week across {s.get('n_fwd', 0)} open week(s)" if rr else "n/a"
+    wape_s = f"{wape:.1f}% WAPE" if wape is not None else "WAPE unavailable"
+
+    if key == "weekly":
+        exp = (f"Weekly Growth ARR for {label}, {_Q_LABEL}. The amber line is realized actuals "
+               f"({_fmt_m(qtd)} booked so far); the white line is the {REC_MODEL} most-likely forecast for the "
+               f"remaining weeks (+{_fmt_m(fc)}), for a full-quarter landing of {_fmt_m(ml)}. The shaded band is the "
+               f"P10–P90 range, {_fmt_m(worst)} to {_fmt_m(best)} (~{sp:.0f}% wide). Forecast momentum is {mom}.")
+        b = [f"Landing {_fmt_m(ml)} = {_fmt_m(qtd)} realized + {_fmt_m(fc)} forecast",
+             f"Scenario range {_fmt_m(worst)}–{_fmt_m(best)} (~{sp:.0f}% wide)",
+             f"Tracking {yoy_s}; momentum {mom}"]
+    elif key == "ytd":
+        exp = (f"Cumulative Growth ARR for {label} through {_Q_LABEL}: realized actuals build to {_fmt_m(qtd)}, then the "
+               f"forecast path extends to a most-likely {_fmt_m(ml)} ({_fmt_m(worst)}–{_fmt_m(best)} across scenarios). "
+               f"Use it to see whether the run-rate keeps pace with the quarter target.")
+        b = [f"Realized to date {_fmt_m(qtd)}", f"Most-likely finish {_fmt_m(ml)}",
+             f"Implied pace {rr_s}"]
+    elif key == "seasonality":
+        exp = (f"Each line is a year of weekly Growth ARR laid over ISO weeks 1–52, so recurring peaks and troughs line up. "
+               f"For {label}, {_Q_LABEL} is tracking {yoy_s}. Use it to spot the quarter-end surges and pacing patterns "
+               f"the models lean on.")
+        b = ["Overlays years by ISO week to expose seasonality",
+             f"{_Q_LABEL} vs last year: {yoy_s}",
+             "Watch quarter-end weeks — historically the biggest spikes"]
+    elif key == "by_product":
+        exp = (f"Splits the {label} {_Q_LABEL} forecast across product lines and geographies. The most-likely total is "
+               f"{_fmt_m(ml)}, with worst/best scenarios of {_fmt_m(worst)}/{_fmt_m(best)}. Use it to see which "
+               f"segments carry the number and where the risk concentrates.")
+        b = [f"Most-likely {_fmt_m(ml)} across segments",
+             f"Scenario range {_fmt_m(worst)}–{_fmt_m(best)}",
+             "Longer bars = larger share of the quarter"]
+    elif key == "monthly":
+        exp = (f"Month-by-month for {label} {_Q_LABEL}: realized actuals ({_fmt_m(qtd)} so far) alongside the risk-floor / "
+               f"most-likely / stretch scenarios, summing to a {_fmt_m(ml)} most-likely quarter. Closed months show actuals; "
+               f"open months show the forecast.")
+        b = [f"Quarter most-likely {_fmt_m(ml)}",
+             f"Realized so far {_fmt_m(qtd)}",
+             f"Scenario band {_fmt_m(worst)}–{_fmt_m(best)}"]
+    elif key == "accuracy":
+        exp = (f"Backtest accuracy per model and geography for {label}. The recommended {REC_MODEL} carries {wape_s}; lower is "
+               f"better (<15% green, 15–25% amber, >25% red). Confidence in the current forecast is ~{conf:.0f}%. Use it to "
+               f"judge how much to trust the point estimate.")
+        b = [f"{REC_MODEL}: {wape_s}", f"Forecast confidence ~{conf:.0f}%",
+             "Green <15% · amber 15–25% · red >25%"]
+    elif key == "model_lab":
+        exp = (f"Every candidate model's forecast for {label}, each with its own P10–P90 band, so switching model changes the "
+               f"uncertainty range, not just the center line. {REC_MODEL} is the recommended blend "
+               f"(most-likely {_fmt_m(ml)}). Where models disagree, uncertainty is higher.")
+        b = [f"Recommended {REC_MODEL}: {_fmt_m(ml)} most-likely",
+             "Each model shows its own confidence band",
+             "Model disagreement = higher real uncertainty"]
+    elif key == "backtest":
+        exp = (f"Compares what the model predicted weeks ago against what actually closed, for {label}. It's the honest test of "
+               f"whether the bands are trustworthy: calibrated P10–P90 intervals should capture ~80% of actuals. Point accuracy "
+               f"here is {wape_s}.")
+        b = ["Past forecasts vs weeks that later closed",
+             "Band coverage should approach ~80% if calibrated",
+             f"Point accuracy {wape_s}"]
+    else:
+        exp, b = f"Detailed view of {label} Growth ARR for {_Q_LABEL}.", []
+    return GRAPH_TITLES[key], exp, b
+
+# Assemble per-product stats incl. the ALL rollup
+_explain_stats = dict(stats)
+if stats:
+    _explain_stats["ALL"] = agg
+
+ge_rows = []
+for label, s in _explain_stats.items():
+    for key in GRAPH_TITLES:
+        title, exp, bullets = _explain(s, "Total portfolio" if label == "ALL" else label, key)
+        ge_rows.append((latest_run, label, key, title, exp, json.dumps(bullets)))
+
+if ge_rows:
+    ge_df = spark.createDataFrame(
+        ge_rows,
+        schema="run_date date, product string, graph_key string, title string, "
+               "explanation string, bullets string",
+    ).withColumn("generated_at", F.current_timestamp())
+    (ge_df.write.format("delta").mode("overwrite")
+       .option("replaceWhere", "run_date = current_date()")
+       .option("mergeSchema", "true")
+       .saveAsTable(GRAPH_EXPLAIN_TABLE))
+    print(f"Wrote {ge_df.count()} graph explanations to {GRAPH_EXPLAIN_TABLE}.")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cell 9b — App-compatibility views
 # MAGIC
 # MAGIC Reshape the unified long table into the exact schemas the dashboard's
@@ -575,7 +695,7 @@ display(log_df)
 for kind, obj in [("TABLE", RESULTS_TABLE), ("VIEW", RESULTS_VIEW),
                   ("TABLE", INSIGHTS_TABLE), ("TABLE", PUBLISH_LOG),
                   ("VIEW", RESULTS_V2_VIEW), ("VIEW", LEADERBOARD_VIEW),
-                  ("VIEW", INSIGHTS_V2_VIEW)]:
+                  ("VIEW", INSIGHTS_V2_VIEW), ("TABLE", GRAPH_EXPLAIN_TABLE)]:
     spark.sql(f"GRANT SELECT ON {kind} {obj} TO `{APP_SERVICE_PRINCIPAL}`")
     print(f"  GRANT SELECT on {kind} {obj}")
 print("App service principal can now read the published tables.")
