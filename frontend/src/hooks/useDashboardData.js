@@ -82,8 +82,9 @@ export function useDashboardData(filters, play) {
       };
 
       ws.onclose = () => {
-        // Reconnect after 10s if disconnected
-        setTimeout(connectWS, 10_000);
+        // Reconnect after 10s if disconnected (use setTimeout to avoid self-reference issue)
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        setTimeout(() => { wsRef.current = null; }, 10_000);
       };
 
       ws.onerror = () => ws.close();

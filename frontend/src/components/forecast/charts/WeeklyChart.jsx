@@ -3,6 +3,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -10,6 +11,31 @@ import {
   YAxis,
 } from 'recharts';
 import { fmtDate, fmtM } from '../common';
+
+// CustomTooltip declared outside to avoid react-hooks/static-components warning
+const WeeklyChartTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload || {};
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
+      <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
+      {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
+      {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
+      {d.best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.best)}</b></div>}
+      {d.worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
+      {d.innerLo != null && d.innerHi != null && (
+        <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
+        </div>
+      )}
+      {d.worst != null && d.best != null && (
+        <div style={{ color: '#60a5fa', marginTop: 2 }}>
+          ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
@@ -41,32 +67,8 @@ const WeeklyChart = ({ rows }) => {
     };
   });
 
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload || {};
-    return (
-      <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
-        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
-        {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
-        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.best)}</b></div>}
-        {d.worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
-        {d.innerLo != null && d.innerHi != null && (
-          <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-            ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
-          </div>
-        )}
-        {d.worst != null && d.best != null && (
-          <div style={{ color: '#60a5fa', marginTop: 2 }}>
-            ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const qEndWeeks = ['01-10', '04-03', '07-01', '10-01'];
-  const isInQtr = (d) => qEndWeeks.some((w) => d >= w && d < String(parseInt(w) + 1).padStart(2, '0'));
+  const _isInQtr = (d) => qEndWeeks.some((w) => d >= w && d < String(parseInt(w) + 1).padStart(2, '0'));  // eslint-disable-next-line no-unused-vars
 
   return (
     <ResponsiveContainer width="100%" height={360}>
@@ -88,7 +90,7 @@ const WeeklyChart = ({ rows }) => {
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
         <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tickFormatter={(v) => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} width={78} label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<WeeklyChartTooltip />} />
         {hasTodayInRange && (
           <ReferenceLine
             x={todayIso}
