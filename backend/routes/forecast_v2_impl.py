@@ -49,6 +49,14 @@ ACCURACY_HISTORY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{ACCURACY_H
 APP_TABLE      = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_app_latest`"
 UCC_V5_TABLE   = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_v5`"
 ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
+# Retained forecast-vs-actual vintages produced by the UCC V5 notebook — powers
+# the Forecast-vs-Reality (backtest) view with real history. UCC-only, no geo split.
+UCC_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_accuracy_history`"
+# Map the app's model key → the model label stored in the accuracy-history table.
+_ACC_MODEL = {
+    "ensemble": "Adaptive_Ensemble", "prophet": "Prophet_trend", "ets": "ETS",
+    "mstl_v2": "MSTL_v2", "dhr_arima": "DHR_ARIMA", "lightgbm": "Global_LGB_Q50_UCC",
+}
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
@@ -1542,12 +1550,57 @@ async def get_backtest(
         return {"source": "demo", "model": model, "horizon_weeks": horizon_weeks,
                 "rows": rows, "summary": _backtest_summary(rows)}
 
+    lo_days = (horizon_weeks - 1) * 7 + 1
+    hi_days = horizon_weeks * 7
+
+    # Preferred source: the UCC accuracy-history table, which retains real
+    # forecast-vs-actual vintages (unlike forecast_results, which only starts
+    # accumulating from its first run). UCC-only / no geo, so used for UCC/Total;
+    # ITSG falls through to the vintage-reconstruction path below.
+    effective_product = _selected_product(product, product_line)
+    if effective_product in ("UCC", "Total"):
+        acc_model = _ACC_MODEL.get(model, "Adaptive_Ensemble")
+        acc_sql = f"""
+            WITH h AS (
+                SELECT CAST(ds AS DATE) AS ds,
+                       CAST(run_date_utc AS DATE) AS run_date,
+                       CAST(p50 AS DOUBLE) AS predicted,
+                       CAST(p10 AS DOUBLE) AS worst,
+                       CAST(p90 AS DOUBLE) AS best,
+                       CAST(actual AS DOUBLE) AS actual,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CAST(ds AS DATE)
+                           ORDER BY CAST(run_date_utc AS DATE) DESC
+                       ) AS rn
+                FROM {UCC_ACCURACY_TABLE}
+                WHERE model = '{acc_model}' AND actual IS NOT NULL
+                  AND DATEDIFF(CAST(ds AS DATE), CAST(run_date_utc AS DATE))
+                      BETWEEN {lo_days} AND {hi_days}
+            )
+            SELECT CAST(ds AS STRING) AS ds, CAST(run_date AS STRING) AS run_date,
+                   predicted, worst, best, actual
+            FROM h WHERE rn = 1 ORDER BY ds
+        """
+        try:
+            acc_raw = await asyncio.to_thread(execute_query, acc_sql)
+        except Exception as exc:
+            logger.warning("[forecast/backtest] accuracy-history query failed: %s", exc)
+            acc_raw = None
+        if acc_raw:
+            rows = [{
+                "ds": r.get("ds"), "run_date": r.get("run_date"),
+                "predicted": _f(r.get("predicted")), "worst": _f(r.get("worst")),
+                "best": _f(r.get("best")), "actual": _f(r.get("actual")),
+            } for r in acc_raw]
+            return {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
+                    "basis": "accuracy_history", "rows": rows,
+                    "summary": _backtest_summary(rows)}
+        # else: no rows for this product/horizon → fall through to reconstruction
+
     source = _model_source(model)
     value_col = source["most_likely_col"]
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
-    lo_days = (horizon_weeks - 1) * 7 + 1
-    hi_days = horizon_weeks * 7
 
     sql = f"""
         WITH actuals AS (
