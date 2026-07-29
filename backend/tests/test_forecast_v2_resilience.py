@@ -9,17 +9,34 @@ No live Databricks connection is required — execute_query is patched.
 """
 
 import pytest
-from unittest.mock import patch, AsyncMock
+import types
+from unittest.mock import patch
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
-# Bootstrap the app the same way the test suite already does
+# Bootstrap a minimal app with only the forecast-v2 router
 # ---------------------------------------------------------------------------
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from bootstrap import app  # noqa: E402
+fake_services = types.ModuleType("services")
+fake_db = types.ModuleType("services.databricks_connection")
+fake_db.execute_query = lambda _sql: []
+fake_db.token_available = lambda: False
+fake_db.set_request_token = lambda _token: None
+fake_prefs = types.ModuleType("services.user_preferences_service")
+fake_prefs.user_prefs_service = object()
+fake_services.databricks_connection = fake_db
+fake_services.user_preferences_service = fake_prefs
+sys.modules.setdefault("services", fake_services)
+sys.modules["services.databricks_connection"] = fake_db
+sys.modules["services.user_preferences_service"] = fake_prefs
 
+from routes.forecast_v2 import router as forecast_v2_router  # noqa: E402
+
+app = FastAPI()
+app.include_router(forecast_v2_router)
 client = TestClient(app)
 
 _PERMISSION_ERROR = Exception("PERMISSION_DENIED: User does not have SELECT privilege on forecast_prophet")
@@ -95,6 +112,27 @@ class TestForecastV2Resilience:
             r = self._get("/api/forecast/v2/leaderboard")
         assert r.status_code == 200
         assert r.json()["source"] == "demo"
+
+    def test_graph_explanation_route_is_registered(self):
+        r = self._get("/api/forecast/v2/graph-explanation", {"graph": "weekly", "product_line": "UCC"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["graph"] == "weekly"
+        assert body["product"] == "UCC"
+        assert body["source"] == "demo"
+
+    def test_graph_explanation_returns_demo_on_db_error(self):
+        with _mock_live_true(), _mock_execute_query_raises():
+            r = self._get("/api/forecast/v2/graph-explanation", {"graph": "weekly", "product_line": "ITSG"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["source"] == "demo"
+        assert body["product"] == "ITSG"
+        assert "explanation" in body
+
+    def test_graph_explanation_rejects_invalid_key(self):
+        r = self._get("/api/forecast/v2/graph-explanation", {"graph": "trend"})
+        assert r.status_code == 400
 
     def test_bad_model_returns_400(self):
         with _mock_live_true():

@@ -28,7 +28,7 @@ const normalizeInsightItems = (value) => {
 
 const AiInsightsSection = () => {
   const [aiData, setAiData] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
+  const [aiLoading, setAiLoading] = useState(true);
   const [aiError, setAiError] = useState(null);
 
   const loadAi = useCallback(async () => {

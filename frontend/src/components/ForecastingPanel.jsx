@@ -143,7 +143,14 @@ const EmptyState = ({ message = 'Awaiting next forecast run' }) => (
 // CardWrap — optional downloadName renders a sleek ⬇ PNG button (captures the card's chart SVG)
 // "Explain this chart" — fetches the precomputed detailed explanation for a graph
 // (forecast_graph_explanations via /graph-explanation) and shows it in a popover.
-const ExplainButton = ({ graphKey, product }) => {
+const buildGraphExplanationFallback = () => ({
+  source: 'fallback',
+  title: 'Explanation unavailable',
+  explanation: 'Detailed graph insights are temporarily unavailable for this chart. Please try again later or use the chart values as the current fallback.',
+  bullets: ['The graph is still rendering normally.', 'If this persists, verify the forecast graph-explanation endpoint is available in the current environment.'],
+});
+
+const ExplainButton = ({ graphKey, product, productLine }) => {
   const [open, setOpen]       = useState(false);
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
@@ -154,9 +161,13 @@ const ExplainButton = ({ graphKey, product }) => {
     setOpen(next);
     if (next && !tried) {
       setTried(true); setLoading(true);
-      apiService.getForecastV2GraphExplanation(graphKey, product && product !== 'All' ? product : null)
+      apiService.getForecastV2GraphExplanation(
+        graphKey,
+        product && product !== 'All' ? product : null,
+        productLine && productLine !== 'All' ? productLine : null,
+      )
         .then((res) => setData(res))
-        .catch(() => setData(null))
+        .catch(() => setData(buildGraphExplanationFallback()))
         .finally(() => setLoading(false));
     }
   };
@@ -183,6 +194,7 @@ const ExplainButton = ({ graphKey, product }) => {
                   ✨ {data.title || 'Explanation'}
                 </span>
                 {data.source === 'demo' && <span style={{ fontSize: 9, color: '#f59e0b' }}>demo</span>}
+                {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8' }}>fallback</span>}
               </div>
               <div style={{ fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>{data.explanation}</div>
               {(data.bullets || []).length > 0 && (
@@ -197,19 +209,19 @@ const ExplainButton = ({ graphKey, product }) => {
               {data.run_date && <div style={{ fontSize: 9, color: '#334155', marginTop: 10 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
             </>
           )}
-          {!loading && !data && <div style={{ fontSize: 12, color: '#ef4444' }}>Explanation unavailable.</div>}
+          {!loading && !data && <div style={{ fontSize: 12, color: '#94a3b8' }}>Detailed graph insight is unavailable right now.</div>}
         </div>
       )}
     </div>
   );
 };
 
-const CardWrap = ({ children, downloadName, explainKey, explainProduct }) => {
+const CardWrap = ({ children, downloadName, explainKey, explainProduct, explainProductLine }) => {
   const ref = useRef(null);
   return (
     <div ref={ref} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
                   borderRadius: 12, padding: 16, position: 'relative' }}>
-      {explainKey && <ExplainButton graphKey={explainKey} product={explainProduct} />}
+      {explainKey && <ExplainButton graphKey={explainKey} product={explainProduct} productLine={explainProductLine} />}
       {downloadName && (
         <button onClick={() => exportCardPng(ref, downloadName)} title="Download chart as PNG"
           aria-label="Download chart as PNG" data-export-hide
@@ -715,7 +727,7 @@ const normalizeInsightItems = (value) => {
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
 const AiInsightsSection = ({ model, prodLine }) => {
   const [aiData,    setAiData]    = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
+  const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
 
   const loadAi = useCallback(async () => {
@@ -954,7 +966,7 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProduct={prodLine}>
+    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProductLine={prodLine}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
@@ -2081,7 +2093,7 @@ const ForecastingPanel = () => {
                 );
               })()}
 
-              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProduct={prodLine}>
+              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
                   {(() => {
@@ -2116,7 +2128,7 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
 
-              <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProduct={prodLine}>
+              <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine}>
                 <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
                 <GraphInsight summary={graphInsights.ytd}
                   chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path"
@@ -2141,7 +2153,7 @@ const ForecastingPanel = () => {
               </div>
 
               {multiYearView === 'overlay' && (
-                <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProduct={prodLine}>
+                <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
                   <GraphInsight summary={graphInsights.seasonality}
                     chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years"
@@ -2156,7 +2168,7 @@ const ForecastingPanel = () => {
               )}
 
               {multiYearView === 'timeline' && (
-                <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProduct={prodLine}>
+                <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProductLine={prodLine}>
                   <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
                   <GraphInsight summary={graphInsights.trend} />
                   {loading ? <Skeleton height={260} /> : (
@@ -2177,7 +2189,7 @@ const ForecastingPanel = () => {
 
           {tab === 'By Product' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProduct={prodLine}>
+              <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProductLine={prodLine}>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
                 <GraphInsight summary={graphInsights.byProduct}
                   chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo"
@@ -2214,7 +2226,7 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
               {!loading && byProductView?.by_geo?.length > 0 && (
-                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProduct={prodLine}>
+                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProductLine={prodLine}>
                   <SectionTitle>Forecast by Geography</SectionTitle>
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                     <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
@@ -2228,7 +2240,7 @@ const ForecastingPanel = () => {
           )}
 
           {tab === 'Monthly' && (
-            <CardWrap explainKey="monthly" explainProduct={prodLine}>
+            <CardWrap explainKey="monthly" explainProductLine={prodLine}>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
               <GraphInsight summary={graphInsights.monthly}
                 chartType="monthly_forecast" metricName="Monthly Growth ARR — actuals vs forecast scenarios"
@@ -2246,7 +2258,7 @@ const ForecastingPanel = () => {
                   </div>
                 ))}
               </div>
-              <CardWrap explainKey="accuracy" explainProduct={prodLine}>
+              <CardWrap explainKey="accuracy" explainProductLine={prodLine}>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
                 <GraphInsight summary={graphInsights.accuracy}
                   chartType="model_accuracy_leaderboard" metricName="Model MAPE by product and geo slice"

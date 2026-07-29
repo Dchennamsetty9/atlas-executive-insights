@@ -209,8 +209,9 @@ export const apiService = {
   },
 
   // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish)
-  getForecastV2GraphExplanation: (graph, productLine = null) => {
+  getForecastV2GraphExplanation: (graph, product = null, productLine = null) => {
     const params = { graph };
+    if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     return api.get('/api/forecast/v2/graph-explanation', { params });
   },
