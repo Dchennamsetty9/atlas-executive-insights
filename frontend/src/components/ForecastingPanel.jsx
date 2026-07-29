@@ -135,7 +135,7 @@ const EmptyState = ({ message = 'Awaiting next forecast run' }) => (
     <div style={{ fontSize: 28 }}>🕐</div>
     <div style={{ fontSize: 13, fontWeight: 600, color: '#64748b' }}>{message}</div>
     <div style={{ fontSize: 11, color: '#334155', textAlign: 'center', maxWidth: 380 }}>
-      The forecast job runs every Monday at 03:00 UTC. Check back after the next run.
+      The forecast job runs daily (~7am ET). Check back after the next run.
     </div>
   </div>
 );
@@ -926,7 +926,7 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
       )}
 
       {btLoading ? <Skeleton height={260} /> : rows.length === 0 && !btError ? (
-        <EmptyState message="No closed weeks with retained forecasts at this horizon yet" />
+        <EmptyState message="No retained forecast-vs-actual history at this horizon for the current selection" />
       ) : rows.length > 0 && (
         <>
           {/* Stat chips */}
@@ -1825,13 +1825,13 @@ const ForecastingPanel = () => {
       {isDemo && !loading && (
         <div style={{ padding: '8px 14px', marginBottom: 8, borderRadius: 8, fontSize: 12, color: '#f59e0b',
                       background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
-          📋 Sample data — forecast job runs Mondays 03:00 UTC. Numbers below are illustrative only.
+          📋 Sample data — forecast job runs daily (~7am ET). Numbers below are illustrative only.
         </div>
       )}
       {isEmpty && !isDemo && !loading && (
         <div style={{ padding: '8px 14px', marginBottom: 8, borderRadius: 8, fontSize: 12, color: '#64748b',
                       background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-          🕐 No forecast data yet — awaiting next scheduled run (Mondays 03:00 UTC).
+          🕐 No forecast data yet — awaiting next scheduled run (daily ~7am ET).
         </div>
       )}
       {error && (

@@ -148,8 +148,11 @@ print(f"Normalized forecast rows: {fc.count()}")
 min_ds = fc.agg(F.min("ds")).collect()[0][0]
 rolling_cutoff = min_ds + timedelta(weeks=ROLLING_WEEKS - 1)
 
+# rolling = next 13 weeks; roy = the rest of the year AFTER that window.
+# They MUST be disjoint: the app's KPI query sums forecast_type IN
+# ('rolling','roy'), so overlapping rows double-count the quarter total.
 rolling = fc.where(F.col("ds") <= F.lit(rolling_cutoff)).withColumn("forecast_type", F.lit("rolling"))
-roy     = fc.withColumn("forecast_type", F.lit("roy"))
+roy     = fc.where(F.col("ds") >  F.lit(rolling_cutoff)).withColumn("forecast_type", F.lit("roy"))
 forecasts = rolling.unionByName(roy)
 print(f"Forecast rows after rolling/roy split: {forecasts.count()} (cutoff {rolling_cutoff})")
 
@@ -296,62 +299,98 @@ import json
 res = spark.table(RESULTS_VIEW).toPandas()
 latest_run = res["run_date"].max()
 
+# Quarter-aware setup so the insight headline matches the Overview quarter number
+# (previously computed over 'roy' only, which under-counted after the disjoint fix).
+import pandas as pd
+res["ds"] = pd.to_datetime(res["ds"], errors="coerce")
+_run_dt = pd.to_datetime(latest_run)
+_Q = (_run_dt.month - 1) // 3 + 1
+_Q_MONTHS = [(_Q - 1) * 3 + 1, (_Q - 1) * 3 + 2, (_Q - 1) * 3 + 3]
+_Q_YEAR = int(_run_dt.year)
+_Q_LABEL = f"Q{_Q} {_Q_YEAR}"
+
 def _fmt_m(v):
     return f"${v/1e6:.1f}M" if v else "$0.0M"
 
 def _stats(df):
-    tot = df[(df["grain_level"].astype(str).str.lower() == "total") &
-             (df["forecast_type"] == "roy")]
-    rec = tot[tot["model"] == REC_MODEL]
-    if rec.empty:
-        rec = tot[tot["recommended_for_exec"] == 1]
-    rec = rec.sort_values("ds")
-    if rec.empty or rec["p50"].dropna().empty:
+    """Current-quarter landing = realized-so-far + forecast for the quarter's open
+    weeks (matches the Overview KPI), plus YoY vs the same quarter last year and
+    the implied weekly run-rate. Guarded so a bad slice can't fail the publish."""
+    try:
+        tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+        in_q = tot["ds"].dt.year.eq(_Q_YEAR) & tot["ds"].dt.month.isin(_Q_MONTHS)
+        fwd = tot[(tot["model"] == REC_MODEL)
+                  & tot["forecast_type"].isin(["rolling", "roy"]) & in_q].sort_values("ds")
+        act = tot[(tot["model"] == "ACTUAL") & in_q]
+        if fwd.empty and act.empty:
+            return None
+        fwd_ml = float(fwd["p50"].fillna(0).sum())
+        fwd_lo = float(fwd["p10"].fillna(fwd["p50"]).sum())
+        fwd_hi = float(fwd["p90"].fillna(fwd["p50"]).sum())
+        qtd    = float(act["actual"].fillna(0).sum())
+        most_likely = fwd_ml + qtd
+        worst = fwd_lo + qtd
+        best  = fwd_hi + qtd
+        spread_pct = ((best - worst) / most_likely * 100) if most_likely else 0.0
+        prior = float(tot[(tot["model"] == "ACTUAL")
+                          & tot["ds"].dt.year.eq(_Q_YEAR - 1)
+                          & tot["ds"].dt.month.isin(_Q_MONTHS)]["actual"].fillna(0).sum())
+        yoy = ((most_likely - prior) / prior * 100) if prior else None
+        n_fwd = int(len(fwd))
+        run_rate = (fwd_ml / n_fwd) if n_fwd else None
+        p = fwd["p50"].dropna().tolist()
+        momentum = "STABLE"
+        if len(p) >= 3 and p[0]:
+            chg = (p[-1] - p[0]) / p[0] * 100
+            cv = (fwd["p50"].std() / fwd["p50"].mean() * 100) if fwd["p50"].mean() else 0
+            if cv > 25: momentum = "VOLATILE"
+            elif chg > 5: momentum = "ACCELERATING"
+            elif chg < -5: momentum = "DECELERATING"
+        wape = float(fwd["model_wape"].dropna().mean()) if fwd["model_wape"].notna().any() else None
+        conf = 100.0 - (spread_pct * 0.4) - (wape * 1.3 if wape is not None else 0.0)
+        conf = max(15.0, min(98.0, conf))
+        return dict(most_likely=most_likely, worst=worst, best=best, qtd=qtd, prior=prior,
+                    upside=max(0.0, best - most_likely), downside=max(0.0, most_likely - worst),
+                    spread_pct=spread_pct, momentum=momentum, wape=wape, yoy=yoy,
+                    run_rate=run_rate, n_fwd=n_fwd, confidence=round(conf, 0))
+    except Exception as _e:
+        print(f"  WARN insight stats failed: {_e}")
         return None
-    most_likely = float(rec["p50"].fillna(0).sum())
-    worst = float(rec["p10"].fillna(rec["p50"]).sum())
-    best  = float(rec["p90"].fillna(rec["p50"]).sum())
-    spread_pct = ((best - worst) / most_likely * 100) if most_likely else 0.0
-    p = rec["p50"].dropna().tolist()
-    momentum = "STABLE"
-    if len(p) >= 3 and p[0]:
-        chg = (p[-1] - p[0]) / p[0] * 100
-        cv = (rec["p50"].std() / rec["p50"].mean() * 100) if rec["p50"].mean() else 0
-        if cv > 25: momentum = "VOLATILE"
-        elif chg > 5: momentum = "ACCELERATING"
-        elif chg < -5: momentum = "DECELERATING"
-    wape = float(rec["model_wape"].dropna().mean()) if rec["model_wape"].notna().any() else None
-    conf = 100.0 - (spread_pct * 0.4) - (wape * 1.3 if wape is not None else 0.0)
-    conf = max(15.0, min(98.0, conf))
-    return dict(most_likely=most_likely, worst=worst, best=best,
-                upside=max(0.0, best - most_likely), downside=max(0.0, most_likely - worst),
-                spread_pct=spread_pct, momentum=momentum, wape=wape, confidence=round(conf, 0))
 
 def _render(s, label):
     risk = "LOW RISK" if s["confidence"] >= 80 else "MODERATE RISK" if s["confidence"] >= 60 else "HIGH RISK"
+    yoy = s.get("yoy")
+    yoy_txt = (f" — {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year"
+               if yoy is not None else "")
+    rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {s['n_fwd']} open week(s)"
+              if s.get("run_rate") else "n/a")
+    drivers = [
+        f"{label} {_Q_LABEL} landing {_fmt_m(s['most_likely'])} = {_fmt_m(s['qtd'])} realized "
+        f"+ {_fmt_m(s['most_likely'] - s['qtd'])} forecast.",
+        f"Implied pace: {rr_txt}.",
+    ]
+    if yoy is not None:
+        drivers.append(f"Tracking {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} in Q{_Q} {_Q_YEAR - 1}.")
     return {
-        "product": label, "run_date": str(latest_run),
+        "product": label, "run_date": str(latest_run), "period": _Q_LABEL,
         "momentum": s["momentum"], "risk_level": risk,
         "model_confidence": s["confidence"], "best_model": REC_MODEL,
         "mape": round(s["wape"], 1) if s["wape"] is not None else None,
-        "narrative": (f"{label} rest-of-year outlook is {_fmt_m(s['most_likely'])}, ranging "
-                      f"{_fmt_m(s['worst'])} to {_fmt_m(s['best'])} ({s['spread_pct']:.0f}% spread). "
-                      f"Forecast momentum is {s['momentum'].lower()}."),
+        "narrative": (f"{label} {_Q_LABEL} landing is {_fmt_m(s['most_likely'])} "
+                      f"({_fmt_m(s['qtd'])} realized + forecast), ranging {_fmt_m(s['worst'])} to "
+                      f"{_fmt_m(s['best'])}{yoy_txt}. Momentum {s['momentum'].lower()}."),
         "upside": round(s["upside"], 0), "downside": round(s["downside"], 0),
-        "key_drivers": [
-            f"Recommended model ({REC_MODEL}) projects {_fmt_m(s['most_likely'])} most-likely.",
-            f"Scenario band is {s['spread_pct']:.0f}% of the central forecast.",
-        ],
+        "key_drivers": drivers,
         "downside_risks": [
-            f"Downside case sits {_fmt_m(s['downside'])} below plan ({_fmt_m(s['worst'])}).",
+            f"Downside case {_fmt_m(s['worst'])} — {_fmt_m(s['downside'])} below the most-likely path.",
             "Momentum decelerating — watch weekly pacing." if s["momentum"] == "DECELERATING"
-                else "Elevated forecast volatility." if s["momentum"] == "VOLATILE"
+                else "Elevated week-to-week volatility." if s["momentum"] == "VOLATILE"
                 else "Primary risk is execution against the central path.",
         ],
-        "upside_opportunities": [f"Upside case adds {_fmt_m(s['upside'])} over plan ({_fmt_m(s['best'])})."],
+        "upside_opportunities": [f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} above the most-likely path."],
         "executive_actions": [
-            "Protect the most-likely path; focus on the largest at-risk product/region slices.",
-            "Revisit if the next run moves the central forecast materially.",
+            f"Hold ~{rr_txt} to land the most-likely {_Q_LABEL} outlook.",
+            "Focus on the largest at-risk product/region slices; revisit after the next run.",
         ],
         "source": "unified",
     }
@@ -369,12 +408,15 @@ for product in sorted(res["product"].dropna().unique()):
                  s["confidence"], s["momentum"], payload["risk_level"]))
 
 if stats:
-    agg = dict(most_likely=sum(v["most_likely"] for v in stats.values()),
-               worst=sum(v["worst"] for v in stats.values()),
-               best=sum(v["best"] for v in stats.values()), wape=None)
+    _sum = lambda k: sum((v.get(k) or 0) for v in stats.values())
+    agg = dict(most_likely=_sum("most_likely"), worst=_sum("worst"), best=_sum("best"),
+               qtd=_sum("qtd"), prior=_sum("prior"),
+               n_fwd=max((v.get("n_fwd") or 0) for v in stats.values()), wape=None)
     agg["upside"]   = max(0.0, agg["best"] - agg["most_likely"])
     agg["downside"] = max(0.0, agg["most_likely"] - agg["worst"])
     agg["spread_pct"] = ((agg["best"] - agg["worst"]) / agg["most_likely"] * 100) if agg["most_likely"] else 0.0
+    agg["yoy"] = ((agg["most_likely"] - agg["prior"]) / agg["prior"] * 100) if agg["prior"] else None
+    agg["run_rate"] = ((agg["most_likely"] - agg["qtd"]) / agg["n_fwd"]) if agg["n_fwd"] else None
     order = {"STABLE": 0, "ACCELERATING": 1, "DECELERATING": 2, "VOLATILE": 3}
     agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order[m])
     agg["confidence"] = round(sum(v["confidence"] for v in stats.values()) / len(stats), 0)
@@ -410,13 +452,30 @@ display(insights_df.select("product", "momentum", "risk_level", "model_confidenc
 # (ds, product, sales_market, forecast_type, run_date); model columns pivoted.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {RESULTS_V2_VIEW} AS
+    WITH cutoff AS (
+        SELECT product, DATE_ADD(MIN(ds), (({ROLLING_WEEKS} - 1) * 7)) AS roll_end
+        FROM {RESULTS_TABLE}
+        WHERE forecast_type IN ('rolling', 'roy')
+        GROUP BY product
+    ),
+    filt AS (
+        -- Defensive: keep roy rows only beyond the rolling window so rolling/roy
+        -- never overlap (prevents KPI double-count even if the table still holds
+        -- overlapping rows from an older run).
+        SELECT fr.* FROM {RESULTS_TABLE} fr
+        LEFT JOIN cutoff c ON fr.product = c.product
+        WHERE fr.forecast_type <> 'roy' OR c.roll_end IS NULL OR fr.ds > c.roll_end
+    )
     SELECT
         CAST(ds AS TIMESTAMP) AS ds,
         product, sales_market, forecast_type, run_date,
         MAX(CASE WHEN model = 'ACTUAL'            THEN actual END) AS Actuals,
-        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p50 END)    AS Most_Likely,
-        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END)    AS Worst_Case,
-        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END)    AS Best_Case,
+        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p50 END),
+                 MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Most_Likely,
+        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END),
+                 MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Worst_Case,
+        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END),
+                 MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Best_Case,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END)    AS p10,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END)    AS p90,
         MAX(CASE WHEN model = 'ETS'               THEN p50 END)    AS arr_ets,
@@ -430,7 +489,7 @@ spark.sql(f"""
         MAX(CASE WHEN model LIKE 'Global_LGB%' THEN model_wape END) AS mape_lightgbm,
         MAX(CASE WHEN model = 'MSTL_v2'        THEN model_wape END) AS mape_mstl_v2,
         MAX(CASE WHEN model = 'DHR_ARIMA'      THEN model_wape END) AS mape_dhr_arima
-    FROM {RESULTS_TABLE}
+    FROM filt
     GROUP BY ds, product, sales_market, forecast_type, run_date
 """)
 
@@ -448,6 +507,7 @@ spark.sql(f"""
             MAX(run_date) AS run_date
         FROM {RESULTS_TABLE}
         WHERE model_wape IS NOT NULL
+          AND UPPER(TRIM(sales_market)) <> 'UNKNOWN'
         GROUP BY product, sales_market
     ),
     l AS (
