@@ -208,11 +208,15 @@ export const apiService = {
     return api.get('/api/forecast/v2/run-delta', { params });
   },
 
-  // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish)
-  getForecastV2GraphExplanation: (graph, product = null, productLine = null) => {
+  // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish),
+  // matched to the user's product/region/period selection
+  getForecastV2GraphExplanation: (graph, product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { graph };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/graph-explanation', { params });
   },
 
@@ -241,8 +245,13 @@ export const apiService = {
     return api.get('/api/forecast/intelligence', { params });
   },
 
-  // v2 intelligence — reads from Delta table arr_forecast_insights (SP-accessible via all_mdl_ro)
-  getForecastV2Intelligence: () => api.get('/api/forecast/v2/intelligence'),
+  // v2 intelligence — unified forecast_insights, scoped to the selected product
+  getForecastV2Intelligence: (productLine = null, salesMarket = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/intelligence', { params });
+  },
 
   // AI chart annotation — LLM one-line finding for a chart (Databricks Claude via ai_service)
   getAIChartAnnotation: (chartType, dataPoints, metricName) =>

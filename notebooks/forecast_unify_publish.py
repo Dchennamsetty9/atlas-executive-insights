@@ -317,29 +317,50 @@ _Q_LABEL = f"Q{_Q} {_Q_YEAR}"
 def _fmt_m(v):
     return f"${v/1e6:.1f}M" if v else "$0.0M"
 
-def _stats(df):
-    """Current-quarter landing = realized-so-far + forecast for the quarter's open
-    weeks (matches the Overview KPI), plus YoY vs the same quarter last year and
-    the implied weekly run-rate. Guarded so a bad slice can't fail the publish."""
+def _stats(df, region="Total", period="quarter"):
+    """Period landing = realized-so-far + forecast for the open weeks (matches the
+    Overview KPI), plus YoY vs the same period last year and the implied weekly
+    run-rate. region: 'Total' or a sales_market; period: 'quarter' (current) or
+    'year' (full current year). Guarded so a bad slice can't fail the publish."""
     try:
-        tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
-        in_q = tot["ds"].dt.year.eq(_Q_YEAR) & tot["ds"].dt.month.isin(_Q_MONTHS)
-        fwd = tot[(tot["model"] == REC_MODEL)
-                  & tot["forecast_type"].isin(["rolling", "roy"]) & in_q].sort_values("ds")
+        if region == "Total":
+            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+        else:
+            tot = df[(df["grain_level"].astype(str).str.lower() == "market")
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+        if period == "year":
+            in_q = tot["ds"].dt.year.eq(_Q_YEAR)
+            period_label = f"FY {_Q_YEAR}"
+            prior_scope = tot["ds"].dt.year.eq(_Q_YEAR - 1)
+        else:
+            in_q = tot["ds"].dt.year.eq(_Q_YEAR) & tot["ds"].dt.month.isin(_Q_MONTHS)
+            period_label = _Q_LABEL
+            prior_scope = tot["ds"].dt.year.eq(_Q_YEAR - 1) & tot["ds"].dt.month.isin(_Q_MONTHS)
         act = tot[(tot["model"] == "ACTUAL") & in_q]
+        # Splice: forecast weeks strictly AFTER the last closed actual week — no
+        # double-count, no dropped in-flight week (matches the backend KPI rule).
+        last_act = act["ds"].max() if not act.empty else pd.Timestamp("1900-01-01")
+        fwd = tot[(tot["model"] == REC_MODEL)
+                  & tot["forecast_type"].isin(["rolling", "roy"]) & in_q
+                  & (tot["ds"] > last_act)].sort_values("ds")
         if fwd.empty and act.empty:
             return None
         fwd_ml = float(fwd["p50"].fillna(0).sum())
-        fwd_lo = float(fwd["p10"].fillna(fwd["p50"]).sum())
-        fwd_hi = float(fwd["p90"].fillna(fwd["p50"]).sum())
         qtd    = float(act["actual"].fillna(0).sum())
         most_likely = fwd_ml + qtd
-        worst = fwd_lo + qtd
-        best  = fwd_hi + qtd
+        # Variance-aggregate the quarter band (combine weekly half-widths in
+        # quadrature) instead of summing weekly quantiles — the latter overstates
+        # the spread ~sqrt(weeks)x since weekly noise cancels. Upper/lower kept
+        # separate for asymmetry; floored at 0 (ARR can't be negative).
+        _p50 = fwd["p50"].fillna(0)
+        _up = (fwd["p90"].fillna(fwd["p50"]) - _p50).clip(lower=0)
+        _lo = (_p50 - fwd["p10"].fillna(fwd["p50"])).clip(lower=0)
+        q_up = float((_up ** 2).sum()) ** 0.5
+        q_lo = float((_lo ** 2).sum()) ** 0.5
+        worst = max(0.0, most_likely - q_lo)
+        best  = most_likely + q_up
         spread_pct = ((best - worst) / most_likely * 100) if most_likely else 0.0
-        prior = float(tot[(tot["model"] == "ACTUAL")
-                          & tot["ds"].dt.year.eq(_Q_YEAR - 1)
-                          & tot["ds"].dt.month.isin(_Q_MONTHS)]["actual"].fillna(0).sum())
+        prior = float(tot[(tot["model"] == "ACTUAL") & prior_scope]["actual"].fillna(0).sum())
         yoy = ((most_likely - prior) / prior * 100) if prior else None
         n_fwd = int(len(fwd))
         run_rate = (fwd_ml / n_fwd) if n_fwd else None
@@ -357,12 +378,14 @@ def _stats(df):
         return dict(most_likely=most_likely, worst=worst, best=best, qtd=qtd, prior=prior,
                     upside=max(0.0, best - most_likely), downside=max(0.0, most_likely - worst),
                     spread_pct=spread_pct, momentum=momentum, wape=wape, yoy=yoy,
-                    run_rate=run_rate, n_fwd=n_fwd, confidence=round(conf, 0))
+                    run_rate=run_rate, n_fwd=n_fwd, confidence=round(conf, 0),
+                    period_label=period_label, region=region)
     except Exception as _e:
         print(f"  WARN insight stats failed: {_e}")
         return None
 
 def _render(s, label):
+    _pl = s.get("period_label", _Q_LABEL)
     risk = "LOW RISK" if s["confidence"] >= 80 else "MODERATE RISK" if s["confidence"] >= 60 else "HIGH RISK"
     yoy = s.get("yoy")
     yoy_txt = (f" — {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year"
@@ -370,18 +393,18 @@ def _render(s, label):
     rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {s['n_fwd']} open week(s)"
               if s.get("run_rate") else "n/a")
     drivers = [
-        f"{label} {_Q_LABEL} landing {_fmt_m(s['most_likely'])} = {_fmt_m(s['qtd'])} realized "
+        f"{label} {_pl} landing {_fmt_m(s['most_likely'])} = {_fmt_m(s['qtd'])} realized "
         f"+ {_fmt_m(s['most_likely'] - s['qtd'])} forecast.",
         f"Implied pace: {rr_txt}.",
     ]
     if yoy is not None:
-        drivers.append(f"Tracking {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} in Q{_Q} {_Q_YEAR - 1}.")
+        drivers.append(f"Tracking {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year ({_pl.replace(str(_Q_YEAR), str(_Q_YEAR - 1))}).")
     return {
-        "product": label, "run_date": str(latest_run), "period": _Q_LABEL,
+        "product": label, "run_date": str(latest_run), "period": _pl,
         "momentum": s["momentum"], "risk_level": risk,
         "model_confidence": s["confidence"], "best_model": REC_MODEL,
         "mape": round(s["wape"], 1) if s["wape"] is not None else None,
-        "narrative": (f"{label} {_Q_LABEL} landing is {_fmt_m(s['most_likely'])} "
+        "narrative": (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
                       f"({_fmt_m(s['qtd'])} realized + forecast), ranging {_fmt_m(s['worst'])} to "
                       f"{_fmt_m(s['best'])}{yoy_txt}. Momentum {s['momentum'].lower()}."),
         "upside": round(s["upside"], 0), "downside": round(s["downside"], 0),
@@ -394,7 +417,7 @@ def _render(s, label):
         ],
         "upside_opportunities": [f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} above the most-likely path."],
         "executive_actions": [
-            f"Hold ~{rr_txt} to land the most-likely {_Q_LABEL} outlook.",
+            f"Hold ~{rr_txt} to land the most-likely {_pl} outlook.",
             "Focus on the largest at-risk product/region slices; revisit after the next run.",
         ],
         "source": "unified",
@@ -466,6 +489,7 @@ GRAPH_TITLES = {
 }
 
 def _explain(s, label, key):
+    _pl = s.get("period_label", _Q_LABEL)
     ml, qtd, worst, best = s["most_likely"], s["qtd"], s["worst"], s["best"]
     fc = max(0.0, ml - qtd)
     sp = s.get("spread_pct") or 0.0
@@ -476,7 +500,7 @@ def _explain(s, label, key):
     wape_s = f"{wape:.1f}% WAPE" if wape is not None else "WAPE unavailable"
 
     if key == "weekly":
-        exp = (f"Weekly Growth ARR for {label}, {_Q_LABEL}. The amber line is realized actuals "
+        exp = (f"Weekly Growth ARR for {label}, {_pl}. The amber line is realized actuals "
                f"({_fmt_m(qtd)} booked so far); the white line is the {REC_MODEL} most-likely forecast for the "
                f"remaining weeks (+{_fmt_m(fc)}), for a full-quarter landing of {_fmt_m(ml)}. The shaded band is the "
                f"P10–P90 range, {_fmt_m(worst)} to {_fmt_m(best)} (~{sp:.0f}% wide). Forecast momentum is {mom}.")
@@ -484,27 +508,27 @@ def _explain(s, label, key):
              f"Scenario range {_fmt_m(worst)}–{_fmt_m(best)} (~{sp:.0f}% wide)",
              f"Tracking {yoy_s}; momentum {mom}"]
     elif key == "ytd":
-        exp = (f"Cumulative Growth ARR for {label} through {_Q_LABEL}: realized actuals build to {_fmt_m(qtd)}, then the "
+        exp = (f"Cumulative Growth ARR for {label} through {_pl}: realized actuals build to {_fmt_m(qtd)}, then the "
                f"forecast path extends to a most-likely {_fmt_m(ml)} ({_fmt_m(worst)}–{_fmt_m(best)} across scenarios). "
                f"Use it to see whether the run-rate keeps pace with the quarter target.")
         b = [f"Realized to date {_fmt_m(qtd)}", f"Most-likely finish {_fmt_m(ml)}",
              f"Implied pace {rr_s}"]
     elif key == "seasonality":
         exp = (f"Each line is a year of weekly Growth ARR laid over ISO weeks 1–52, so recurring peaks and troughs line up. "
-               f"For {label}, {_Q_LABEL} is tracking {yoy_s}. Use it to spot the quarter-end surges and pacing patterns "
+               f"For {label}, {_pl} is tracking {yoy_s}. Use it to spot the quarter-end surges and pacing patterns "
                f"the models lean on.")
         b = ["Overlays years by ISO week to expose seasonality",
-             f"{_Q_LABEL} vs last year: {yoy_s}",
+             f"{_pl} vs last year: {yoy_s}",
              "Watch quarter-end weeks — historically the biggest spikes"]
     elif key == "by_product":
-        exp = (f"Splits the {label} {_Q_LABEL} forecast across product lines and geographies. The most-likely total is "
+        exp = (f"Splits the {label} {_pl} forecast across product lines and geographies. The most-likely total is "
                f"{_fmt_m(ml)}, with worst/best scenarios of {_fmt_m(worst)}/{_fmt_m(best)}. Use it to see which "
                f"segments carry the number and where the risk concentrates.")
         b = [f"Most-likely {_fmt_m(ml)} across segments",
              f"Scenario range {_fmt_m(worst)}–{_fmt_m(best)}",
              "Longer bars = larger share of the quarter"]
     elif key == "monthly":
-        exp = (f"Month-by-month for {label} {_Q_LABEL}: realized actuals ({_fmt_m(qtd)} so far) alongside the risk-floor / "
+        exp = (f"Month-by-month for {label} {_pl}: realized actuals ({_fmt_m(qtd)} so far) alongside the risk-floor / "
                f"most-likely / stretch scenarios, summing to a {_fmt_m(ml)} most-likely quarter. Closed months show actuals; "
                f"open months show the forecast.")
         b = [f"Quarter most-likely {_fmt_m(ml)}",
@@ -531,31 +555,47 @@ def _explain(s, label, key):
              "Band coverage should approach ~80% if calibrated",
              f"Point accuracy {wape_s}"]
     else:
-        exp, b = f"Detailed view of {label} Growth ARR for {_Q_LABEL}.", []
+        exp, b = f"Detailed view of {label} Growth ARR for {_pl}.", []
     return GRAPH_TITLES[key], exp, b
 
-# Assemble per-product stats incl. the ALL rollup
-_explain_stats = dict(stats)
-if stats:
-    _explain_stats["ALL"] = agg
+# Full matrix so the popover reflects the user's ACTUAL selection:
+# product (UCC / ITSG / ALL→Total rows) × region (Total + 4 markets) ×
+# scope_period (current quarter | full year) × 8 graphs.
+# 'ALL' uses the Total-rollup rows directly (per region), not summed stats.
+_EXPLAIN_PRODUCTS = {"UCC": "UCC", "ITSG": "ITSG", "ALL": "Total"}
+_EXPLAIN_REGIONS  = ["Total", "NA", "EMEA", "APAC", "LATAM"]
+_EXPLAIN_PERIODS  = ["quarter", "year"]
 
 ge_rows = []
-for label, s in _explain_stats.items():
-    for key in GRAPH_TITLES:
-        title, exp, bullets = _explain(s, "Total portfolio" if label == "ALL" else label, key)
-        ge_rows.append((latest_run, label, key, title, exp, json.dumps(bullets)))
+for ui_label, data_product in _EXPLAIN_PRODUCTS.items():
+    pdf = res[res["product"] == data_product]
+    if pdf.empty:
+        continue
+    for region in _EXPLAIN_REGIONS:
+        for period in _EXPLAIN_PERIODS:
+            s = _stats(pdf, region=region, period=period)
+            if not s:
+                continue
+            disp = "Total portfolio" if ui_label == "ALL" else ui_label
+            if region != "Total":
+                disp = f"{disp} · {region}"
+            for key in GRAPH_TITLES:
+                title, exp, bullets = _explain(s, disp, key)
+                ge_rows.append((latest_run, ui_label, region, period, key,
+                                title, exp, json.dumps(bullets)))
 
 if ge_rows:
     ge_df = spark.createDataFrame(
         ge_rows,
-        schema="run_date date, product string, graph_key string, title string, "
-               "explanation string, bullets string",
+        schema="run_date date, product string, region string, scope_period string, "
+               "graph_key string, title string, explanation string, bullets string",
     ).withColumn("generated_at", F.current_timestamp())
     (ge_df.write.format("delta").mode("overwrite")
-       .option("replaceWhere", "run_date = current_date()")
-       .option("mergeSchema", "true")
+       .option("overwriteSchema", "true")
        .saveAsTable(GRAPH_EXPLAIN_TABLE))
-    print(f"Wrote {ge_df.count()} graph explanations to {GRAPH_EXPLAIN_TABLE}.")
+    print(f"Wrote {ge_df.count()} graph explanations to {GRAPH_EXPLAIN_TABLE} "
+          f"({len(_EXPLAIN_PRODUCTS)} products x {len(_EXPLAIN_REGIONS)} regions x "
+          f"{len(_EXPLAIN_PERIODS)} periods x {len(GRAPH_TITLES)} graphs).")
 
 # COMMAND ----------
 

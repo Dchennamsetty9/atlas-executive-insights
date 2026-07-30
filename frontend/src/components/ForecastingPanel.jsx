@@ -150,11 +150,16 @@ const buildGraphExplanationFallback = () => ({
   bullets: ['The graph is still rendering normally.', 'If this persists, verify the forecast graph-explanation endpoint is available in the current environment.'],
 });
 
-const ExplainButton = ({ graphKey, product, productLine }) => {
+const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quarter }) => {
   const [open, setOpen]       = useState(false);
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [tried, setTried]     = useState(false);
+
+  // Re-fetch when the user's selection changes so the explanation always
+  // reflects the current product/region/period scope.
+  useEffect(() => { setTried(false); setData(null); setOpen(false); },
+    [graphKey, product, productLine, salesMarket, year, quarter]);
 
   const toggle = () => {
     const next = !open;
@@ -165,6 +170,9 @@ const ExplainButton = ({ graphKey, product, productLine }) => {
         graphKey,
         product && product !== 'All' ? product : null,
         productLine && productLine !== 'All' ? productLine : null,
+        salesMarket && salesMarket !== 'All' ? salesMarket : null,
+        year || null,
+        quarter || null,
       )
         .then((res) => setData(res))
         .catch(() => setData(buildGraphExplanationFallback()))
@@ -196,6 +204,13 @@ const ExplainButton = ({ graphKey, product, productLine }) => {
                 {data.source === 'demo' && <span style={{ fontSize: 9, color: '#f59e0b' }}>demo</span>}
                 {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8' }}>fallback</span>}
               </div>
+              {data.scope_note && (
+                <div style={{ fontSize: 10.5, color: '#f59e0b', lineHeight: 1.45, marginBottom: 8,
+                              padding: '6px 8px', background: 'rgba(245,158,11,0.07)',
+                              border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6 }}>
+                  ⚠ {data.scope_note}
+                </div>
+              )}
               <div style={{ fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>{data.explanation}</div>
               {(data.bullets || []).length > 0 && (
                 <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -216,12 +231,14 @@ const ExplainButton = ({ graphKey, product, productLine }) => {
   );
 };
 
-const CardWrap = ({ children, downloadName, explainKey, explainProduct, explainProductLine }) => {
+const CardWrap = ({ children, downloadName, explainKey, explainProduct, explainProductLine,
+                    explainRegion, explainYear, explainQuarter }) => {
   const ref = useRef(null);
   return (
     <div ref={ref} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
                   borderRadius: 12, padding: 16, position: 'relative' }}>
-      {explainKey && <ExplainButton graphKey={explainKey} product={explainProduct} productLine={explainProductLine} />}
+      {explainKey && <ExplainButton graphKey={explainKey} product={explainProduct} productLine={explainProductLine}
+                       salesMarket={explainRegion} year={explainYear} quarter={explainQuarter} />}
       {downloadName && (
         <button onClick={() => exportCardPng(ref, downloadName)} title="Download chart as PNG"
           aria-label="Download chart as PNG" data-export-hide
@@ -562,13 +579,27 @@ const MonthlyTable = ({ months }) => {
         <tbody>
           {quarters.map(q => {
             const qm = byQtr[q] || [];
-            // Only sum non-null actuals; leave null so fmtM renders — for fully-open quarters
-            const tot = qm.reduce((a, m) => ({
-              arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
-              arr_worst:  a.arr_worst  + m.arr_worst,
-              arr_likely: a.arr_likely + m.arr_likely,
-              arr_best:   a.arr_best   + m.arr_best,
-            }), { arr_actual: null, arr_worst: 0, arr_likely: 0, arr_best: 0 });
+            // Quarter totals: likely/actuals sum; the band combines month
+            // half-widths in QUADRATURE (sqrt of sum of squares), matching the
+            // Overview KPI's variance aggregation — additive summing would
+            // re-inflate the band. Nulls (actuals-only months) contribute 0.
+            const agg = qm.reduce((a, m) => {
+              const lk = m.arr_likely ?? 0;
+              const lo = Math.max(0, lk - (m.arr_worst ?? lk));
+              const up = Math.max(0, (m.arr_best ?? lk) - lk);
+              return {
+                arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
+                arr_likely: a.arr_likely + lk,
+                loSq: a.loSq + lo * lo,
+                upSq: a.upSq + up * up,
+              };
+            }, { arr_actual: null, arr_likely: 0, loSq: 0, upSq: 0 });
+            const tot = {
+              arr_actual: agg.arr_actual,
+              arr_likely: agg.arr_likely,
+              arr_worst:  Math.max(0, agg.arr_likely - Math.sqrt(agg.loSq)),
+              arr_best:   agg.arr_likely + Math.sqrt(agg.upSq),
+            };
             return [
               ...qm.map((m, i) => (
                 <tr key={`${q}-${m.month}`} style={{ background: i%2===0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
@@ -725,7 +756,7 @@ const normalizeInsightItems = (value) => {
 };
 
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
-const AiInsightsSection = ({ model, prodLine }) => {
+const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
@@ -733,9 +764,10 @@ const AiInsightsSection = ({ model, prodLine }) => {
   const loadAi = useCallback(async () => {
     setAiLoading(true); setAiError(null);
     try {
-      // AI Insights are pre-computed in Delta table — not model/product-specific;
-      // call v2 endpoint which reads from arr_forecast_insights Delta table.
-      const res = await apiService.getForecastV2Intelligence();
+      // Unified insights are precomputed per product (UCC/ITSG/ALL) — pass the
+      // active product so the tab reflects the current selection. Region gets a
+      // scope note from the backend (insights are product-level).
+      const res = await apiService.getForecastV2Intelligence(prodLine, salesMarket);
       // Support both wrapped {source, data:{...}} and legacy flat shape
       const d = (res?.data && typeof res.data === 'object') ? res.data : res;
       setAiData({ ...d, _source: res?.source ?? d?.source });
@@ -744,9 +776,7 @@ const AiInsightsSection = ({ model, prodLine }) => {
     } finally {
       setAiLoading(false);
     }
-  // Pre-computed Delta table: not model/product-specific — no deps needed;
-  // remove model/prodLine to avoid background refetches on filter changes.
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [prodLine, salesMarket]); // refetch when the product/region selection changes
 
   useEffect(() => { loadAi(); }, [loadAi]);
 
@@ -864,6 +894,14 @@ const AiInsightsSection = ({ model, prodLine }) => {
         </div>
       </div>
 
+      {/* Scope note (e.g. region filter doesn't narrow product-level insights) */}
+      {aiData?.scope_note && (
+        <div style={{ padding: '8px 14px', borderRadius: 8, fontSize: 12, color: '#f59e0b',
+                      background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.2)' }}>
+          ⚠ {aiData.scope_note}
+        </div>
+      )}
+
       {/* Narrative */}
       {narrative && (
         <div style={{ fontSize: 14, color: 'var(--text-secondary, #94a3b8)', lineHeight: 1.7,
@@ -966,7 +1004,7 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProductLine={prodLine}>
+    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProductLine={prodLine} explainRegion={salesMarket}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
@@ -1158,7 +1196,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         </div>
       )}
 
-      <CardWrap downloadName={`model_lab_${product}_${sel || ''}`} explainKey="model_lab" explainProduct={product}>
+      <CardWrap downloadName={`model_lab_${product}_${sel || ''}`} explainKey="model_lab" explainProduct={product} explainRegion={salesMarket}>
         <SectionTitle>{mlLabel(sel)} — Forecast with its own confidence band</SectionTitle>
         {mlLoading ? <Skeleton height={300} /> : fan.length === 0 ? (
           <EmptyState message="No model forecast for this selection yet" />
@@ -1184,7 +1222,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         )}
       </CardWrap>
 
-      <CardWrap downloadName={`model_lab_${product}_comparison`} explainKey="model_lab" explainProduct={product}>
+      <CardWrap downloadName={`model_lab_${product}_comparison`} explainKey="model_lab" explainProduct={product} explainRegion={salesMarket}>
         <SectionTitle>Model Comparison — where the models agree & disagree (P50)</SectionTitle>
         {mlLoading ? <Skeleton height={240} /> : compare.length === 0 ? (
           <EmptyState message="No model data for this selection yet" />
@@ -2033,7 +2071,8 @@ const ForecastingPanel = () => {
                             { label: 'Most Likely',  val: ml,         color: '#f1f5f9', sub: `${periodShort} outlook — planning center` },
                             { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · 1-in-5 upside (P90)` },
                             { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · 1-in-10 downside (P10)` },
-                            { label: 'Actuals YTD',  val: ytdActual,  color: '#f59e0b', sub: `Realized so far in ${selectedYear}` },
+                            { label: selectedQuarter ? 'Actuals (QTD)' : 'Actuals YTD', val: ytdActual, color: '#f59e0b',
+                              sub: selectedQuarter ? `Realized so far in Q${selectedQuarter} ${selectedYear}` : `Realized so far in ${selectedYear}` },
                           ].map(({ label, val, color, sub }) => (
                             <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
                               <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
@@ -2093,7 +2132,7 @@ const ForecastingPanel = () => {
                 );
               })()}
 
-              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine}>
+              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
                   {(() => {
@@ -2128,8 +2167,12 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
 
-              <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine}>
-                <SectionTitle>Running Totals — YTD Cumulative</SectionTitle>
+              <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
+                <SectionTitle>
+                  Running Totals — {selectedQuarter ? `Q${selectedQuarter} ${selectedYear} Cumulative (QTD)` : `${selectedYear} Cumulative (YTD)`}
+                  {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  {salesMarket && salesMarket !== 'All' ? ` · ${salesMarket}` : ''}
+                </SectionTitle>
                 <GraphInsight summary={graphInsights.ytd}
                   chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path"
                   dataPoints={ytdView} />
@@ -2153,7 +2196,7 @@ const ForecastingPanel = () => {
               </div>
 
               {multiYearView === 'overlay' && (
-                <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine}>
+                <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
                   <GraphInsight summary={graphInsights.seasonality}
                     chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years"
@@ -2168,7 +2211,7 @@ const ForecastingPanel = () => {
               )}
 
               {multiYearView === 'timeline' && (
-                <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProductLine={prodLine}>
+                <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
                   <GraphInsight summary={graphInsights.trend} />
                   {loading ? <Skeleton height={260} /> : (
@@ -2189,7 +2232,7 @@ const ForecastingPanel = () => {
 
           {tab === 'By Product' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProductLine={prodLine}>
+              <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
                 <GraphInsight summary={graphInsights.byProduct}
                   chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo"
@@ -2226,7 +2269,7 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
               {!loading && byProductView?.by_geo?.length > 0 && (
-                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProductLine={prodLine}>
+                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                   <SectionTitle>Forecast by Geography</SectionTitle>
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                     <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
@@ -2240,7 +2283,7 @@ const ForecastingPanel = () => {
           )}
 
           {tab === 'Monthly' && (
-            <CardWrap explainKey="monthly" explainProductLine={prodLine}>
+            <CardWrap explainKey="monthly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
               <GraphInsight summary={graphInsights.monthly}
                 chartType="monthly_forecast" metricName="Monthly Growth ARR — actuals vs forecast scenarios"
@@ -2258,7 +2301,7 @@ const ForecastingPanel = () => {
                   </div>
                 ))}
               </div>
-              <CardWrap explainKey="accuracy" explainProductLine={prodLine}>
+              <CardWrap explainKey="accuracy" explainProductLine={prodLine} explainRegion={salesMarket}>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
                 <GraphInsight summary={graphInsights.accuracy}
                   chartType="model_accuracy_leaderboard" metricName="Model MAPE by product and geo slice"
@@ -2282,7 +2325,7 @@ const ForecastingPanel = () => {
             </>
           )}
 
-          {tab === 'AI Insights' && <AiInsightsSection model={model} prodLine={prodLine} />}
+          {tab === 'AI Insights' && <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />}
 
           {tab === 'Exec Mode' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
