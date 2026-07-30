@@ -149,10 +149,7 @@ resources:
         - task_key: run_arr_forecast_v2_main
           job_cluster_key: arr_v2_cluster
           notebook_task:
-            # Upload first:
-            #   databricks workspace import notebooks/arr_forecast_v2_main.py \
-            #     /Users/gaim-team/arr_forecast_v2_main --format SOURCE --language PYTHON --overwrite
-            notebook_path: /Users/gaim-team/arr_forecast_v2_main
+            notebook_path: /Users/dileep.chennamsetty@goto.com/arr_forecast_v2_main
             source: WORKSPACE
           libraries:
             - pypi:
@@ -167,10 +164,7 @@ resources:
             - task_key: run_arr_forecast_v2_main
           job_cluster_key: arr_v2_cluster
           notebook_task:
-            # Upload first:
-            #   databricks workspace import notebooks/arr_forecast_v2_chronos.py \
-            #     /Users/gaim-team/arr_forecast_v2_chronos --format SOURCE --language PYTHON --overwrite
-            notebook_path: /Users/gaim-team/arr_forecast_v2_chronos
+            notebook_path: /Users/dileep.chennamsetty@goto.com/arr_forecast_v2_chronos
             source: WORKSPACE
           libraries:
             - pypi:

@@ -35,6 +35,12 @@ env:
   # Preferred alias used by forecasting module and deployment guides
   - name: DATABRICKS_SQL_WAREHOUSE_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
+
+  # Use the unified V5-notebook compat view as the forecast table.
+  # forecast_results_v2compat is created daily by forecast_unify_publish and has
+  # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
+  - name: FORECAST_V2_RESULTS_TABLE
+    value: "forecast_results_v2compat"
   
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.
