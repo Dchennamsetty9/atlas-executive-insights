@@ -195,7 +195,7 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
            visible while reading the insight. Docked to the right edge of the
            viewport, vertically centered, with its own close button. */
         <div style={{ position: 'fixed', top: '50%', right: 16, transform: 'translateY(-50%)',
-                      width: 380, maxWidth: '38vw', maxHeight: '76vh', overflowY: 'auto', zIndex: 60,
+                      width: 380, maxWidth: 'min(38vw, calc(100vw - 32px))', maxHeight: '76vh', overflowY: 'auto', zIndex: 60,
                       background: '#0f172a', border: '1px solid rgba(168,85,247,0.3)', borderRadius: 12,
                       padding: '16px 18px', boxShadow: '0 16px 56px rgba(0,0,0,0.6)', textAlign: 'left' }}>
           <button onClick={() => setOpen(false)} aria-label="Close explanation"
@@ -490,8 +490,10 @@ const MonthlyTable = ({ months }) => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {['Year','Qtr','Month','Actuals','Risk Floor','Most Likely','Stretch Case'].map(h => (
-              <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>{h}</th>
+            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P10 — 1-in-10 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P90 — 1-in-5 upside scenario']].map(([h, tip]) => (
+              <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>
+                {tip ? <abbr title={tip} style={{ cursor: 'help', textDecoration: 'none' }}>{h}</abbr> : h}
+              </th>
             ))}
           </tr>
         </thead>
@@ -593,8 +595,9 @@ const AccuracyTable = ({ data }) => {
   return (
     <div>
       <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
-        Accuracy is scored per product across all regions (holdout WAPE from the model
-        backtests{hasEns ? ', including the recommended Ensemble ★' : ''}). Per-region accuracy
+        Accuracy is scored per product across all regions (holdout{' '}
+        <abbr title="WAPE = Weighted Absolute Percentage Error — lower is better. 0% = perfect, 20% = strong, >50% = unreliable." style={{ cursor: 'help', borderBottom: '1px dotted #475569', textDecoration: 'none' }}>WAPE</abbr>{' '}
+        from the model backtests{hasEns ? ', including the recommended Ensemble ★' : ''}). Per-region accuracy
         isn't produced by the current model pipeline, so region filters don't narrow this table.
       </div>
       {hiddenModels && (
@@ -1855,7 +1858,7 @@ const ForecastingPanel = () => {
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                             <div style={{ gridColumn: '1 / 3', background: 'rgba(16,185,129,0.06)',
                                           border: '1px solid rgba(16,185,129,0.25)', borderRadius: 10, padding: '12px 14px' }}>
-                              <div style={{ fontSize: 9, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Closed Quarter — Actuals</div>
+                              <div style={{ fontSize: 9, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Closed Quarter — Final Actuals</div>
                               <div style={{ fontSize: 22, fontWeight: 800, color: '#10b981', letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(ml)}</div>
                               <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>Q{selectedQuarter ?? ''} {selectedYear} final — scenario bands equal actuals</div>
                             </div>
