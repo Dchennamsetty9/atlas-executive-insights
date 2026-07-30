@@ -653,12 +653,16 @@ spark.sql(f"""
     GROUP BY ds, product, sales_market, forecast_type, run_date
 """)
 
-# Leaderboard view (mirrors arr_forecast_v2_leaderboard). Accuracy is per
-# (product, model), so it repeats across a product's markets.
+# Leaderboard view (mirrors arr_forecast_v2_leaderboard). PRODUCT-LEVEL ONLY:
+# the monitoring baselines score models per product across all regions, so
+# per-region rows just repeated the product value and implied precision the
+# pipeline doesn't have. Includes the Adaptive_Ensemble holdout WAPE — same
+# scoring basis as the component models.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {LEADERBOARD_VIEW} AS
     WITH m AS (
-        SELECT product, sales_market,
+        SELECT product, 'Total' AS sales_market,
+            MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN model_wape END) AS mape_ensemble,
             MAX(CASE WHEN model = 'ETS'            THEN model_wape END) AS mape_ets,
             MAX(CASE WHEN model = 'Prophet_trend'  THEN model_wape END) AS mape_prophet,
             MAX(CASE WHEN model LIKE 'Global_LGB%' THEN model_wape END) AS mape_lightgbm,
@@ -667,21 +671,23 @@ spark.sql(f"""
             MAX(run_date) AS run_date
         FROM {RESULTS_TABLE}
         WHERE model_wape IS NOT NULL
-          AND UPPER(TRIM(sales_market)) <> 'UNKNOWN'
-        GROUP BY product, sales_market
+          AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+        GROUP BY product
     ),
     l AS (
         SELECT *, LEAST(
+            COALESCE(mape_ensemble, 1e9),
             COALESCE(mape_ets, 1e9), COALESCE(mape_prophet, 1e9),
             COALESCE(mape_lightgbm, 1e9), COALESCE(mape_mstl_v2, 1e9),
             COALESCE(mape_dhr_arima, 1e9)) AS lv
         FROM m
     )
-    SELECT product, sales_market, mape_ets, mape_prophet, mape_lightgbm,
+    SELECT product, sales_market, mape_ensemble, mape_ets, mape_prophet, mape_lightgbm,
            mape_mstl_v2, mape_dhr_arima,
            CASE WHEN lv >= 1e9 THEN NULL ELSE lv END AS best_mape,
            CASE
                WHEN lv >= 1e9 THEN NULL
+               WHEN lv = COALESCE(mape_ensemble, 1e9)  THEN 'Ensemble'
                WHEN lv = COALESCE(mape_ets, 1e9)       THEN 'ETS'
                WHEN lv = COALESCE(mape_prophet, 1e9)   THEN 'Prophet'
                WHEN lv = COALESCE(mape_lightgbm, 1e9)  THEN 'LightGBM'

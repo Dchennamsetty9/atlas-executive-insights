@@ -2205,11 +2205,15 @@ async def get_leaderboard(
     mstl_col = _pick_lb_column(lb_cols, "mape_mstl_v2", "mape_chronos")
     # DHR has no legacy equivalent in old schemas; keep NULL when column is missing.
     dhr_col = _pick_lb_column(lb_cols, "mape_dhr_arima")
+    # Ensemble holdout WAPE (from the monitoring baselines via the unify view);
+    # NULL on legacy schemas → realized-MAPE fallback below fills it.
+    ens_col = _pick_lb_column(lb_cols, "mape_ensemble")
 
     sql = f"""
         SELECT
             product,
             {_normalized_market_expr('sales_market')} AS sales_market,
+            AVG(CAST({ens_col} AS DOUBLE)) AS mape_ensemble,
             AVG(CAST(mape_ets AS DOUBLE)) AS mape_ets,
             AVG(CAST(mape_prophet AS DOUBLE)) AS mape_prophet,
             AVG(CAST(mape_lightgbm AS DOUBLE)) AS mape_lightgbm,
@@ -2231,6 +2235,10 @@ async def get_leaderboard(
     data = [{
         "product":        str(r.get("product") or ""),
         "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
+        # Holdout-scored ensemble WAPE when the unify view provides it; the
+        # realized-MAPE computation below only fills slices where this is null.
+        **({"Ensemble": round(_f(r.get("mape_ensemble")), 1)}
+           if _f(r.get("mape_ensemble"), 0) > 0 else {}),
         "ETS":            _f(r.get("mape_ets"),       999),
         "Prophet":        _f(r.get("mape_prophet"),   999),
         "LightGBM":       _f(r.get("mape_lightgbm"),  999),
@@ -2286,6 +2294,9 @@ async def get_leaderboard(
             for r in (ens_rows or [])
         }
         for row in data:
+            # Holdout WAPE from the view wins; realized MAPE only fills gaps.
+            if "Ensemble" in row:
+                continue
             val = ens_map.get((row["product"], row["sales_market"]))
             if val is not None and val < 999:
                 row["Ensemble"] = round(val, 1)

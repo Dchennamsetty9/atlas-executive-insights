@@ -191,9 +191,19 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
         ✨
       </button>
       {open && (
-        <div style={{ position: 'absolute', top: 30, right: 0, width: 360, maxHeight: 340, overflowY: 'auto',
-                      background: '#0f172a', border: '1px solid rgba(168,85,247,0.25)', borderRadius: 10,
-                      padding: '14px 16px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)', textAlign: 'left' }}>
+        /* Fixed side panel (not an overlay on the card) so the chart stays fully
+           visible while reading the insight. Docked to the right edge of the
+           viewport, vertically centered, with its own close button. */
+        <div style={{ position: 'fixed', top: '50%', right: 16, transform: 'translateY(-50%)',
+                      width: 380, maxWidth: '38vw', maxHeight: '76vh', overflowY: 'auto', zIndex: 60,
+                      background: '#0f172a', border: '1px solid rgba(168,85,247,0.3)', borderRadius: 12,
+                      padding: '16px 18px', boxShadow: '0 16px 56px rgba(0,0,0,0.6)', textAlign: 'left' }}>
+          <button onClick={() => setOpen(false)} aria-label="Close explanation"
+            style={{ position: 'absolute', top: 8, right: 10, width: 22, height: 22, borderRadius: 6,
+                     background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+                     color: '#94a3b8', fontSize: 11, lineHeight: 1, cursor: 'pointer', padding: 0 }}>
+            ✕
+          </button>
           {loading && <div style={{ fontSize: 12, color: '#64748b' }}>✨ Loading explanation…</div>}
           {!loading && data && (
             <>
@@ -259,97 +269,6 @@ const SectionTitle = ({ children }) => (
                 letterSpacing: '0.06em', marginBottom: 10 }}>{children}</div>
 );
 
-// Downsample chart rows to a compact payload for the LLM (≤ maxPoints, nulls stripped)
-const _compactDataPoints = (rows, maxPoints = 40) => {
-  const clean = (rows || []).filter(r => r && typeof r === 'object');
-  if (clean.length <= maxPoints) return clean;
-  const step = Math.ceil(clean.length / maxPoints);
-  return clean.filter((_, i) => i % step === 0 || i === clean.length - 1);
-};
-
-/**
- * GraphInsight — collapsible insight popup on a chart card.
- * Always shows the deterministic client-side summary immediately.
- * If chartType/metricName/dataPoints are provided, lazily fetches a live LLM
- * annotation (POST /api/ai/chart-annotation) on first expand and caches it;
- * on failure the deterministic summary simply stands alone (no regression).
- */
-const GraphInsight = ({ summary, chartType, metricName, dataPoints }) => {
-  const [open, setOpen] = useState(false);
-  const [ai, setAi] = useState(null);          // { annotation } once fetched
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiTried, setAiTried] = useState(false);
-  const aiCapable = Boolean(chartType && metricName && dataPoints?.length);
-
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    // Lazy-fetch the LLM annotation once, on first expand only
-    if (next && aiCapable && !aiTried) {
-      setAiTried(true);
-      setAiLoading(true);
-      apiService.getAIChartAnnotation(chartType, _compactDataPoints(dataPoints), metricName)
-        .then((res) => { if (res?.annotation) setAi(res); })
-        .catch(() => { /* deterministic summary stands alone */ })
-        .finally(() => setAiLoading(false));
-    }
-  };
-
-  if (!summary && !aiCapable) return null;
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <button
-        onClick={toggle}
-        style={{
-          border: '1px solid rgba(59,130,246,0.22)',
-          background: 'rgba(59,130,246,0.08)',
-          color: '#93c5fd',
-          borderRadius: 8,
-          padding: '4px 10px',
-          fontSize: 11,
-          fontWeight: 700,
-          cursor: 'pointer',
-          letterSpacing: '0.02em',
-        }}
-      >
-        {open ? '▾' : '▸'} {aiCapable ? '✨ AI Insight' : 'AI Insight'}
-      </button>
-      {open && (
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 12,
-            color: '#cbd5e1',
-            lineHeight: 1.6,
-            background: 'rgba(30,41,59,0.45)',
-            border: '1px solid rgba(148,163,184,0.2)',
-            borderRadius: 8,
-            padding: '8px 10px',
-          }}
-        >
-          {summary && <div>{summary}</div>}
-          {aiCapable && (
-            <div style={{ marginTop: summary ? 8 : 0, paddingTop: summary ? 8 : 0,
-                          borderTop: summary ? '1px solid rgba(148,163,184,0.15)' : 'none' }}>
-              {aiLoading && (
-                <span style={{ color: '#64748b', fontStyle: 'italic' }}>✨ Asking AI about this chart…</span>
-              )}
-              {!aiLoading && ai?.annotation && (
-                <span>
-                  <span style={{ color: '#a78bfa', fontWeight: 700, marginRight: 6 }}>✨ AI:</span>
-                  {ai.annotation}
-                </span>
-              )}
-              {!aiLoading && aiTried && !ai?.annotation && (
-                <span style={{ color: '#475569', fontSize: 11 }}>AI annotation unavailable — showing rule-based summary.</span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
@@ -673,12 +592,11 @@ const AccuracyTable = ({ data }) => {
   const hiddenModels = [!hasMstl && 'MSTL', !hasDhr && 'DHR-ARIMA'].filter(Boolean).join(', ');
   return (
     <div>
-      {hasEns && (
-        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
-          ★ Ensemble MAPE is realized accuracy — past forecasts vs weeks that later closed as actuals.
-          Individual models are scored on holdout validation.
-        </div>
-      )}
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
+        Accuracy is scored per product across all regions (holdout WAPE from the model
+        backtests{hasEns ? ', including the recommended Ensemble ★' : ''}). Per-region accuracy
+        isn't produced by the current model pipeline, so region filters don't narrow this table.
+      </div>
       {hiddenModels && (
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, padding: '6px 10px',
                       background: 'rgba(255,255,255,0.02)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)' }}>
@@ -699,7 +617,7 @@ const AccuracyTable = ({ data }) => {
           {(data || []).map((r, i) => (
             <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', background: i%2===0?'rgba(255,255,255,0.01)':'transparent' }}>
               <td style={{ padding: '6px 12px', fontSize: 12, color: '#f1f5f9' }}>{r.product}</td>
-              <td style={{ padding: '6px 12px', fontSize: 11, color: '#64748b' }}>{r.sales_market}</td>
+              <td style={{ padding: '6px 12px', fontSize: 11, color: '#64748b' }}>{r.sales_market === 'Total' ? 'All regions' : r.sales_market}</td>
               {models.map(m => (
                 <td key={m.key} style={{ padding: '6px 12px', textAlign: 'right', fontSize: 12,
                                      color: r[m.key]&&r[m.key]<999 ? mapeColor(r[m.key]) : '#334155',
@@ -1382,15 +1300,12 @@ const _buildDemoByProduct = () => ({
 // Demo leaderboard mirrors the exact holdout WAPE values from UCC Foundation V8 + ITSG Growth V4
 // Models: Prophet (→Prophet_trend), MSTL_v2, ETS, DHR_ARIMA, LightGBM (→Global_LGB_Q50)
 // Chronos column removed — not in model suite; best_model uses Prophet for UCC (14.4% WAPE)
+// Product-level only — mirrors the live leaderboard view (accuracy is scored
+// per product across all regions; per-region rows carried no real signal).
 const _buildDemoLeaderboard = () => [
-  { product: 'Total', sales_market: 'Total', Ensemble: 14.8, ETS: 17.1, Prophet: 16.2, MSTL_v2: 19.8, DHR_ARIMA: 23.6, LightGBM: 18.3, best_mape: 16.2, best_model: 'Prophet' },
-  { product: 'UCC',   sales_market: 'Total', ETS: 15.6, Prophet: 14.4, MSTL_v2: 17.0, DHR_ARIMA: 22.5, LightGBM: 20.7, best_mape: 14.4, best_model: 'Prophet' },
-  { product: 'ITSG',  sales_market: 'Total', ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 34.1, best_model: 'ETS' },
-  { product: 'Total', sales_market: 'NA',   ETS: 17.5, Prophet: 16.7, MSTL_v2: 20.1, DHR_ARIMA: 24.0, LightGBM: 18.8, best_mape: 16.7, best_model: 'Prophet' },
-  { product: 'Total', sales_market: 'EMEA', ETS: 18.2, Prophet: 17.1, MSTL_v2: 21.3, DHR_ARIMA: 25.1, LightGBM: 19.4, best_mape: 17.1, best_model: 'Prophet' },
-  { product: 'Total', sales_market: 'APAC', ETS: 19.4, Prophet: 18.3, MSTL_v2: 22.6, DHR_ARIMA: 26.7, LightGBM: 20.9, best_mape: 18.3, best_model: 'Prophet' },
-  { product: 'Total', sales_market: 'LATAM', ETS: 20.1, Prophet: 19.0, MSTL_v2: 23.4, DHR_ARIMA: 27.5, LightGBM: 21.7, best_mape: 19.0, best_model: 'Prophet' },
-  { product: 'UCC',   sales_market: 'NA',   ETS: 15.1, Prophet: 13.9, MSTL_v2: 16.4, DHR_ARIMA: 21.8, LightGBM: 19.9, best_mape: 13.9, best_model: 'Prophet' },
+  { product: 'Total', sales_market: 'Total', Ensemble: 14.8, ETS: 17.1, Prophet: 16.2, MSTL_v2: 19.8, DHR_ARIMA: 23.6, LightGBM: 18.3, best_mape: 14.8, best_model: 'Ensemble' },
+  { product: 'UCC',   sales_market: 'Total', Ensemble: 13.6, ETS: 15.6, Prophet: 14.4, MSTL_v2: 17.0, DHR_ARIMA: 22.5, LightGBM: 20.7, best_mape: 13.6, best_model: 'Ensemble' },
+  { product: 'ITSG',  sales_market: 'Total', Ensemble: 31.9, ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 31.9, best_model: 'Ensemble' },
 ];
 
 const ForecastingPanel = () => {
@@ -1596,111 +1511,6 @@ const ForecastingPanel = () => {
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
-  const graphInsights = useMemo(() => {
-    const insight = {
-      weekly: null,
-      ytd: null,
-      seasonality: null,
-      trend: null,
-      byProduct: null,
-      monthly: null,
-      accuracy: null,
-    };
-
-    const actuals = (weeklyView || []).filter((r) => r.arr_actual != null);
-    const forecast = (weeklyView || []).filter((r) => r.arr_likely != null);
-    if (actuals.length && forecast.length) {
-      const first = Number(actuals[0].arr_actual || 0);
-      const last = Number(actuals[actuals.length - 1].arr_actual || 0);
-      const trendPct = first > 0 ? ((last - first) / first) * 100 : 0;
-      const avgBandPct = forecast.length
-        ? forecast.reduce((s, r) => {
-            const likely = Number(r.arr_likely || 0);
-            const spread = Number(r.arr_best || 0) - Number(r.arr_worst || 0);
-            return s + (likely > 0 ? (spread / likely) * 100 : 0);
-          }, 0) / forecast.length
-        : 0;
-      const quarterText = selectedQuarter ? `Q${selectedQuarter}` : 'all quarters';
-      insight.weekly = `Actuals trend ${trendPct >= 0 ? 'up' : 'down'} ${Math.abs(trendPct).toFixed(1)}% through ${quarterText} ${selectedYear}. Most-likely forecast sits inside an average confidence band of ${Math.max(0, avgBandPct).toFixed(1)}%.`;
-    }
-
-    const ytdRows = (ytdView || []).filter((r) => r.ytd_actual != null || r.ytd_likely != null);
-    if (ytdRows.length) {
-      const lastActual = [...ytdRows].reverse().find((r) => r.ytd_actual != null)?.ytd_actual ?? null;
-      const lastLikely = [...ytdRows].reverse().find((r) => r.ytd_likely != null)?.ytd_likely ?? null;
-      const gap = (lastLikely != null && lastActual != null) ? Number(lastLikely) - Number(lastActual) : null;
-      insight.ytd = gap == null
-        ? `YTD curve is tracking with current selection (${selectedYear}${selectedQuarter ? `, Q${selectedQuarter}` : ''}).`
-        : `YTD actual is ${fmtM(lastActual)} versus likely path ${fmtM(lastLikely)}, a ${gap >= 0 ? 'remaining upside' : 'shortfall'} of ${fmtM(Math.abs(gap))}.`;
-    }
-
-    const histRows = historicalView || [];
-    if (histRows.length) {
-      const totalsByYear = histRows.reduce((acc, r) => {
-        const y = Number(r.year);
-        acc[y] = (acc[y] || 0) + Number(r.arr || 0);
-        return acc;
-      }, {});
-      const years = Object.keys(totalsByYear).map(Number).sort((a, b) => a - b);
-      const curr = totalsByYear[selectedYear] || null;
-      const prevYear = years.filter((y) => y < selectedYear).slice(-1)[0];
-      const prev = prevYear ? totalsByYear[prevYear] : null;
-      if (curr != null && prev != null && prev > 0) {
-        const yoy = ((curr - prev) / prev) * 100;
-        insight.seasonality = `${selectedYear} seasonal run-rate is ${yoy >= 0 ? 'above' : 'below'} prior year by ${Math.abs(yoy).toFixed(1)}%, showing where weekly demand is accelerating or flattening.`;
-      } else {
-        insight.seasonality = `Seasonality chart highlights recurring weekly peaks and troughs for ${selectedYear} to guide quarter pacing.`;
-      }
-
-      const vals = histRows.map((r) => Number(r.arr || 0)).filter((v) => Number.isFinite(v));
-      if (vals.length > 5) {
-        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-        const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
-        const cv = mean > 0 ? (Math.sqrt(variance) / mean) * 100 : 0;
-        insight.trend = `Weekly trend volatility is ${cv.toFixed(1)}% of the mean, which indicates ${cv > 18 ? 'higher forecasting risk' : 'stable execution'} across the selected horizon.`;
-      }
-    }
-
-    const lines = byProductView?.by_product_line || byProductView?.by_product || [];
-    if (lines.length) {
-      const sorted = [...lines].sort((a, b) => Number(b.arr_likely || 0) - Number(a.arr_likely || 0));
-      const lead = sorted[0];
-      const second = sorted[1];
-      const gap = second ? Number(lead.arr_likely || 0) - Number(second.arr_likely || 0) : null;
-      insight.byProduct = gap == null
-        ? `${lead.product_line || lead.product} is the primary contributor in the current forecast mix.`
-        : `${lead.product_line || lead.product} leads forecast mix at ${fmtM(lead.arr_likely)}, ahead of ${second.product_line || second.product} by ${fmtM(Math.abs(gap))}.`;
-    }
-
-    const monthRows = monthlyView || [];
-    if (monthRows.length) {
-      const totalLikely = monthRows.reduce((s, m) => s + Number(m.arr_likely || 0), 0);
-      const totalActual = monthRows.reduce((s, m) => s + Number(m.arr_actual || 0), 0);
-      const openMonths = monthRows.filter((m) => !m.arr_actual).length;
-      insight.monthly = `Monthly view shows ${fmtM(totalActual)} realized and ${fmtM(totalLikely)} likely for ${selectedYear}${selectedQuarter ? ` Q${selectedQuarter}` : ''}, with ${openMonths} month(s) still forecast-driven.`;
-    }
-
-    const totalRow = (leaderboardView || []).find((r) =>
-      (r.product === 'Total' || r.product === 'All') &&
-      (r.sales_market === 'Total' || r.sales_market === 'All')
-    );
-    if (totalRow) {
-      const models = [
-        { name: 'ETS',      val: Number(totalRow.ETS      || Infinity) },
-        { name: 'Prophet',  val: Number(totalRow.Prophet  || Infinity) },
-        { name: 'LightGBM', val: Number(totalRow.LightGBM || Infinity) },
-        { name: 'MSTL_v2',  val: Number(totalRow.MSTL_v2  || Infinity) },
-        { name: 'DHR_ARIMA',val: Number(totalRow.DHR_ARIMA|| Infinity) },
-        // Chronos excluded — not in notebook model suite
-      ].filter((m) => Number.isFinite(m.val) && m.val < 999);
-      const best = [...models].sort((a, b) => a.val - b.val)[0];
-      if (best) {
-        insight.accuracy = `${formatModelLabel(best.name)} is currently the most accurate model at ${best.val.toFixed(1)}% MAPE on the total slice; use it as the tie-breaker when scenario ranges are wide.`;
-      }
-    }
-
-    return insight;
-  }, [weeklyView, ytdView, historicalView, byProductView, monthlyView, leaderboardView, selectedYear, selectedQuarter]);
 
   // Per-model MAPE for pill badges (Total/All slice)
   const modelMapes = useMemo(() => {
@@ -2153,9 +1963,6 @@ const ForecastingPanel = () => {
                     );
                   })()}
                 </div>
-                <GraphInsight summary={graphInsights.weekly}
-                  chartType="weekly_forecast" metricName="Weekly Growth ARR — actuals vs forecast scenarios"
-                  dataPoints={weeklyView} />
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                   <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
                   <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
@@ -2173,9 +1980,6 @@ const ForecastingPanel = () => {
                   {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
                   {salesMarket && salesMarket !== 'All' ? ` · ${salesMarket}` : ''}
                 </SectionTitle>
-                <GraphInsight summary={graphInsights.ytd}
-                  chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path"
-                  dataPoints={ytdView} />
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
             </div>
@@ -2198,9 +2002,6 @@ const ForecastingPanel = () => {
               {multiYearView === 'overlay' && (
                 <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
-                  <GraphInsight summary={graphInsights.seasonality}
-                    chartType="seasonality_overlay" metricName="Weekly Growth ARR by ISO week across years"
-                    dataPoints={historicalView} />
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
                       <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
@@ -2213,7 +2014,6 @@ const ForecastingPanel = () => {
               {multiYearView === 'timeline' && (
                 <CardWrap downloadName="historical_trend_timeline" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Weekly Trend — Timeline</SectionTitle>
-                  <GraphInsight summary={graphInsights.trend} />
                   {loading ? <Skeleton height={260} /> : (
                     <ResponsiveContainer width="100%" height={260}>
                       <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
@@ -2234,9 +2034,6 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap downloadName="forecast_by_product" explainKey="by_product" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>Forecast by Product Line & Product</SectionTitle>
-                <GraphInsight summary={graphInsights.byProduct}
-                  chartType="by_product_forecast" metricName="Forecast Growth ARR by product line and geo"
-                  dataPoints={byProductView?.by_product} />
                 {loading ? <Skeleton height={200} /> : byProductView ? <ByProductChart byProduct={byProductView.by_product} byLine={byProductView.by_product_line} /> : <EmptyState />}
               </CardWrap>
               {!loading && byProductView?.by_product && (
@@ -2285,9 +2082,6 @@ const ForecastingPanel = () => {
           {tab === 'Monthly' && (
             <CardWrap explainKey="monthly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
               <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
-              <GraphInsight summary={graphInsights.monthly}
-                chartType="monthly_forecast" metricName="Monthly Growth ARR — actuals vs forecast scenarios"
-                dataPoints={monthlyView} />
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
             </CardWrap>
           )}
@@ -2303,9 +2097,6 @@ const ForecastingPanel = () => {
               </div>
               <CardWrap explainKey="accuracy" explainProductLine={prodLine} explainRegion={salesMarket}>
                 <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
-                <GraphInsight summary={graphInsights.accuracy}
-                  chartType="model_accuracy_leaderboard" metricName="Model MAPE by product and geo slice"
-                  dataPoints={leaderboardView} />
                 {loading ? <Skeleton height={240} /> : leaderboardView && leaderboardView.length > 0 ? <AccuracyTable data={leaderboardView} /> : <EmptyState />}
               </CardWrap>
               <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
