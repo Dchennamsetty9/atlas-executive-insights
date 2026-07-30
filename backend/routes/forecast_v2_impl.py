@@ -855,6 +855,19 @@ async def get_weekly(
         key_product = _selected_product(product, product_line)
         key_geo = _normalize_market_value(sales_market)
         
+        # Resolve the Most_Likely column for the selected model so KPI cards
+        # reflect the chosen model, not always the ensemble.
+        # Worst_Case / Best_Case (P10/P90 bands) stay as ensemble columns — they
+        # are the calibrated scenario range regardless of the point-forecast model.
+        _kpi_src = _model_source(model)
+        _ml_col = _kpi_src.get("most_likely_col") or "Most_Likely"
+        # For actuals rows the model column is NULL — fall back to Actuals for those.
+        _ml_expr = (
+            f"COALESCE(CAST({_ml_col} AS DOUBLE), CAST(Actuals AS DOUBLE), 0)"
+            if _ml_col != "Most_Likely"
+            else "COALESCE(CAST(Most_Likely AS DOUBLE), 0)"
+        )
+
         # FIX: Prevent double-counting in quarterly view
         # When filtering by quarter, determine if it's historical or future
         # and select ONLY actuals (past) or ONLY forecasts (future) — not both
@@ -862,12 +875,16 @@ async def get_weekly(
             today = datetime.date.today()
             current_quarter = ((today.month - 1) // 3) + 1
             is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
-            
+
             # Past quarter: show actuals only
             # Future quarter: show forecasts only
             if is_past_quarter:
                 kpi_sql = f"""
-                    SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                    SELECT ds, Actuals,
+                           {_ml_expr} AS Most_Likely,
+                           COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
+                           COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                           forecast_type
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
                             {_product_filter(product, product_line)} {_geo_filter(sales_market)}
@@ -882,7 +899,11 @@ async def get_weekly(
                 _pf = _product_filter(product, product_line)
                 _gf = _geo_filter(sales_market)
                 kpi_sql = f"""
-                    SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                    SELECT ds, Actuals,
+                           {_ml_expr} AS Most_Likely,
+                           COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
+                           COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                           forecast_type
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
                             {_pf} {_gf}
@@ -899,7 +920,11 @@ async def get_weekly(
             _pf = _product_filter(product, product_line)
             _gf = _geo_filter(sales_market)
             kpi_sql = f"""
-                SELECT ds, Actuals, Most_Likely, Worst_Case, Best_Case, forecast_type
+                SELECT ds, Actuals,
+                       {_ml_expr} AS Most_Likely,
+                       COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
+                       COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                       forecast_type
                 FROM {FC_TABLE}
                 WHERE {_latest_run()}
                                 {_pf} {_gf}
