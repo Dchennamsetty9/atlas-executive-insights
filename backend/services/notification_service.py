@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.atlas_notifications (
   is_read          BOOLEAN NOT NULL DEFAULT false,
   created_at       TIMESTAMP
 ) USING DELTA
-TBLPROPERTIES ('delta.enableChangeDataFeed' = 'false')
+TBLPROPERTIES (
+  'delta.enableChangeDataFeed' = 'false',
+  'delta.feature.allowColumnDefaults' = 'supported'
+)
 """
 
 

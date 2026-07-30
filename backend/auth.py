@@ -72,7 +72,7 @@ async def _verify_forwarded_token(token: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(
-                f"https://{host}/api/2.0/current-user/me",
+                f"https://{host}/api/2.0/preview/scim/v2/Me",
                 headers={"Authorization": f"Bearer {token}"},
             )
     except Exception as exc:
