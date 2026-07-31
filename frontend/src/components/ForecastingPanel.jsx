@@ -12,7 +12,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Component } from 'react';
 import {
   ComposedChart, BarChart, LineChart,
-  Area, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  Area, Bar, Line, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import { apiService } from '../services/api';
@@ -549,7 +549,7 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
           <XAxis dataKey="name"
             tick={({ x, y, payload }) => {
-              const d = qtrs.find(q => q.name === payload.value);
+              const d = qtrs.find(qd => qd.name === payload.value);
               const color = d?.isPast ? '#fde68a' : d?.isCurrent ? '#c7d2fe' : '#93c5fd';
               return (
                 <g transform={`translate(${x},${y})`}>
