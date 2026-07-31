@@ -2217,30 +2217,42 @@ async def get_accuracy_by_quarter(
                 ]}
 
     pf = _product_filter(None, product_line)
+    pf_inner = pf.replace("AND product_group", "AND a.product_group").replace("AND product", "AND a.product") if pf else ""
 
-    # sMAPE per quarter for each model column
+    # sMAPE: join forecast rows (which have model predictions) against actuals for same week.
+    # "actuals" rows only have Actuals populated; model columns are NULL.
+    # "rolling/roy" rows have model columns populated.
+    # Self-join on (ds, product, sales_market) gives both sides.
     def _smape_expr(col: str) -> str:
-        return (f"ROUND(AVG(CASE WHEN COALESCE(CAST({col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 "
-                f"THEN ABS(CAST({col} AS DOUBLE) - CAST(Actuals AS DOUBLE)) "
-                f"/ ((ABS(CAST({col} AS DOUBLE)) + ABS(CAST(Actuals AS DOUBLE))) / 2.0) * 100 ELSE NULL END), 1)")
+        return (f"ROUND(AVG(CASE WHEN COALESCE(CAST(f.{col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(a.Actuals AS DOUBLE), 0) > 0 "
+                f"THEN ABS(CAST(f.{col} AS DOUBLE) - CAST(a.Actuals AS DOUBLE)) "
+                f"/ ((ABS(CAST(f.{col} AS DOUBLE)) + ABS(CAST(a.Actuals AS DOUBLE))) / 2.0) * 100 ELSE NULL END), 1)")
 
     sql = f"""
         SELECT
-            YEAR(ds)    AS yr,
-            QUARTER(ds) AS qtr,
+            YEAR(f.ds)    AS yr,
+            QUARTER(f.ds) AS qtr,
             {_smape_expr('Most_Likely')}  AS ens_mape,
             {_smape_expr('arr_ets')}      AS ets_mape,
             {_smape_expr('arr_prophet')}  AS prophet_mape,
             {_smape_expr('arr_lightgbm')} AS lgbm_mape,
             {_smape_expr('arr_mstl_v2')}  AS mstl_mape,
             {_smape_expr('arr_dhr_arima')} AS dhr_mape
-        FROM {FC_TABLE}
-        WHERE {_latest_run()}
-          AND forecast_type = 'actuals'
-          AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
-          {pf}
-        GROUP BY 1, 2
-        ORDER BY 1, 2
+        FROM {FC_TABLE} f
+        INNER JOIN (
+            SELECT ds, product, sales_market, MAX(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS Actuals
+            FROM {FC_TABLE}
+            WHERE forecast_type = 'actuals'
+              AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+              {pf}
+            GROUP BY ds, product, sales_market
+        ) a ON f.ds = a.ds AND f.product = a.product AND f.sales_market = a.sales_market
+        WHERE f.forecast_type IN ('rolling', 'roy')
+          AND f.run_date = (SELECT MAX(run_date) FROM {FC_TABLE})
+          AND CAST(f.ds AS DATE) < CURRENT_DATE()
+          {pf_inner}
+        GROUP BY YEAR(f.ds), QUARTER(f.ds)
+        ORDER BY yr, qtr
         LIMIT 20
     """
 

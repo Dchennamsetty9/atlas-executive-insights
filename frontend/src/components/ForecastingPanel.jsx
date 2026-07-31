@@ -521,7 +521,7 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
 
 // ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
 const QuarterlyMapeMatrix = ({ data }) => {
-  if (!data?.quarters?.length || !data?.models?.length) return <EmptyState />;
+  if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
   const { quarters, models } = data;
   const colorFor = v => {
     if (v == null) return '#334155';
