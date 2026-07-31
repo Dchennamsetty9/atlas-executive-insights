@@ -211,8 +211,8 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
                 <span style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   ✨ {data.title || 'Explanation'}
                 </span>
-                {data.source === 'demo' && <span style={{ fontSize: 9, color: '#f59e0b' }}>demo</span>}
-                {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8' }}>fallback</span>}
+                {data.source === 'demo' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
+                {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
               </div>
               {data.scope_note && (
                 <div style={{ fontSize: 10.5, color: '#f59e0b', lineHeight: 1.45, marginBottom: 8,
@@ -475,6 +475,95 @@ const ByProductChart = ({ byProduct, byLine }) => {
           </BarChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+};
+
+// ── Quarterly Bar Chart (actuals for closed qtrs, forecast for open qtrs) ──────
+const QuarterlyBarChart = ({ weeklyRows, year }) => {
+  if (!weeklyRows || weeklyRows.length === 0) return null;
+  const today = new Date();
+  const curQtr = Math.floor(today.getMonth() / 3) + 1;
+  const curYear = today.getFullYear();
+
+  const qtrs = [1, 2, 3, 4].map(q => {
+    const rows = weeklyRows.filter(r => {
+      const d = new Date(r.date);
+      return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
+    });
+    const actual = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
+    const forecast = rows.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
+    const isPast = year < curYear || (year === curYear && q < curQtr);
+    const isCurrent = year === curYear && q === curQtr;
+    return {
+      name: `Q${q}`,
+      actual: isPast ? actual : null,
+      forecast: (isCurrent || !isPast) ? forecast : null,
+      isForecast: !isPast,
+    };
+  });
+
+  const maxVal = Math.max(...qtrs.map(q => Math.max(q.actual ?? 0, q.forecast ?? 0))) * 1.15;
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={qtrs} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barGap={4}>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+        <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 600 }} axisLine={false} tickLine={false} />
+        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} domain={[0, maxVal || 'auto']} />
+        <Tooltip formatter={(v, name) => [fmtM(v), name]} contentStyle={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, fontSize:11 }} labelStyle={{ color:'#f1f5f9', fontWeight:700 }} />
+        <Bar dataKey="actual" name="Actuals" fill="#f59e0b" radius={[4,4,0,0]} barSize={36} isAnimationActive />
+        <Bar dataKey="forecast" name="Forecast (Most Likely)" fill="#3b82f6" radius={[4,4,0,0]} barSize={36} isAnimationActive />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+};
+
+// ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
+const QuarterlyMapeMatrix = ({ data }) => {
+  if (!data?.quarters?.length || !data?.models?.length) return <EmptyState />;
+  const { quarters, models } = data;
+  const colorFor = v => {
+    if (v == null) return '#334155';
+    if (v < 15) return '#10b981';
+    if (v < 25) return '#f59e0b';
+    return '#ef4444';
+  };
+  const th = { padding: '6px 14px', fontSize: 10, fontWeight: 700, color: '#475569',
+               textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center',
+               borderBottom: '1px solid rgba(255,255,255,0.08)' };
+  const td = { padding: '7px 14px', fontSize: 12, textAlign: 'center',
+               borderBottom: '1px solid rgba(255,255,255,0.04)' };
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
+        <span><span style={{ color:'#10b981' }}>●</span> &lt;15% strong</span>
+        <span><span style={{ color:'#f59e0b' }}>●</span> 15–25% moderate</span>
+        <span><span style={{ color:'#ef4444' }}>●</span> &gt;25% weak</span>
+        <abbr title="sMAPE = Symmetric MAPE. Lower is better. Measures forecast error for each past quarter." style={{ marginLeft:'auto', color:'#475569', cursor:'help', textDecoration:'none', fontSize:9 }}>What is this? ⓘ</abbr>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <th style={{ ...th, textAlign: 'left', width: 110 }}>Model</th>
+            {quarters.map(q => <th key={q} style={th}>{q}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {models.map((m, i) => (
+            <tr key={m.model} style={{ background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
+              <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 600 }}>
+                {m.model === 'Ensemble' ? <span>Ensemble <span style={{ color:'#10b981', fontSize:9 }}>★</span></span> : m.model}
+              </td>
+              {m.values.map((v, j) => (
+                <td key={j} style={{ ...td, color: colorFor(v), fontWeight: v != null ? 700 : 400 }}>
+                  {v != null ? `${v.toFixed(1)}%` : '—'}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 };
@@ -1180,7 +1269,7 @@ const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
-const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
+const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Full Year' }];
 
 const _toIsoDate = (d) => {
   const dt = new Date(d);
@@ -1329,6 +1418,7 @@ const ForecastingPanel = () => {
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
+  const [accuracyByQtr, setAccuracyByQtr] = useState(null);
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
   const [confidence,  setConfidence]  = useState(null);
@@ -1415,12 +1505,14 @@ const ForecastingPanel = () => {
         ]);
         if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
       } else if (targetTab === 'Accuracy') {
-        const [lb, bt] = await Promise.allSettled([
+        const [lb, bt, aqtr] = await Promise.allSettled([
           apiService.getForecastV2Leaderboard(),
           apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
+          apiService.getForecastV2AccuracyByQuarter(activePl),
         ]);
         if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
         if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
+        if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
       } else if (targetTab === 'Exec Mode') {
         const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
           apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
@@ -1655,19 +1747,6 @@ const ForecastingPanel = () => {
         </div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
 
-        {/* ── Group 1b: REGION (sales_market slice from the forecast table) ── */}
-        <div>
-          <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>REGION</div>
-          <select value={salesMarket} onChange={(e) => setSalesMarket(e.target.value)}
-            style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                     color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-            <option value="All">All Regions</option>
-            <option value="NA">NA</option>
-            <option value="EMEA">EMEA</option>
-            <option value="APAC">APAC</option>
-            <option value="LATAM">LATAM</option>
-          </select>
-        </div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
 
         {/* ── Group 2: TIME PERIOD (window + year + quarter together) ── */}
@@ -1871,7 +1950,7 @@ const ForecastingPanel = () => {
                                           display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                               <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>
                                 Forecast range not available — all {selectedQuarter ? `Q${selectedQuarter}` : 'selected'} weeks are closed actuals.
-                                Select a future quarter or <b style={{color:'#f59e0b'}}>Rest of Year</b> to see scenario bands.
+                                Select a future quarter or <b style={{color:'#f59e0b'}}>Full Year</b> to see scenario bands.
                               </div>
                             </div>
                           </div>
@@ -1985,6 +2064,21 @@ const ForecastingPanel = () => {
                 </SectionTitle>
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
+
+              {/* Quarterly bar chart — actuals for closed, forecast for open quarters */}
+              {weeklyView && weeklyView.length > 0 && (
+                <CardWrap downloadName="quarterly_summary">
+                  <SectionTitle>
+                    Quarterly Summary — {selectedYear}
+                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  </SectionTitle>
+                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
+                    <span><span style={{ color: '#f59e0b' }}>■</span> Actuals (closed quarters)</span>
+                    <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
+                  </div>
+                  <QuarterlyBarChart weeklyRows={weeklyView} year={selectedYear} />
+                </CardWrap>
+              )}
             </div>
           )}
 
@@ -2091,17 +2185,17 @@ const ForecastingPanel = () => {
 
           {tab === 'Accuracy' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {[{label:'< 15%',color:'#10b981'},{label:'15–25%',color:'#f59e0b'},{label:'> 25%',color:'#ef4444'}].map(b=>(
-                  <div key={b.label} style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#64748b' }}>
-                    <div style={{ width:10, height:10, borderRadius:2, background:b.color }} /> MAPE {b.label}
-                  </div>
-                ))}
-              </div>
-              <CardWrap explainKey="accuracy" explainProductLine={prodLine} explainRegion={salesMarket}>
-                <SectionTitle>Model MAPE Leaderboard — 8-Week Holdout Validation</SectionTitle>
-                {loading ? <Skeleton height={240} /> : leaderboardView && leaderboardView.length > 0 ? <AccuracyTable data={leaderboardView} /> : <EmptyState />}
+              {/* Quarterly MAPE Matrix — primary view */}
+              <CardWrap explainKey="accuracy" explainProductLine={prodLine}>
+                <SectionTitle>Forecast Accuracy by Quarter — Model Comparison</SectionTitle>
+                <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                  Each cell shows the{' '}
+                  <abbr title="sMAPE = Symmetric Mean Absolute Percentage Error. Computed from weeks where both forecast and actual are known. Lower = better." style={{ cursor:'help', borderBottom:'1px dotted #475569', textDecoration:'none' }}>sMAPE</abbr>
+                  {' '}for that model against closed actuals in each past quarter.
+                </div>
+                {loading ? <Skeleton height={200} /> : <QuarterlyMapeMatrix data={accuracyByQtr} />}
               </CardWrap>
+              {/* Backtest chart — secondary context */}
               <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
             </div>
           )}

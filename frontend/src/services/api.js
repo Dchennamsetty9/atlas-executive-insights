@@ -155,6 +155,11 @@ export const apiService = {
     return api.get('/api/forecast/v2/monthly', { params });
   },
   getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
+  getForecastV2AccuracyByQuarter: (productLine = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    return api.get('/api/forecast/v2/accuracy-by-quarter', { params });
+  },
   getForecastV2Models: () => api.get('/api/forecast/v2/models'),
   getForecastV2Freshness: () => api.get('/api/forecast/v2/freshness'),
   getForecastV2Confidence: (model = 'ensemble', year = null, quarter = null) => {

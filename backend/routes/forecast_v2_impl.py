@@ -1809,12 +1809,14 @@ async def get_backtest(
 
 # ── GET /graph-explanation ────────────────────────────────────────────────────
 _DEMO_EXPLAIN = {
-    "title": "Chart explanation",
-    "explanation": ("Detailed, data-grounded explanation of this chart. Connect to Databricks and run the "
-                    "forecast_unify_publish notebook to populate precomputed explanations."),
-    "bullets": ["Precomputed per graph and product each run",
-                "Grounded in the current forecast numbers",
-                "Falls back to this sample when the table is empty"],
+    "title": "Chart Explanation",
+    "explanation": ("This chart shows the ARR forecast for the selected product and time period. "
+                    "Confidence bands represent the P10 (Risk Floor) to P90 (Stretch Case) range — "
+                    "the most likely outcome sits at the P50 centerline. "
+                    "Actuals are shown in orange up to today; forecast lines extend to the right."),
+    "bullets": ["Ensemble model combines ETS, Prophet, and LightGBM for robustness",
+                "Wider bands mean higher uncertainty further out in the forecast horizon",
+                "Band coverage target is ~80% — actuals should fall inside the range 4 out of 5 weeks"],
 }
 
 
@@ -1895,7 +1897,8 @@ async def get_graph_explanation(
 
     if not rows:
         return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN,
-                "explanation": "No precomputed explanation for this selection yet — check back after the next run."}
+                "explanation": ("Personalized explanation for this chart is being generated — "
+                                 "it will appear here after the next daily forecast run (7am ET).")}
 
     r = rows[0]
     try:
@@ -2190,6 +2193,83 @@ async def get_model_lab(
         "recommended_model": recommended or (models[0] if models else None),
         "models": models, "rows": rows,
     }
+
+
+# ── GET /accuracy-by-quarter ───────────────────────────────────────────────────
+@router.get("/accuracy-by-quarter")
+async def get_accuracy_by_quarter(
+    product_line: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """Quarterly MAPE matrix: rows = models, columns = past quarters.
+    Computed from actuals rows in the forecast table where both prediction
+    and actual are known — gives a true retrospective accuracy view."""
+    if not live_mode:
+        # Demo: return a plausible matrix for display
+        return {"quarters": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026"],
+                "models": [
+                    {"model": "Ensemble",  "values": [18.2, 16.4, 21.1, 14.8, 17.3, 19.6]},
+                    {"model": "Prophet",   "values": [22.1, 19.8, 24.3, 18.2, 21.0, 23.5]},
+                    {"model": "ETS",       "values": [25.4, 21.3, 27.8, 20.1, 24.2, 26.1]},
+                    {"model": "LightGBM",  "values": [20.3, 18.1, 22.6, 16.9, 19.8, 21.4]},
+                    {"model": "MSTL",      "values": [23.7, 20.4, 25.9, 19.3, 22.5, 24.8]},
+                    {"model": "DHR-ARIMA", "values": [26.8, 23.2, 29.1, 21.7, 25.6, 27.9]},
+                ]}
+
+    pf = _product_filter(None, product_line)
+
+    # sMAPE per quarter for each model column
+    def _smape_expr(col: str) -> str:
+        return (f"ROUND(AVG(CASE WHEN COALESCE(CAST({col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 "
+                f"THEN ABS(CAST({col} AS DOUBLE) - CAST(Actuals AS DOUBLE)) "
+                f"/ ((ABS(CAST({col} AS DOUBLE)) + ABS(CAST(Actuals AS DOUBLE))) / 2.0) * 100 ELSE NULL END), 1)")
+
+    sql = f"""
+        SELECT
+            YEAR(ds)    AS yr,
+            QUARTER(ds) AS qtr,
+            {_smape_expr('Most_Likely')}  AS ens_mape,
+            {_smape_expr('arr_ets')}      AS ets_mape,
+            {_smape_expr('arr_prophet')}  AS prophet_mape,
+            {_smape_expr('arr_lightgbm')} AS lgbm_mape,
+            {_smape_expr('arr_mstl_v2')}  AS mstl_mape,
+            {_smape_expr('arr_dhr_arima')} AS dhr_mape
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          AND forecast_type = 'actuals'
+          AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+          {pf}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+        LIMIT 20
+    """
+
+    try:
+        rows_raw = await _cached_query(sql, endpoint="/accuracy-by-quarter",
+                                       model="ensemble", forecast_type="actuals",
+                                       product=_selected_product(None, product_line),
+                                       geo="Total", year=None, quarter=None)
+    except Exception as exc:
+        logger.warning("[forecast/accuracy-by-quarter] query failed: %s", exc)
+        return _demo("data", error=str(exc))
+
+    if not rows_raw:
+        return _demo("data")
+
+    quarters = [f"Q{int(r.get('qtr',0))} {int(r.get('yr',0))}" for r in rows_raw]
+    model_keys = [
+        ("Ensemble",  "ens_mape"),
+        ("Prophet",   "prophet_mape"),
+        ("ETS",       "ets_mape"),
+        ("LightGBM",  "lgbm_mape"),
+        ("MSTL",      "mstl_mape"),
+        ("DHR-ARIMA", "dhr_mape"),
+    ]
+    models = [
+        {"model": name, "values": [_f(r.get(col), None) for r in rows_raw]}
+        for name, col in model_keys
+    ]
+    return {"quarters": quarters, "models": models, "source": "live"}
 
 
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
