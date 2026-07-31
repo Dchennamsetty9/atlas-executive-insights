@@ -191,13 +191,16 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
         ✨
       </button>
       {open && (
-        /* Fixed side panel (not an overlay on the card) so the chart stays fully
-           visible while reading the insight. Docked to the right edge of the
-           viewport, vertically centered, with its own close button. */
-        <div style={{ position: 'fixed', top: '50%', right: 16, transform: 'translateY(-50%)',
-                      width: 380, maxWidth: 'min(38vw, calc(100vw - 32px))', maxHeight: '76vh', overflowY: 'auto', zIndex: 60,
-                      background: '#0f172a', border: '1px solid rgba(168,85,247,0.3)', borderRadius: 12,
-                      padding: '16px 18px', boxShadow: '0 16px 56px rgba(0,0,0,0.6)', textAlign: 'left' }}>
+        /* Panel anchored below-left of the ✨ button so it opens next to its
+           own chart. position:absolute within the button container (which is
+           position:absolute inside CardWrap, which is position:relative).
+           zIndex 60 floats it above siblings but keeps it in context. */
+        <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0,
+                      width: 360, maxWidth: 'min(360px, calc(100vw - 48px)',
+                      maxHeight: '70vh', overflowY: 'auto', zIndex: 60,
+                      background: '#0f172a', border: '1px solid rgba(168,85,247,0.35)',
+                      borderRadius: 12, padding: '16px 18px',
+                      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', textAlign: 'left' }}>
           <button onClick={() => setOpen(false)} aria-label="Close explanation"
             style={{ position: 'absolute', top: 8, right: 10, width: 22, height: 22, borderRadius: 6,
                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
@@ -491,31 +494,106 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
       const d = new Date(r.date);
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
-    const actual = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
-    const isPast = year < curYear || (year === curYear && q < curQtr);
+    const actual   = rows.reduce((s, r) => s + (r.arr_actual  ?? 0), 0);
+    const forecast = rows.reduce((s, r) => s + (r.arr_likely  ?? 0), 0);
+    const worst    = rows.reduce((s, r) => s + (r.arr_worst   ?? 0), 0);
+    const best     = rows.reduce((s, r) => s + (r.arr_best    ?? 0), 0);
+    const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
-    return {
-      name: `Q${q}`,
-      actual: isPast ? actual : null,
-      forecast: (isCurrent || !isPast) ? forecast : null,
-      isForecast: !isPast,
-    };
+    return { q, name: `Q${q}`, actual: isPast ? actual : null,
+             forecast: !isPast ? forecast : null, worst: !isPast ? worst : null,
+             best: !isPast ? best : null, isPast, isCurrent };
   });
 
-  const maxVal = Math.max(...qtrs.map(q => Math.max(q.actual ?? 0, q.forecast ?? 0))) * 1.15;
+  const maxVal = Math.max(...qtrs.map(q => Math.max(q.actual ?? 0, q.best ?? q.forecast ?? 0)), 1) * 1.18;
+
+  const QTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const d = qtrs.find(q => q.name === label);
+    if (!d) return null;
+    return (
+      <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.12)', borderRadius:10, padding:'12px 16px', minWidth:160 }}>
+        <div style={{ fontWeight:800, color:'#f1f5f9', fontSize:13, marginBottom:6 }}>{label} {year}</div>
+        <div style={{ fontSize:9, color:'#475569', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:8 }}>
+          {d.isPast ? 'Closed — Actuals' : d.isCurrent ? 'In Progress' : 'Forecast'}
+        </div>
+        {d.actual  != null && <div style={{ color:'#f59e0b', fontSize:12 }}>Actuals: <b>{fmtM(d.actual)}</b></div>}
+        {d.forecast != null && <div style={{ color:'#93c5fd', fontSize:12 }}>Most Likely: <b>{fmtM(d.forecast)}</b></div>}
+        {d.worst   != null && <div style={{ color:'#fca5a5', fontSize:11, marginTop:4 }}>Risk Floor: {fmtM(d.worst)}</div>}
+        {d.best    != null && <div style={{ color:'#6ee7b7', fontSize:11 }}>Stretch Case: {fmtM(d.best)}</div>}
+      </div>
+    );
+  };
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={qtrs} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barGap={4}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-        <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 600 }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} domain={[0, maxVal || 'auto']} />
-        <Tooltip formatter={(v, name) => [fmtM(v), name]} contentStyle={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, fontSize:11 }} labelStyle={{ color:'#f1f5f9', fontWeight:700 }} />
-        <Bar dataKey="actual" name="Actuals" fill="#f59e0b" radius={[4,4,0,0]} barSize={36} isAnimationActive />
-        <Bar dataKey="forecast" name="Forecast (Most Likely)" fill="#3b82f6" radius={[4,4,0,0]} barSize={36} isAnimationActive />
-      </BarChart>
-    </ResponsiveContainer>
+    <div>
+      <svg width="0" height="0" style={{ position:'absolute' }}>
+        <defs>
+          <linearGradient id="qg-actual" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fde68a" />
+            <stop offset="100%" stopColor="#d97706" />
+          </linearGradient>
+          <linearGradient id="qg-forecast" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#93c5fd" />
+            <stop offset="100%" stopColor="#1d4ed8" />
+          </linearGradient>
+          <linearGradient id="qg-current" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#c7d2fe" />
+            <stop offset="100%" stopColor="#4f46e5" />
+          </linearGradient>
+        </defs>
+      </svg>
+
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={qtrs} margin={{ top: 20, right: 20, left: 0, bottom: 0 }} barCategoryGap="30%">
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+          <XAxis dataKey="name"
+            tick={({ x, y, payload }) => {
+              const d = qtrs.find(q => q.name === payload.value);
+              const color = d?.isPast ? '#fde68a' : d?.isCurrent ? '#c7d2fe' : '#93c5fd';
+              return (
+                <g transform={`translate(${x},${y})`}>
+                  <text x={0} y={0} dy={14} textAnchor="middle" fill={color} fontSize={13} fontWeight={800}>{payload.value}</text>
+                  <text x={0} y={0} dy={26} textAnchor="middle" fill="#475569" fontSize={9}>
+                    {d?.isPast ? 'Actuals' : d?.isCurrent ? 'In Progress' : 'Forecast'}
+                  </text>
+                </g>
+              );
+            }}
+            axisLine={false} tickLine={false} height={36}
+          />
+          <YAxis tickFormatter={v => fmtM(v)} tick={{ fill:'#475569', fontSize:9 }} axisLine={false} tickLine={false} width={52} domain={[0, maxVal]} />
+          <Tooltip content={<QTooltip />} cursor={{ fill:'rgba(255,255,255,0.03)', rx:6 }} />
+          <Bar dataKey="actual" name="Actuals" radius={[8,8,0,0]} fill="url(#qg-actual)" isAnimationActive>
+            {qtrs.map((d, i) => (
+              <Cell key={i} fill={d.isPast ? 'url(#qg-actual)' : 'transparent'} />
+            ))}
+          </Bar>
+          <Bar dataKey="forecast" name="Forecast" radius={[8,8,0,0]} isAnimationActive>
+            {qtrs.map((d, i) => (
+              <Cell key={i} fill={!d.isPast ? (d.isCurrent ? 'url(#qg-current)' : 'url(#qg-forecast)') : 'transparent'} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Value labels */}
+      <div style={{ display:'flex', justifyContent:'space-around', paddingLeft:52, marginTop:-4 }}>
+        {qtrs.map(d => (
+          <div key={d.name} style={{ flex:1, textAlign:'center' }}>
+            <div style={{ fontSize:14, fontWeight:900, letterSpacing:-0.5,
+                          color: d.isPast ? '#f59e0b' : d.isCurrent ? '#818cf8' : '#60a5fa' }}>
+              {fmtM(d.actual ?? d.forecast)}
+            </div>
+            {!d.isPast && d.worst != null && (
+              <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>
+                {fmtM(d.worst)} – {fmtM(d.best)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };
 
