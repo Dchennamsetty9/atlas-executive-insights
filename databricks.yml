@@ -341,11 +341,14 @@ resources:
     # To run the whole pipeline in one job, add the model notebooks as upstream
     # tasks with depends_on (see commented example below).
     forecast_unify_publish:
-      name: "Forecast Unify & Publish — Daily 7am ET"
+      name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 7am ET)"
       description: >
-        Consolidates ucc_forecast_v5 + itsg_forecast_v5 + actuals into the unified
-        forecast_results / forecast_insights tables (+ forecast_results_latest view)
-        and grants the app service principal SELECT. Powers all Forecasting-panel tabs.
+        Full daily forecast pipeline:
+          1. UCC Forecast Foundation V5   (parallel)
+          2. ITSG Growth ARR V5           (parallel)
+          3. Forecast Unify & Publish     (after both V5 jobs complete)
+        Writes to forecast_results / forecast_insights tables and grants the
+        app service principal SELECT. Powers all Forecasting-panel tabs.
 
       schedule:
         quartz_cron_expression: "0 0 7 * * ?"     # daily 07:00
@@ -353,36 +356,72 @@ resources:
         pause_status: UNPAUSED
 
       job_clusters:
-        - job_cluster_key: forecast_unify_cluster
+        - job_cluster_key: forecast_ml_cluster
           new_cluster:
-            spark_version: "15.4.x-scala2.12"
-            node_type_id: m5d.large
+            spark_version: "15.4.x-cpu-ml-scala2.12"
+            node_type_id: m5d.xlarge    # 32 GB — enough for V5 models
             num_workers: 1
             data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+            spark_env_vars:
+              TRANSFORMERS_CACHE: /dbfs/tmp/hf_cache
+              HF_HOME:            /dbfs/tmp/hf_cache
 
-      tasks:
-        - task_key: unify_publish
-          job_cluster_key: forecast_unify_cluster
-          notebook_task:
-            notebook_path: notebooks/forecast_unify_publish
-            source: GIT
-      # Pull the notebook straight from GitHub so the repo is the source of truth.
+      # Pull the unify notebook straight from GitHub.
+      # UCC / ITSG tasks use source: WORKSPACE pointing at the live workspace notebooks.
       git_source:
         git_url: https://github.com/goto-shared/gaim-executive-app
         git_provider: gitHub
         git_branch: main
-      # --- To chain the models before unify, replace the single task above with: ---
-      # tasks:
-      #   - task_key: ucc_model      # notebook_task -> UCC V5 notebook
-      #   - task_key: itsg_model     # notebook_task -> ITSG V5 notebook
-      #   - task_key: unify_publish
-      #     depends_on: [{ task_key: ucc_model }, { task_key: itsg_model }]
+
+      tasks:
+        # ── Step 1a: UCC Forecast Foundation V5 (workspace notebook) ─────────
+        - task_key: ucc_forecast_v5
+          job_cluster_key: forecast_ml_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/UCC Forecast Foundation V5
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: prophet==1.1.5
+            - pypi:
+                package: lightgbm>=4.3.0
+            - pypi:
+                package: statsmodels>=0.14.0
+
+        # ── Step 1b: ITSG Growth ARR V5 (workspace notebook, parallel with UCC) ─
+        - task_key: itsg_forecast_v5
+          job_cluster_key: forecast_ml_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/ITSG_Growth_ARR_Forecasting_v5
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: prophet==1.1.5
+            - pypi:
+                package: lightgbm>=4.3.0
+            - pypi:
+                package: statsmodels>=0.14.0
+
+        # ── Step 2: Unify & Publish (after both V5 jobs complete) ────────────
+        - task_key: unify_publish
+          depends_on:
+            - task_key: ucc_forecast_v5
+            - task_key: itsg_forecast_v5
+          job_cluster_key: forecast_ml_cluster
+          notebook_task:
+            notebook_path: notebooks/forecast_unify_publish
+            source: GIT
 
       email_notifications:
         on_failure:
           - patrick.sliz@goto.com
           - dileep.chennamsetty@goto.com
+        on_success:
+          - dileep.chennamsetty@goto.com
 
+      timeout_seconds: 18000       # 5-hour hard limit
       max_concurrent_runs: 1
 
 targets:
