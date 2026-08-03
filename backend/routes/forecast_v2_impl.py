@@ -2320,7 +2320,11 @@ async def get_accuracy_by_quarter(
                     {"model": "DHR-ARIMA", "values": [26.8, 23.2, 29.1, 21.7, 25.6, 27.9]},
                 ]}
 
-    pf = _product_filter(None, product_line)
+    pf_inner = _product_filter(None, product_line)                       # single-table CTE
+    pf_outer = _product_filter(None, product_line, col="f.product")      # joined scope — must
+    # be qualified: both sides of the join expose `product`, and an unqualified
+    # reference raises AMBIGUOUS_REFERENCE in Spark (this is why the matrix was
+    # falling back to the empty demo payload).
 
     # Use arr_forecast_v2 directly — it is append-only so past runs' forecast
     # rows (rolling/roy) for now-historical weeks still exist there.
@@ -2328,39 +2332,72 @@ async def get_accuracy_by_quarter(
     ARR_V2 = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 
     def _smape_expr(col: str) -> str:
-        return (f"ROUND(AVG(CASE WHEN COALESCE(CAST(f.{col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(a.Actuals AS DOUBLE), 0) > 0 "
-                f"THEN ABS(CAST(f.{col} AS DOUBLE) - CAST(a.Actuals AS DOUBLE)) "
-                f"/ ((ABS(CAST(f.{col} AS DOUBLE)) + ABS(CAST(a.Actuals AS DOUBLE))) / 2.0) * 100 ELSE NULL END), 1)")
+        return (f"ROUND(AVG(CASE WHEN COALESCE(CAST(f.{col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(a.actual AS DOUBLE), 0) > 0 "
+                f"THEN ABS(CAST(f.{col} AS DOUBLE) - CAST(a.actual AS DOUBLE)) "
+                f"/ ((ABS(CAST(f.{col} AS DOUBLE)) + ABS(CAST(a.actual AS DOUBLE))) / 2.0) * 100 ELSE NULL END), 1)")
 
+    # One vintage per week: the EARLIEST run that forecast it ("as first
+    # published"). Averaging every retained vintage over-weights easy 1-week-
+    # ahead re-forecasts and late-quarter weeks (which accumulate more runs).
+    # Closed quarters only, per Brian's ask — the in-progress quarter is excluded.
     sql = f"""
+        WITH actuals AS (
+            SELECT ds, product, MAX(CAST(Actuals AS DOUBLE)) AS actual
+            FROM {ARR_V2}
+            WHERE forecast_type = 'actuals'
+              AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+              {pf_inner}
+              AND {_normalized_market_expr('sales_market')} = 'Total'
+            GROUP BY ds, product
+        ),
+        fc AS (
+            SELECT f.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY f.product, f.ds
+                       ORDER BY CAST(f.run_date AS DATE) ASC
+                   ) AS rn
+            FROM {ARR_V2} f
+            WHERE f.forecast_type IN ('rolling', 'roy')
+              AND CAST(f.ds AS DATE) < CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE)
+              AND COALESCE(CAST(f.Most_Likely AS DOUBLE), 0) > 0
+              {pf_outer}
+              AND {_normalized_market_expr('f.sales_market')} = 'Total'
+        )
         SELECT
             YEAR(f.ds)    AS yr,
             QUARTER(f.ds) AS qtr,
+            COUNT(*)      AS n_weeks,
             {_smape_expr('Most_Likely')}  AS ens_mape,
             {_smape_expr('arr_ets')}      AS ets_mape,
             {_smape_expr('arr_prophet')}  AS prophet_mape,
             {_smape_expr('arr_lightgbm')} AS lgbm_mape,
             {_smape_expr('arr_mstl_v2')}  AS mstl_mape,
             {_smape_expr('arr_dhr_arima')} AS dhr_mape
-        FROM {ARR_V2} f
-        INNER JOIN (
-            SELECT ds, product, sales_market, MAX(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS Actuals
-            FROM {ARR_V2}
-            WHERE forecast_type = 'actuals'
-              AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
-              {pf}
-              AND {_normalized_market_expr('sales_market')} = 'Total'
-            GROUP BY ds, product, sales_market
-        ) a ON f.ds = a.ds AND f.product = a.product AND f.sales_market = a.sales_market
-        WHERE f.forecast_type IN ('rolling', 'roy')
-          AND CAST(f.ds AS DATE) < CURRENT_DATE()
-          AND COALESCE(CAST(f.Most_Likely AS DOUBLE), 0) > 0
-          {pf}
-          AND {_normalized_market_expr('f.sales_market')} = 'Total'
+        FROM fc f
+        INNER JOIN actuals a ON f.ds = a.ds AND f.product = a.product
+        WHERE f.rn = 1
         GROUP BY YEAR(f.ds), QUARTER(f.ds)
         ORDER BY yr, qtr
         LIMIT 20
     """
+
+    def _demo_matrix(error: Optional[str] = None):
+        # Same shape as the live payload so the matrix always renders,
+        # explicitly demo-flagged (previously error/empty returned a shapeless
+        # payload and the tab showed a blank empty-state).
+        out = {"source": "demo",
+               "quarters": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026"],
+               "models": [
+                   {"model": "Ensemble",  "values": [18.2, 16.4, 21.1, 14.8, 17.3, 19.6]},
+                   {"model": "Prophet",   "values": [22.1, 19.8, 24.3, 18.2, 21.0, 23.5]},
+                   {"model": "ETS",       "values": [25.4, 21.3, 27.8, 20.1, 24.2, 26.1]},
+                   {"model": "LightGBM",  "values": [20.3, 18.1, 22.6, 16.9, 19.8, 21.4]},
+                   {"model": "MSTL",      "values": [23.7, 20.4, 25.9, 19.3, 22.5, 24.8]},
+                   {"model": "DHR-ARIMA", "values": [26.8, 23.2, 29.1, 21.7, 25.6, 27.9]},
+               ]}
+        if error:
+            out["error"] = error
+        return out
 
     try:
         rows_raw = await _cached_query(sql, endpoint="/accuracy-by-quarter",
@@ -2369,12 +2406,13 @@ async def get_accuracy_by_quarter(
                                        geo="Total", year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/accuracy-by-quarter] query failed: %s", exc)
-        return _demo("data", error=str(exc))
+        return _demo_matrix(str(exc))
 
     if not rows_raw:
-        return _demo("data")
+        return _demo_matrix()
 
     quarters = [f"Q{int(r.get('qtr',0))} {int(r.get('yr',0))}" for r in rows_raw]
+    n_weeks = [int(_f(r.get("n_weeks"))) for r in rows_raw]
     model_keys = [
         ("Ensemble",  "ens_mape"),
         ("Prophet",   "prophet_mape"),
@@ -2387,7 +2425,9 @@ async def get_accuracy_by_quarter(
         {"model": name, "values": [_f(r.get(col), None) for r in rows_raw]}
         for name, col in model_keys
     ]
-    return {"quarters": quarters, "models": models, "source": "live"}
+    return {"quarters": quarters, "n_weeks": n_weeks, "models": models,
+            "basis": "first-published forecast vs closed actuals (one vintage per week)",
+            "source": "live"}
 
 
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
