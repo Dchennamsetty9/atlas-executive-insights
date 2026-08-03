@@ -2247,8 +2247,9 @@ async def get_weekly_all_models(
         FROM {FC_TABLE}
         WHERE {_latest_run()}
           {pf}
+          AND {_normalized_market_expr('sales_market')} = 'Total'
           {date_filter}
-        ORDER BY ds
+        ORDER BY ds, CASE forecast_type WHEN 'actuals' THEN 0 ELSE 1 END
     """
 
     try:
@@ -2260,20 +2261,27 @@ async def get_weekly_all_models(
         logger.warning("[forecast/weekly-all-models] query failed: %s", exc)
         return _demo("rows", error=str(exc))
 
-    rows = []
+    # Merge actuals and forecast rows for the same date into one point.
+    # The compat view can have both forecast_type=actuals and rolling for the same ds.
+    merged: dict[str, dict] = {}
     for r in rows_raw:
         ftype = str(r.get("forecast_type") or "").strip().lower()
-        is_actual = ftype == "actuals"
-        rows.append({
-            "date":     str(r.get("ds") or "")[:10],
-            "actual":   _f(r.get("actual"))  if is_actual else None,
-            "ensemble": _f(r.get("ensemble")) if not is_actual else None,
-            "ets":      _f(r.get("ets"))      if not is_actual else None,
-            "prophet":  _f(r.get("prophet"))  if not is_actual else None,
-            "lgbm":     _f(r.get("lgbm"))     if not is_actual else None,
-            "mstl":     _f(r.get("mstl"))     if not is_actual else None,
-            "dhr":      _f(r.get("dhr"))      if not is_actual else None,
-        })
+        ds = str(r.get("ds") or "")[:10]
+        if ds not in merged:
+            merged[ds] = {"date": ds, "actual": None, "ensemble": None,
+                          "ets": None, "prophet": None, "lgbm": None, "mstl": None, "dhr": None}
+        if ftype == "actuals":
+            v = _f(r.get("actual"))
+            if v > 0:
+                merged[ds]["actual"] = v
+        else:
+            for col, key in [("ensemble","ensemble"),("ets","ets"),("prophet","prophet"),
+                              ("lgbm","lgbm"),("mstl","mstl"),("dhr","dhr")]:
+                v = _f(r.get(key))
+                if v > 0 and merged[ds][col] is None:
+                    merged[ds][col] = v
+
+    rows = sorted(merged.values(), key=lambda x: x["date"])
     return {"rows": rows, "source": "live"}
 
 
