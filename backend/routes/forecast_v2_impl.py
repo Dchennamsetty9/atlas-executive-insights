@@ -2305,8 +2305,9 @@ async def get_accuracy_by_quarter(
     live_mode: bool = Depends(_live_mode_dependency),
 ):
     """Quarterly MAPE matrix: rows = models, columns = past quarters.
-    Computed from actuals rows in the forecast table where both prediction
-    and actual are known — gives a true retrospective accuracy view."""
+    Uses arr_forecast_v2 (append-only across runs) so historical forecast
+    vintages survive — the compat view only shows the latest run which has
+    no forecast rows for already-closed weeks."""
     if not live_mode:
         # Demo: return a plausible matrix for display
         return {"quarters": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026"],
@@ -2320,12 +2321,12 @@ async def get_accuracy_by_quarter(
                 ]}
 
     pf = _product_filter(None, product_line)
-    pf_inner = pf.replace("AND product_group", "AND a.product_group").replace("AND product", "AND a.product") if pf else ""
 
-    # sMAPE: join forecast rows (which have model predictions) against actuals for same week.
-    # "actuals" rows only have Actuals populated; model columns are NULL.
-    # "rolling/roy" rows have model columns populated.
-    # Self-join on (ds, product, sales_market) gives both sides.
+    # Use arr_forecast_v2 directly — it is append-only so past runs' forecast
+    # rows (rolling/roy) for now-historical weeks still exist there.
+    # The compat view only shows max(run_date) so those historical vintages are gone.
+    ARR_V2 = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
+
     def _smape_expr(col: str) -> str:
         return (f"ROUND(AVG(CASE WHEN COALESCE(CAST(f.{col} AS DOUBLE), 0) > 0 AND COALESCE(CAST(a.Actuals AS DOUBLE), 0) > 0 "
                 f"THEN ABS(CAST(f.{col} AS DOUBLE) - CAST(a.Actuals AS DOUBLE)) "
@@ -2341,19 +2342,21 @@ async def get_accuracy_by_quarter(
             {_smape_expr('arr_lightgbm')} AS lgbm_mape,
             {_smape_expr('arr_mstl_v2')}  AS mstl_mape,
             {_smape_expr('arr_dhr_arima')} AS dhr_mape
-        FROM {FC_TABLE} f
+        FROM {ARR_V2} f
         INNER JOIN (
             SELECT ds, product, sales_market, MAX(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS Actuals
-            FROM {FC_TABLE}
+            FROM {ARR_V2}
             WHERE forecast_type = 'actuals'
               AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
               {pf}
+              AND {_normalized_market_expr('sales_market')} = 'Total'
             GROUP BY ds, product, sales_market
         ) a ON f.ds = a.ds AND f.product = a.product AND f.sales_market = a.sales_market
         WHERE f.forecast_type IN ('rolling', 'roy')
-          AND f.run_date = (SELECT MAX(run_date) FROM {FC_TABLE})
           AND CAST(f.ds AS DATE) < CURRENT_DATE()
-          {pf_inner}
+          AND COALESCE(CAST(f.Most_Likely AS DOUBLE), 0) > 0
+          {pf}
+          AND {_normalized_market_expr('f.sales_market')} = 'Total'
         GROUP BY YEAR(f.ds), QUARTER(f.ds)
         ORDER BY yr, qtr
         LIMIT 20
