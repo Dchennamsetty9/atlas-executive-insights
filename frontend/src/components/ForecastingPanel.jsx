@@ -1991,7 +1991,7 @@ const ForecastingPanel = () => {
             <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
               Ensemble ★
               <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
-              {modelMapes.Ensemble != null && modelMapes.Ensemble < 999 && (
+              {modelMapes.Ensemble != null && modelMapes.Ensemble < 100 && (
                 <span style={{ fontSize: 9, color: model === 'ensemble' ? mapeColor(modelMapes.Ensemble) : '#475569',
                                background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
                   {Number(modelMapes.Ensemble).toFixed(1)}%
@@ -2009,7 +2009,7 @@ const ForecastingPanel = () => {
                 return (
                   <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
                     {meta.label}
-                    {mape != null && mape < 999 && (
+                    {mape != null && mape < 100 && (
                       <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
                                      background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
                         {Number(mape).toFixed(1)}%
