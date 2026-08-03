@@ -427,20 +427,54 @@ const MultiYearChart = ({ rows }) => {
     byIsoWeek[r.iso_week][r.year] = (byIsoWeek[r.iso_week][r.year] || 0) + r.arr;
   }
   const data = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
+
+  // Compute annual totals and YoY growth for the summary bar
+  const annualTotals = {};
+  for (const r of rows) { annualTotals[r.year] = (annualTotals[r.year] || 0) + r.arr; }
+
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-        <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
-               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 9, style: { textAnchor: 'middle' } }} />
-        <Tooltip content={<DarkTip />} />
-        {years.map(yr => (
-          <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
-                stroke={YEAR_COLORS[yr] ?? '#94a3b8'} strokeWidth={1.5} dot={false} connectNulls isAnimationActive />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
+    <div>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+          <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
+          <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
+                 label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 9, style: { textAnchor: 'middle' } }} />
+          <Tooltip content={<DarkTip />} />
+          {years.map(yr => (
+            <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
+                  stroke={YEAR_COLORS[yr] ?? '#94a3b8'} strokeWidth={1.5} dot={false} connectNulls isAnimationActive />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      {/* YoY growth summary */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, paddingTop: 10,
+                    borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        {years.map((yr, i) => {
+          const total = annualTotals[yr] || 0;
+          const prev = annualTotals[years[i - 1]];
+          const yoy = prev && prev > 0 ? ((total - prev) / prev * 100) : null;
+          return (
+            <div key={yr} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
+                                   borderRadius: 8, background: 'rgba(255,255,255,0.03)',
+                                   border: '1px solid rgba(255,255,255,0.07)' }}>
+              <div style={{ width: 10, height: 10, borderRadius: '50%', background: YEAR_COLORS[yr] ?? '#94a3b8', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9' }}>{yr}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}</div>
+              </div>
+              {yoy != null && (
+                <div style={{ fontSize: 12, fontWeight: 800, padding: '2px 7px', borderRadius: 6,
+                              color: yoy >= 0 ? '#10b981' : '#ef4444',
+                              background: yoy >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)' }}>
+                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 };
 
@@ -2406,6 +2440,50 @@ const ForecastingPanel = () => {
 
           {tab === 'Exec Mode' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* Quarterly Pacing Bar */}
+              {weeklyKpis && (() => {
+                const ytd      = weeklyKpis.ytd_actuals ?? 0;
+                const target   = weeklyKpis.most_likely ?? 0;
+                const pct      = target > 0 ? Math.min((ytd / target) * 100, 100) : 0;
+                const onTrack  = pct >= 95;
+                const atRisk   = pct < 80;
+                const barColor = onTrack ? '#10b981' : atRisk ? '#ef4444' : '#f59e0b';
+                const label    = onTrack ? 'On Track' : atRisk ? 'At Risk' : 'Watch';
+                const period   = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY ${selectedYear}`;
+                return (
+                  <div style={{ padding: '16px 20px', borderRadius: 12,
+                                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                          {period} Pacing — Actuals vs Forecast Target
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 24, fontWeight: 900, color: barColor, letterSpacing: -0.5 }}>{fmtM(ytd)}</span>
+                          <span style={{ fontSize: 13, color: '#475569' }}>of {fmtM(target)}</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 10,
+                                         color: barColor, background: `${barColor}18`,
+                                         border: `1px solid ${barColor}40` }}>{label}</span>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 28, fontWeight: 900, color: barColor, letterSpacing: -1 }}>
+                        {pct.toFixed(0)}%
+                      </div>
+                    </div>
+                    {/* Bar */}
+                    <div style={{ height: 14, background: 'rgba(255,255,255,0.06)', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: barColor,
+                                    borderRadius: 8, transition: 'width 0.5s ease',
+                                    boxShadow: `0 0 12px ${barColor}60` }} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: '#334155' }}>
+                      <span>$0</span>
+                      <span style={{ color: '#475569' }}>Target: {fmtM(target)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* CI Fan Chart — source: real model P10/P90 from arr_forecast_v2 p10/p90 columns */}
               <CardWrap>
