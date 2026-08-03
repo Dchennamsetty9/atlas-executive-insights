@@ -1636,7 +1636,18 @@ const ForecastingPanel = () => {
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
-  const [accuracyByQtr, setAccuracyByQtr] = useState(null);
+  const [accuracyByQtr, setAccuracyByQtr] = useState({
+    source: 'demo',
+    quarters: ['Q1 2025', 'Q2 2025', 'Q3 2025', 'Q4 2025', 'Q1 2026', 'Q2 2026'],
+    models: [
+      { model: 'Ensemble',  values: [18.2, 16.4, 21.1, 14.8, 17.3, 19.6] },
+      { model: 'Prophet',   values: [22.1, 19.8, 24.3, 18.2, 21.0, 23.5] },
+      { model: 'ETS',       values: [25.4, 21.3, 27.8, 20.1, 24.2, 26.1] },
+      { model: 'LightGBM',  values: [20.3, 18.1, 22.6, 16.9, 19.8, 21.4] },
+      { model: 'MSTL',      values: [23.7, 20.4, 25.9, 19.3, 22.5, 24.8] },
+      { model: 'DHR-ARIMA', values: [26.8, 23.2, 29.1, 21.7, 25.6, 27.9] },
+    ],
+  });
   const [allModels,   setAllModels]   = useState(null);
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
