@@ -729,6 +729,8 @@ const MultiModelCumulativeChart = ({ rows }) => {
 const QuarterlyMapeMatrix = ({ data }) => {
   if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
   const { quarters, models } = data;
+  const nWeeks = data.n_weeks || [];
+  const isDemo = data.source === 'demo';
   const colorFor = v => {
     if (v == null) return '#334155';
     if (v < 15) return '#10b981';
@@ -742,17 +744,27 @@ const QuarterlyMapeMatrix = ({ data }) => {
                borderBottom: '1px solid rgba(255,255,255,0.04)' };
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
+      <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, alignItems: 'center' }}>
         <span><span style={{ color:'#10b981' }}>●</span> &lt;15% strong</span>
         <span><span style={{ color:'#f59e0b' }}>●</span> 15–25% moderate</span>
         <span><span style={{ color:'#ef4444' }}>●</span> &gt;25% weak</span>
-        <abbr title="sMAPE = Symmetric MAPE. Lower is better. Measures forecast error for each past quarter." style={{ marginLeft:'auto', color:'#475569', cursor:'help', textDecoration:'none', fontSize:9 }}>What is this? ⓘ</abbr>
+        {isDemo && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                         color: '#f59e0b', background: 'rgba(245,158,11,0.08)',
+                         border: '1px solid rgba(245,158,11,0.25)' }}>DEMO DATA</span>
+        )}
+        <abbr title={`sMAPE = Symmetric MAPE. Lower is better. ${data.basis ? `Basis: ${data.basis}.` : 'Measures forecast error for each past quarter.'}`}
+              style={{ marginLeft:'auto', color:'#475569', cursor:'help', textDecoration:'none', fontSize:9 }}>What is this? ⓘ</abbr>
       </div>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
             <th style={{ ...th, textAlign: 'left', width: 110 }}>Model</th>
-            {quarters.map(q => <th key={q} style={th}>{q}</th>)}
+            {quarters.map((q, i) => (
+              <th key={q} style={th} title={nWeeks[i] ? `${nWeeks[i]} scored week(s)` : undefined}>
+                {q}{nWeeks[i] ? <span style={{ display:'block', fontSize:8, color:'#334155', fontWeight:400, textTransform:'none' }}>{nWeeks[i]} wks</span> : null}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -2403,7 +2415,8 @@ const ForecastingPanel = () => {
                 <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
                   Each cell shows the{' '}
                   <abbr title="sMAPE = Symmetric Mean Absolute Percentage Error. Computed from weeks where both forecast and actual are known. Lower = better." style={{ cursor:'help', borderBottom:'1px dotted #475569', textDecoration:'none' }}>sMAPE</abbr>
-                  {' '}for that model against closed actuals in each past quarter.
+                  {' '}for that model against closed actuals in each fully-closed quarter —
+                  using each week's first-published forecast (one vintage per week, no re-forecast averaging).
                 </div>
                 {loading ? <Skeleton height={200} /> : <QuarterlyMapeMatrix data={accuracyByQtr} />}
               </CardWrap>
