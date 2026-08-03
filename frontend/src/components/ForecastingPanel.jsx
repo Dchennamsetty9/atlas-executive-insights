@@ -2385,17 +2385,6 @@ const ForecastingPanel = () => {
                   </table>
                 </CardWrap>
               )}
-              {!loading && byProductView?.by_geo?.length > 0 && (
-                <CardWrap downloadName="forecast_by_geography" explainKey="by_product" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                  <SectionTitle>Forecast by Geography</SectionTitle>
-                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                    <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
-                    <span><span style={{ color: '#ffffff' }}>■</span> Most Likely</span>
-                    <span><span style={{ color: '#10b981' }}>■</span> Stretch Case</span>
-                  </div>
-                  <GeoBarChart rows={byProductView.by_geo} />
-                </CardWrap>
-              )}
             </div>
           )}
 
