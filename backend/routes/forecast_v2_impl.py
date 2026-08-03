@@ -2195,6 +2195,88 @@ async def get_model_lab(
     }
 
 
+# ── GET /weekly-all-models ────────────────────────────────────────────────────
+@router.get("/weekly-all-models")
+async def get_weekly_all_models(
+    product_line: Optional[str] = None,
+    year: Optional[int] = None,
+    quarter: Optional[int] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """All model weekly forecasts in one query — powers the multi-model cumulative line chart.
+    Returns rows with ds, actual, and one column per model (ensemble, ets, prophet, lgbm, mstl, dhr).
+    Forecasts limited to future weeks; actuals returned for all closed weeks."""
+    if not live_mode:
+        import random, datetime as dt
+        today = dt.date.today()
+        rows = []
+        base = 250_000
+        for i in range(52):
+            d = today - dt.timedelta(weeks=26) + dt.timedelta(weeks=i)
+            is_actual = d < today
+            actual = base + random.randint(-40000, 80000) if is_actual else None
+            rows.append({
+                "date": str(d), "actual": actual,
+                "ensemble": base + random.randint(-30000, 60000) if not is_actual else None,
+                "ets":      base + random.randint(-50000, 80000) if not is_actual else None,
+                "prophet":  base + random.randint(-45000, 75000) if not is_actual else None,
+                "lgbm":     base + random.randint(-35000, 65000) if not is_actual else None,
+                "mstl":     base + random.randint(-40000, 70000) if not is_actual else None,
+                "dhr":      base + random.randint(-55000, 85000) if not is_actual else None,
+            })
+        return {"rows": rows, "source": "demo"}
+
+    eff_year = year or datetime.date.today().year
+    pf = _product_filter(None, product_line)
+    yf = _year_filter(eff_year)
+    qf = _quarter_filter(quarter, eff_year) if quarter else ""
+    date_filter = f"AND {qf}" if qf else f"AND {yf}"
+    today_str = datetime.date.today().isoformat()
+
+    sql = f"""
+        SELECT
+            CAST(ds AS STRING) AS ds,
+            COALESCE(CAST(Actuals       AS DOUBLE), 0) AS actual,
+            COALESCE(CAST(Most_Likely   AS DOUBLE), 0) AS ensemble,
+            COALESCE(CAST(arr_ets       AS DOUBLE), 0) AS ets,
+            COALESCE(CAST(arr_prophet   AS DOUBLE), 0) AS prophet,
+            COALESCE(CAST(arr_lightgbm  AS DOUBLE), 0) AS lgbm,
+            COALESCE(CAST(arr_mstl_v2   AS DOUBLE), 0) AS mstl,
+            COALESCE(CAST(arr_dhr_arima AS DOUBLE), 0) AS dhr,
+            forecast_type
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          {pf}
+          {date_filter}
+        ORDER BY ds
+    """
+
+    try:
+        rows_raw = await _cached_query(sql, endpoint="/weekly-all-models",
+                                       model="ensemble", forecast_type="rolling",
+                                       product=_selected_product(None, product_line),
+                                       geo="Total", year=eff_year, quarter=quarter)
+    except Exception as exc:
+        logger.warning("[forecast/weekly-all-models] query failed: %s", exc)
+        return _demo("rows", error=str(exc))
+
+    rows = []
+    for r in rows_raw:
+        ftype = str(r.get("forecast_type") or "").strip().lower()
+        is_actual = ftype == "actuals"
+        rows.append({
+            "date":     str(r.get("ds") or "")[:10],
+            "actual":   _f(r.get("actual"))  if is_actual else None,
+            "ensemble": _f(r.get("ensemble")) if not is_actual else None,
+            "ets":      _f(r.get("ets"))      if not is_actual else None,
+            "prophet":  _f(r.get("prophet"))  if not is_actual else None,
+            "lgbm":     _f(r.get("lgbm"))     if not is_actual else None,
+            "mstl":     _f(r.get("mstl"))     if not is_actual else None,
+            "dhr":      _f(r.get("dhr"))      if not is_actual else None,
+        })
+    return {"rows": rows, "source": "live"}
+
+
 # ── GET /accuracy-by-quarter ───────────────────────────────────────────────────
 @router.get("/accuracy-by-quarter")
 async def get_accuracy_by_quarter(

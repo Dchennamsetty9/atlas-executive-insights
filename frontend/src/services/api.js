@@ -160,6 +160,13 @@ export const apiService = {
     if (productLine && productLine !== 'All') params.product_line = productLine;
     return api.get('/api/forecast/v2/accuracy-by-quarter', { params });
   },
+  getForecastV2WeeklyAllModels: (productLine = null, year = null, quarter = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (year) params.year = year;
+    if (quarter) params.quarter = quarter;
+    return api.get('/api/forecast/v2/weekly-all-models', { params });
+  },
   getForecastV2Models: () => api.get('/api/forecast/v2/models'),
   getForecastV2Freshness: () => api.get('/api/forecast/v2/freshness'),
   getForecastV2Confidence: (model = 'ensemble', year = null, quarter = null) => {

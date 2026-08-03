@@ -597,6 +597,87 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
   );
 };
 
+// ── Multi-Model Cumulative Line Chart ────────────────────────────────────────
+const MODEL_LINES = [
+  { key: 'actual',   label: 'Actuals',   color: '#f59e0b', width: 2.5, dash: '' },
+  { key: 'ensemble', label: 'Ensemble ★', color: '#10b981', width: 2,   dash: '' },
+  { key: 'prophet',  label: 'Prophet',   color: '#3b82f6', width: 1.5, dash: '4 2' },
+  { key: 'ets',      label: 'ETS',       color: '#a78bfa', width: 1.5, dash: '4 2' },
+  { key: 'lgbm',     label: 'LightGBM',  color: '#f472b6', width: 1.5, dash: '4 2' },
+  { key: 'mstl',     label: 'MSTL',      color: '#34d399', width: 1.5, dash: '4 2' },
+  { key: 'dhr',      label: 'DHR-ARIMA', color: '#fb923c', width: 1.5, dash: '4 2' },
+];
+
+const MultiModelCumulativeChart = ({ rows }) => {
+  if (!rows || rows.length === 0) return <EmptyState />;
+
+  // Build cumulative sums per model
+  const cumulative = { actual: 0, ensemble: 0, prophet: 0, ets: 0, lgbm: 0, mstl: 0, dhr: 0 };
+  const data = rows.map(r => {
+    const pt = { date: r.date };
+    MODEL_LINES.forEach(m => {
+      if (r[m.key] != null && r[m.key] > 0) {
+        cumulative[m.key] += r[m.key];
+        pt[m.key] = cumulative[m.key];
+      } else if (m.key === 'actual' && r[m.key] == null) {
+        pt[m.key] = null; // no actuals for future weeks
+      } else if (m.key !== 'actual') {
+        // carry forward forecast cumulative if we had a prior value
+        pt[m.key] = cumulative[m.key] > 0 ? cumulative[m.key] : null;
+      }
+    });
+    return pt;
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const todayRow = rows.find(r => r.date >= today);
+
+  const MMTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    return (
+      <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 14px', fontSize: 11 }}>
+        <div style={{ color: '#94a3b8', marginBottom: 6, fontSize: 10 }}>{label}</div>
+        {payload.filter(p => p.value != null).map(p => (
+          <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
+            {MODEL_LINES.find(m => m.key === p.dataKey)?.label}: <b>{fmtM(p.value)}</b>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 10, fontSize: 10 }}>
+        {MODEL_LINES.map(m => (
+          <span key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ display: 'inline-block', width: 18, height: 2, background: m.color,
+                           borderTop: m.dash ? `2px dashed ${m.color}` : undefined }} />
+            <span style={{ color: '#94a3b8' }}>{m.label}</span>
+          </span>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={data} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+          <XAxis dataKey="date" tickFormatter={d => d?.slice(5, 10)} tick={{ fill: '#475569', fontSize: 9 }}
+                 axisLine={false} tickLine={false} interval={Math.max(1, Math.floor(data.length / 10))} />
+          <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} />
+          <Tooltip content={<MMTooltip />} />
+          {todayRow && <ReferenceLine x={todayRow.date} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4"
+                         label={{ value: 'TODAY', position: 'top', fill: '#475569', fontSize: 8 }} />}
+          {MODEL_LINES.map(m => (
+            <Line key={m.key} type="monotone" dataKey={m.key} name={m.label}
+                  stroke={m.color} strokeWidth={m.width}
+                  strokeDasharray={m.dash || undefined}
+                  dot={false} connectNulls isAnimationActive={false} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+};
+
 // ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
 const QuarterlyMapeMatrix = ({ data }) => {
   if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
@@ -1497,6 +1578,7 @@ const ForecastingPanel = () => {
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
   const [accuracyByQtr, setAccuracyByQtr] = useState(null);
+  const [allModels,   setAllModels]   = useState(null);
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
   const [confidence,  setConfidence]  = useState(null);
@@ -1527,13 +1609,14 @@ const ForecastingPanel = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, am] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
+      apiService.getForecastV2WeeklyAllModels(activePl, selectedYear, selectedQuarter),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1549,6 +1632,7 @@ const ForecastingPanel = () => {
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+    if (am.status === 'fulfilled') setAllModels(am.value?.rows ?? null);
 
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
@@ -2157,6 +2241,18 @@ const ForecastingPanel = () => {
                   <QuarterlyBarChart weeklyRows={weeklyView} year={selectedYear} />
                 </CardWrap>
               )}
+
+              {/* Multi-model cumulative line chart */}
+              <CardWrap downloadName="multi_model_cumulative">
+                <SectionTitle>
+                  All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
+                  {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                </SectionTitle>
+                <div style={{ fontSize: 10, color: '#475569', marginBottom: 4 }}>
+                  Cumulative running total per model — shows where each forecast lands relative to actuals.
+                </div>
+                {loading ? <Skeleton height={260} /> : <MultiModelCumulativeChart rows={allModels} />}
+              </CardWrap>
             </div>
           )}
 
