@@ -2255,17 +2255,19 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
 
-              {/* Multi-model cumulative line chart */}
-              <CardWrap downloadName="multi_model_cumulative">
-                <SectionTitle>
-                  All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
-                  {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
-                </SectionTitle>
-                <div style={{ fontSize: 10, color: '#475569', marginBottom: 4 }}>
-                  Cumulative running total per model — shows where each forecast lands relative to actuals.
-                </div>
-                {loading ? <Skeleton height={260} /> : <MultiModelCumulativeChart rows={allModels} />}
-              </CardWrap>
+              {/* Multi-model cumulative — only show if data exists */}
+              {allModels && allModels.length > 0 && (
+                <CardWrap downloadName="multi_model_cumulative">
+                  <SectionTitle>
+                    All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
+                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  </SectionTitle>
+                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 4 }}>
+                    Cumulative running total per model — shows where each forecast lands relative to actuals.
+                  </div>
+                  {loading ? <Skeleton height={260} /> : <MultiModelCumulativeChart rows={allModels} />}
+                </CardWrap>
+              )}
             </div>
           )}
 
