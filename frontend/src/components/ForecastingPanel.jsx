@@ -611,23 +611,31 @@ const MODEL_LINES = [
 const MultiModelCumulativeChart = ({ rows }) => {
   if (!rows || rows.length === 0) return <EmptyState />;
 
-  // Build cumulative sums per model
+  // Build cumulative sums per model — skip a model if it has no non-null values
   const cumulative = { actual: 0, ensemble: 0, prophet: 0, ets: 0, lgbm: 0, mstl: 0, dhr: 0 };
+  const hasData    = { actual: false, ensemble: false, prophet: false, ets: false, lgbm: false, mstl: false, dhr: false };
+
   const data = rows.map(r => {
     const pt = { date: r.date };
     MODEL_LINES.forEach(m => {
-      if (r[m.key] != null && r[m.key] > 0) {
-        cumulative[m.key] += r[m.key];
+      const v = r[m.key];
+      if (v != null && v > 0) {
+        cumulative[m.key] += v;
         pt[m.key] = cumulative[m.key];
-      } else if (m.key === 'actual' && r[m.key] == null) {
-        pt[m.key] = null; // no actuals for future weeks
-      } else if (m.key !== 'actual') {
-        // carry forward forecast cumulative if we had a prior value
+        hasData[m.key] = true;
+      } else {
+        // carry forward cumulative if we already started accumulating
         pt[m.key] = cumulative[m.key] > 0 ? cumulative[m.key] : null;
       }
     });
     return pt;
   });
+
+  const visibleLines = MODEL_LINES.filter(m => hasData[m.key]);
+
+  if (visibleLines.length === 0) return (
+    <EmptyState message="No forecast model data available yet — individual model predictions appear after the V5 pipeline runs" />
+  );
 
   const today = new Date().toISOString().slice(0, 10);
   const todayRow = rows.find(r => r.date >= today);
@@ -649,13 +657,18 @@ const MultiModelCumulativeChart = ({ rows }) => {
   return (
     <div>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 10, fontSize: 10 }}>
-        {MODEL_LINES.map(m => (
+        {visibleLines.map(m => (
           <span key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ display: 'inline-block', width: 18, height: 2, background: m.color,
-                           borderTop: m.dash ? `2px dashed ${m.color}` : undefined }} />
+            <span style={{ display: 'inline-block', width: 18, height: 0,
+                           borderTop: `2px ${m.dash ? 'dashed' : 'solid'} ${m.color}` }} />
             <span style={{ color: '#94a3b8' }}>{m.label}</span>
           </span>
         ))}
+        {visibleLines.length < MODEL_LINES.length && (
+          <span style={{ color: '#334155', fontSize: 9, marginLeft: 'auto' }}>
+            {MODEL_LINES.length - visibleLines.length} models have no data yet
+          </span>
+        )}
       </div>
       <ResponsiveContainer width="100%" height={260}>
         <LineChart data={data} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
@@ -666,7 +679,7 @@ const MultiModelCumulativeChart = ({ rows }) => {
           <Tooltip content={<MMTooltip />} />
           {todayRow && <ReferenceLine x={todayRow.date} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4"
                          label={{ value: 'TODAY', position: 'top', fill: '#475569', fontSize: 8 }} />}
-          {MODEL_LINES.map(m => (
+          {visibleLines.map(m => (
             <Line key={m.key} type="monotone" dataKey={m.key} name={m.label}
                   stroke={m.color} strokeWidth={m.width}
                   strokeDasharray={m.dash || undefined}

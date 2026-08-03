@@ -2240,6 +2240,11 @@ async def get_weekly_all_models(
     qf = _quarter_filter(quarter, eff_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else f"AND {yf}"
 
+    # Use arr_forecast_v2 directly — it has per-model columns (arr_ets, arr_prophet,
+    # arr_lightgbm, etc.) written by arr_forecast_v2_main.py.  forecast_results_v2compat
+    # only has Most_Likely (Adaptive_Ensemble) at product level; the individual model
+    # columns are NULL there because the V5 pipeline only writes ensemble rows.
+    ARR_V2 = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
     sql = f"""
         SELECT
             CAST(ds AS STRING) AS ds,
@@ -2251,8 +2256,8 @@ async def get_weekly_all_models(
             SUM(COALESCE(CAST(arr_mstl_v2   AS DOUBLE), 0)) AS mstl,
             SUM(COALESCE(CAST(arr_dhr_arima AS DOUBLE), 0)) AS dhr,
             forecast_type
-        FROM {FC_TABLE}
-        WHERE {_latest_run()}
+        FROM {ARR_V2}
+        WHERE run_date = (SELECT MAX(run_date) FROM {ARR_V2})
           {prod_filter}
           AND {_normalized_market_expr('sales_market')} = 'Total'
           {date_filter}
