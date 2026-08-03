@@ -2227,28 +2227,36 @@ async def get_weekly_all_models(
         return {"rows": rows, "source": "demo"}
 
     eff_year = year or datetime.date.today().year
-    pf = _product_filter(None, product_line)
+    # Individual model columns (arr_ets, arr_prophet, etc.) only exist on
+    # product-level rows (UCC / ITSG), NOT on the pre-computed Total rollup.
+    # So for "All Products" we SUM across UCC+ITSG; for a specific product we filter.
+    eff_product = _selected_product(None, product_line)
+    if eff_product in ("Total", "All", None):
+        prod_filter = "AND product IN ('UCC', 'ITSG')"
+    else:
+        prod_filter = f"AND product = '{eff_product.replace(chr(39), chr(39)*2)}'"
+
     yf = _year_filter(eff_year)
     qf = _quarter_filter(quarter, eff_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else f"AND {yf}"
-    today_str = datetime.date.today().isoformat()
 
     sql = f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            COALESCE(CAST(Actuals       AS DOUBLE), 0) AS actual,
-            COALESCE(CAST(Most_Likely   AS DOUBLE), 0) AS ensemble,
-            COALESCE(CAST(arr_ets       AS DOUBLE), 0) AS ets,
-            COALESCE(CAST(arr_prophet   AS DOUBLE), 0) AS prophet,
-            COALESCE(CAST(arr_lightgbm  AS DOUBLE), 0) AS lgbm,
-            COALESCE(CAST(arr_mstl_v2   AS DOUBLE), 0) AS mstl,
-            COALESCE(CAST(arr_dhr_arima AS DOUBLE), 0) AS dhr,
+            SUM(COALESCE(CAST(Actuals       AS DOUBLE), 0)) AS actual,
+            SUM(COALESCE(CAST(Most_Likely   AS DOUBLE), 0)) AS ensemble,
+            SUM(COALESCE(CAST(arr_ets       AS DOUBLE), 0)) AS ets,
+            SUM(COALESCE(CAST(arr_prophet   AS DOUBLE), 0)) AS prophet,
+            SUM(COALESCE(CAST(arr_lightgbm  AS DOUBLE), 0)) AS lgbm,
+            SUM(COALESCE(CAST(arr_mstl_v2   AS DOUBLE), 0)) AS mstl,
+            SUM(COALESCE(CAST(arr_dhr_arima AS DOUBLE), 0)) AS dhr,
             forecast_type
         FROM {FC_TABLE}
         WHERE {_latest_run()}
-          {pf}
+          {prod_filter}
           AND {_normalized_market_expr('sales_market')} = 'Total'
           {date_filter}
+        GROUP BY ds, forecast_type
         ORDER BY ds, CASE forecast_type WHEN 'actuals' THEN 0 ELSE 1 END
     """
 
