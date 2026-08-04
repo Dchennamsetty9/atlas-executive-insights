@@ -61,7 +61,8 @@ UCC_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_ac
 # Precomputed per-graph "explain this chart" text (forecast_unify_publish notebook).
 GRAPH_EXPLAIN_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_graph_explanations`"
 _GRAPH_KEYS = {"weekly", "ytd", "seasonality", "by_product", "monthly",
-               "accuracy", "model_lab", "backtest"}
+               "accuracy", "model_lab", "backtest",
+               "quarterly_outlook", "multi_model"}
 # Map the app's model key → the model label stored in the accuracy-history table.
 _ACC_MODEL = {
     "ensemble": "Adaptive_Ensemble", "prophet": "Prophet_trend", "ets": "ETS",

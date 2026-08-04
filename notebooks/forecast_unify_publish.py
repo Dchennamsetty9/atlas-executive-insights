@@ -486,7 +486,52 @@ GRAPH_TITLES = {
     "accuracy":    "Model Accuracy Leaderboard",
     "model_lab":   "Model Lab — Per-Model Forecast",
     "backtest":    "Forecast vs Reality (Backtest)",
+    "quarterly_outlook": "Quarterly Summary — Actuals & Forecast by Quarter",
+    "multi_model":       "All Models — Cumulative Comparison",
 }
+
+_MODEL_DISPLAY = {"Adaptive_Ensemble": "Ensemble", "Prophet_trend": "Prophet",
+                  "ETS": "ETS", "MSTL_v2": "MSTL", "DHR_ARIMA": "DHR-ARIMA"}
+
+def _extra_context(df, region="Total"):
+    """Per-quarter breakdown + model-agreement stats for the quarterly-outlook
+    and multi-model graph explanations. Same region scoping as _stats."""
+    try:
+        if region == "Total":
+            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+        else:
+            tot = df[(df["grain_level"].astype(str).str.lower() == "market")
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+        yr = tot[tot["ds"].dt.year.eq(_Q_YEAR)]
+        act_all = yr[yr["model"] == "ACTUAL"]
+        last_act = act_all["ds"].max() if not act_all.empty else pd.Timestamp("1900-01-01")
+        fwd_all = yr[(yr["model"] == REC_MODEL)
+                     & yr["forecast_type"].isin(["rolling", "roy"]) & (yr["ds"] > last_act)]
+
+        qb = []
+        for q in (1, 2, 3, 4):
+            months = [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3]
+            a = float(act_all[act_all["ds"].dt.month.isin(months)]["actual"].fillna(0).sum())
+            f = float(fwd_all[fwd_all["ds"].dt.month.isin(months)]["p50"].fillna(0).sum())
+            status = "closed" if q < _Q else ("in_progress" if q == _Q else "forecast")
+            qb.append(dict(q=q, actual=a, forecast=f, landing=a + f, status=status))
+        fy_landing = sum(x["landing"] for x in qb)
+        prior_fy = float(df[(df["model"] == "ACTUAL") & df["ds"].dt.year.eq(_Q_YEAR - 1)
+                            & (df["grain_level"].astype(str).str.lower() == ("total" if region == "Total" else "market"))
+                            & ((df["sales_market"].astype(str).str.upper() == str(region).upper()) if region != "Total" else True)
+                           ]["actual"].fillna(0).sum()) if region == "Total" else None
+
+        # Model agreement on the current quarter's open weeks
+        cur_months = [(_Q - 1) * 3 + 1, (_Q - 1) * 3 + 2, (_Q - 1) * 3 + 3]
+        cur = yr[yr["forecast_type"].isin(["rolling", "roy"]) & (yr["ds"] > last_act)
+                 & yr["ds"].dt.month.isin(cur_months) & (yr["model"] != "ACTUAL")]
+        model_sums = {m: float(g["p50"].fillna(0).sum())
+                      for m, g in cur.groupby("model") if g["p50"].notna().any()}
+        return dict(q_breakdown=qb, fy_landing=fy_landing, prior_fy=prior_fy,
+                    model_sums=model_sums)
+    except Exception as _e:
+        print(f"  WARN extra context failed: {_e}")
+        return {}
 
 def _explain(s, label, key):
     _pl = s.get("period_label", _Q_LABEL)
@@ -554,6 +599,62 @@ def _explain(s, label, key):
         b = ["Past forecasts vs weeks that later closed",
              "Band coverage should approach ~80% if calibrated",
              f"Point accuracy {wape_s}"]
+    elif key == "quarterly_outlook":
+        qb = s.get("q_breakdown") or []
+        if qb:
+            _status_txt = {"closed": "closed", "in_progress": "in progress", "forecast": "forecast"}
+            parts = []
+            for x in qb:
+                if x["status"] == "closed":
+                    parts.append(f"Q{x['q']} closed at {_fmt_m(x['actual'])}")
+                elif x["status"] == "in_progress":
+                    parts.append(f"Q{x['q']} is in progress — {_fmt_m(x['actual'])} realized + "
+                                 f"{_fmt_m(x['forecast'])} forecast = {_fmt_m(x['landing'])} landing")
+                else:
+                    parts.append(f"Q{x['q']} is fully forecast at {_fmt_m(x['forecast'])}")
+            fy = s.get("fy_landing")
+            pfy = s.get("prior_fy")
+            fy_yoy = (f", {'+' if fy >= pfy else ''}{(fy/pfy - 1)*100:.0f}% vs {_Q_YEAR - 1}'s {_fmt_m(pfy)}"
+                      if fy and pfy else "")
+            exp = (f"{label} {_Q_YEAR} by quarter: " + "; ".join(parts) + ". "
+                   f"Orange is realized bookings; blue is the {REC_MODEL} most-likely forecast — the in-progress "
+                   f"quarter stacks both. Full-year landing {_fmt_m(fy)}{fy_yoy}. Later quarters (especially Q4) "
+                   f"carry longer forecast horizons, so treat them as directional with wider uncertainty.")
+            b = ([f"Q{x['q']}: " + (
+                    _fmt_m(x['actual']) + " actual" if x["status"] == "closed"
+                    else (_fmt_m(x['actual']) + " + " + _fmt_m(x['forecast']) + " → " + _fmt_m(x['landing'])) if x["status"] == "in_progress"
+                    else _fmt_m(x['forecast']) + " forecast") for x in qb]
+                 + [f"Full year: {_fmt_m(fy)}{fy_yoy}" if fy else "Full-year landing unavailable"])
+        else:
+            exp, b = f"Quarterly actuals and forecast for {label}, {_Q_YEAR}.", []
+    elif key == "multi_model":
+        ms = s.get("model_sums") or {}
+        if ms:
+            named = {(_MODEL_DISPLAY.get(k) or k.replace("_", " ")): v for k, v in ms.items()}
+            ens = named.get("Ensemble")
+            others = {k: v for k, v in named.items() if k != "Ensemble"}
+            if others:
+                hi_m, hi_v = max(others.items(), key=lambda kv: kv[1])
+                lo_m, lo_v = min(others.items(), key=lambda kv: kv[1])
+                mid = ens or (hi_v + lo_v) / 2
+                spread_m = ((hi_v - lo_v) / mid * 100) if mid else 0
+                agree = "tight agreement — higher confidence in the central path" if spread_m < 15 \
+                        else "moderate disagreement — treat the point estimate with some caution" if spread_m < 35 \
+                        else "wide disagreement — real uncertainty about where the quarter lands"
+                ens_txt = f" around the Ensemble at {_fmt_m(ens)}" if ens else ""
+                exp = (f"Each line is one model's cumulative {_pl} trajectory for {label}, against realized actuals "
+                       f"({_fmt_m(qtd)} to date). The {len(named)} models land between {_fmt_m(lo_v)} ({lo_m}) and "
+                       f"{_fmt_m(hi_v)} ({hi_m}) — a {spread_m:.0f}% spread{ens_txt}. "
+                       f"That is {agree}. Where the lines fan apart is where the models disagree about pacing; "
+                       f"the Ensemble blends them and is the recommended planning number.")
+                b = [f"Range: {_fmt_m(lo_v)} ({lo_m}) → {_fmt_m(hi_v)} ({hi_m}), spread {spread_m:.0f}%"]
+                if ens:
+                    b.append(f"Ensemble ★ central path: {_fmt_m(ens)}")
+                b.append(f"Actuals to date: {_fmt_m(qtd)} — compare against each model's line")
+            else:
+                exp, b = f"Cumulative model comparison for {label}, {_pl}.", []
+        else:
+            exp, b = f"Cumulative model comparison for {label}, {_pl}.", []
     else:
         exp, b = f"Detailed view of {label} Growth ARR for {_pl}.", []
     return GRAPH_TITLES[key], exp, b
@@ -572,10 +673,12 @@ for ui_label, data_product in _EXPLAIN_PRODUCTS.items():
     if pdf.empty:
         continue
     for region in _EXPLAIN_REGIONS:
+        _ctx = _extra_context(pdf, region=region)   # quarter breakdown + model agreement
         for period in _EXPLAIN_PERIODS:
             s = _stats(pdf, region=region, period=period)
             if not s:
                 continue
+            s = {**s, **_ctx}
             disp = "Total portfolio" if ui_label == "ALL" else ui_label
             if region != "Total":
                 disp = f"{disp} · {region}"

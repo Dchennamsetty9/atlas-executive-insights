@@ -530,29 +530,49 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual  ?? 0), 0);
     const forecast = rows.reduce((s, r) => s + (r.arr_likely  ?? 0), 0);
-    const worst    = rows.reduce((s, r) => s + (r.arr_worst   ?? 0), 0);
-    const best     = rows.reduce((s, r) => s + (r.arr_best    ?? 0), 0);
+    // Variance-aggregated quarter band (consistent with the Overview cards):
+    // combine weekly half-widths in quadrature, not additively.
+    const loSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, lk - (r.arr_worst ?? lk)) ** 2 : s;
+    }, 0);
+    const upSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, (r.arr_best ?? lk) - lk) ** 2 : s;
+    }, 0);
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
-    return { q, name: `Q${q}`, actual: isPast ? actual : null,
-             forecast: !isPast ? forecast : null, worst: !isPast ? worst : null,
-             best: !isPast ? best : null, isPast, isCurrent };
+    const isFuture  = !isPast && !isCurrent;
+    const landing   = actual + forecast;   // actuals + open-week forecast
+    return {
+      q, name: `Q${q}`,
+      // Stacked: orange realized layer + blue forecast layer. Past quarters are
+      // all orange; the in-progress quarter stacks blue on orange; future
+      // quarters are all blue.
+      actual:   actual > 0 ? actual : null,
+      forecast: !isPast && forecast > 0 ? forecast : null,
+      landing,
+      worst: !isPast && landing > 0 ? Math.max(0, landing - Math.sqrt(loSq)) : null,
+      best:  !isPast && landing > 0 ? landing + Math.sqrt(upSq) : null,
+      isPast, isCurrent, isFuture,
+    };
   });
 
-  const maxVal = Math.max(...qtrs.map(q => Math.max(q.actual ?? 0, q.best ?? q.forecast ?? 0)), 1) * 1.18;
+  const maxVal = Math.max(...qtrs.map(q => Math.max(q.landing ?? 0, q.best ?? 0)), 1) * 1.18;
 
   const QTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
     const d = qtrs.find(q => q.name === label);
     if (!d) return null;
     return (
-      <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.12)', borderRadius:10, padding:'12px 16px', minWidth:160 }}>
+      <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.12)', borderRadius:10, padding:'12px 16px', minWidth:180 }}>
         <div style={{ fontWeight:800, color:'#f1f5f9', fontSize:13, marginBottom:6 }}>{label} {year}</div>
         <div style={{ fontSize:9, color:'#475569', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:8 }}>
-          {d.isPast ? 'Closed — Actuals' : d.isCurrent ? 'In Progress' : 'Forecast'}
+          {d.isPast ? 'Closed — Actuals' : d.isCurrent ? 'In Progress — Realized + Forecast' : 'Forecast'}
         </div>
-        {d.actual  != null && <div style={{ color:'#f59e0b', fontSize:12 }}>Actuals: <b>{fmtM(d.actual)}</b></div>}
-        {d.forecast != null && <div style={{ color:'#93c5fd', fontSize:12 }}>Most Likely: <b>{fmtM(d.forecast)}</b></div>}
+        {d.actual  != null && <div style={{ color:'#f59e0b', fontSize:12 }}>Realized: <b>{fmtM(d.actual)}</b></div>}
+        {d.forecast != null && <div style={{ color:'#93c5fd', fontSize:12 }}>{d.isCurrent ? 'Remaining forecast' : 'Most Likely'}: <b>{fmtM(d.forecast)}</b></div>}
+        {d.isCurrent && <div style={{ color:'#f1f5f9', fontSize:12, marginTop:4, paddingTop:4, borderTop:'1px solid rgba(255,255,255,0.08)' }}>Landing: <b>{fmtM(d.landing)}</b></div>}
         {d.worst   != null && <div style={{ color:'#fca5a5', fontSize:11, marginTop:4 }}>Risk Floor: {fmtM(d.worst)}</div>}
         {d.best    != null && <div style={{ color:'#6ee7b7', fontSize:11 }}>Stretch Case: {fmtM(d.best)}</div>}
       </div>
@@ -598,14 +618,19 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
           />
           <YAxis tickFormatter={v => fmtM(v)} tick={{ fill:'#475569', fontSize:9 }} axisLine={false} tickLine={false} width={52} domain={[0, maxVal]} />
           <Tooltip content={<QTooltip />} cursor={{ fill:'rgba(255,255,255,0.03)', rx:6 }} />
-          <Bar dataKey="actual" name="Actuals" radius={[8,8,0,0]} fill="url(#qg-actual)" isAnimationActive>
+          {/* Stacked layers: realized actuals (orange) with remaining forecast
+              (blue) on top — the in-progress quarter shows both; closed quarters
+              are all orange; future quarters all blue. */}
+          <Bar dataKey="actual" name="Realized" stackId="q" isAnimationActive
+               radius={[0,0,0,0]}>
             {qtrs.map((d, i) => (
-              <Cell key={i} fill={d.isPast ? 'url(#qg-actual)' : 'transparent'} />
+              <Cell key={i} fill="url(#qg-actual)"
+                    radius={d.forecast == null ? [8,8,0,0] : [0,0,0,0]} />
             ))}
           </Bar>
-          <Bar dataKey="forecast" name="Forecast" radius={[8,8,0,0]} isAnimationActive>
+          <Bar dataKey="forecast" name="Forecast" stackId="q" radius={[8,8,0,0]} isAnimationActive>
             {qtrs.map((d, i) => (
-              <Cell key={i} fill={!d.isPast ? (d.isCurrent ? 'url(#qg-current)' : 'url(#qg-forecast)') : 'transparent'} />
+              <Cell key={i} fill="url(#qg-forecast)" />
             ))}
           </Bar>
         </BarChart>
@@ -617,8 +642,13 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
           <div key={d.name} style={{ flex:1, textAlign:'center' }}>
             <div style={{ fontSize:14, fontWeight:900, letterSpacing:-0.5,
                           color: d.isPast ? '#f59e0b' : d.isCurrent ? '#818cf8' : '#60a5fa' }}>
-              {fmtM(d.actual ?? d.forecast)}
+              {fmtM(d.landing)}
             </div>
+            {d.isCurrent && d.actual != null && d.forecast != null && (
+              <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>
+                <span style={{ color:'#f59e0b' }}>{fmtM(d.actual)}</span> + <span style={{ color:'#60a5fa' }}>{fmtM(d.forecast)}</span>
+              </div>
+            )}
             {!d.isPast && d.worst != null && (
               <div style={{ fontSize:9, color:'#475569', marginTop:2 }}>
                 {fmtM(d.worst)} – {fmtM(d.best)}
@@ -1649,6 +1679,7 @@ const ForecastingPanel = () => {
     ],
   });
   const [allModels,   setAllModels]   = useState(null);
+  const [yearRows,    setYearRows]    = useState(null);   // full-year rolling+roy for quarterly bars
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
   const [confidence,  setConfidence]  = useState(null);
@@ -1679,7 +1710,7 @@ const ForecastingPanel = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, am] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
       apiService.getForecastV2Models(),
@@ -1687,6 +1718,11 @@ const ForecastingPanel = () => {
       apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
       apiService.getForecastV2WeeklyAllModels(activePl, selectedYear, selectedQuarter),
+      // Full-year rows for the Quarterly Summary bars: rolling covers only the
+      // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
+      // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
+      apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
+      apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1703,6 +1739,11 @@ const ForecastingPanel = () => {
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
     if (am.status === 'fulfilled') setAllModels(am.value?.rows ?? null);
+    {
+      const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
+      const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
+      setYearRows(base.length || roy.length ? [...base, ...roy] : null);
+    }
 
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
@@ -2297,24 +2338,31 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
-              {/* Quarterly bar chart — actuals for closed, forecast for open quarters */}
-              {weeklyView && weeklyView.length > 0 && (
-                <CardWrap downloadName="quarterly_summary">
+              {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
+                  truncated by the 13-week window; current quarter stacks
+                  realized (orange) + remaining forecast (blue) */}
+              {(yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
+                <CardWrap downloadName="quarterly_summary"
+                          explainKey="quarterly_outlook" explainProductLine={prodLine}
+                          explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>
                     Quarterly Summary — {selectedYear}
                     {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
                   </SectionTitle>
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
-                    <span><span style={{ color: '#f59e0b' }}>■</span> Actuals (closed quarters)</span>
+                    <span><span style={{ color: '#f59e0b' }}>■</span> Realized actuals</span>
                     <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
+                    <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
                   </div>
-                  <QuarterlyBarChart weeklyRows={weeklyView} year={selectedYear} />
+                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
                 </CardWrap>
               )}
 
               {/* Multi-model cumulative — only show if data exists */}
               {allModels && allModels.length > 0 && (
-                <CardWrap downloadName="multi_model_cumulative">
+                <CardWrap downloadName="multi_model_cumulative"
+                          explainKey="multi_model" explainProductLine={prodLine}
+                          explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                   <SectionTitle>
                     All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
                     {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
