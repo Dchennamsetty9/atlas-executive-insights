@@ -159,6 +159,9 @@ select.select-dark {
   appearance: none;
   cursor: pointer;
   transition: border-color var(--transition-fast);
+  /* Renders the NATIVE dropdown popup in dark mode (macOS/Chrome draw the
+     open list with OS chrome; option{} styling alone can't reach it). */
+  color-scheme: dark;
 }
 select.select-dark:focus { border-color: var(--accent-blue); }
 select.select-dark option { background: var(--bg-elevated); color: var(--text-primary); }
@@ -275,6 +278,7 @@ select.select-dark option { background: var(--bg-elevated); color: var(--text-pr
   background: #f8fafc;
   border-color: rgba(0, 0, 0, 0.12);
   color: #0f172a;
+  color-scheme: light;
 }
 
 [data-theme="light"] select.select-dark option {
