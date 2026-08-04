@@ -2339,7 +2339,10 @@ async def get_accuracy_by_quarter(
     # One vintage per week: the EARLIEST run that forecast it ("as first
     # published"). Averaging every retained vintage over-weights easy 1-week-
     # ahead re-forecasts and late-quarter weeks (which accumulate more runs).
-    # Closed quarters only, per Brian's ask — the in-progress quarter is excluded.
+    # Scores every CLOSED WEEK (the actuals join enforces closure), including
+    # the elapsed portion of the current quarter — labelled "(QTD)" — because
+    # arr_forecast_v2 only retains vintages from mid-June 2026, so a strict
+    # closed-quarters-only matrix is empty until the first full quarter closes.
     sql = f"""
         WITH actuals AS (
             SELECT ds, product, MAX(CAST(Actuals AS DOUBLE)) AS actual
@@ -2358,7 +2361,7 @@ async def get_accuracy_by_quarter(
                    ) AS rn
             FROM {ARR_V2} f
             WHERE f.forecast_type IN ('rolling', 'roy')
-              AND CAST(f.ds AS DATE) < CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE)
+              AND CAST(f.ds AS DATE) < CURRENT_DATE()
               AND COALESCE(CAST(f.Most_Likely AS DOUBLE), 0) > 0
               {pf_outer}
               AND {_normalized_market_expr('f.sales_market')} = 'Total'
@@ -2411,7 +2414,13 @@ async def get_accuracy_by_quarter(
     if not rows_raw:
         return _demo_matrix()
 
-    quarters = [f"Q{int(r.get('qtr',0))} {int(r.get('yr',0))}" for r in rows_raw]
+    _today = datetime.date.today()
+    _cur_q, _cur_y = ((_today.month - 1) // 3) + 1, _today.year
+    quarters = [
+        f"Q{int(r.get('qtr',0))} {int(r.get('yr',0))}"
+        + (" (QTD)" if int(r.get('qtr',0)) == _cur_q and int(r.get('yr',0)) == _cur_y else "")
+        for r in rows_raw
+    ]
     n_weeks = [int(_f(r.get("n_weeks"))) for r in rows_raw]
     model_keys = [
         ("Ensemble",  "ens_mape"),

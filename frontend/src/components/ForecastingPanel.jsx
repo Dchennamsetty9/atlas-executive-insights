@@ -2426,8 +2426,10 @@ const ForecastingPanel = () => {
                 <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
                   Each cell shows the{' '}
                   <abbr title="sMAPE = Symmetric Mean Absolute Percentage Error. Computed from weeks where both forecast and actual are known. Lower = better." style={{ cursor:'help', borderBottom:'1px dotted #475569', textDecoration:'none' }}>sMAPE</abbr>
-                  {' '}for that model against closed actuals in each fully-closed quarter —
+                  {' '}for that model against closed actuals in each backtested quarter —
                   using each week's first-published forecast (one vintage per week, no re-forecast averaging).
+                  The current quarter appears as "(QTD)" and scores only its elapsed weeks; recorded forecast
+                  history begins mid-June 2026, so earlier quarters appear as they close.
                 </div>
                 {loading ? <Skeleton height={200} /> : <QuarterlyMapeMatrix data={accuracyByQtr} />}
               </CardWrap>
