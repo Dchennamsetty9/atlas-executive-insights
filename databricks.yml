@@ -341,7 +341,7 @@ resources:
     # To run the whole pipeline in one job, add the model notebooks as upstream
     # tasks with depends_on (see commented example below).
     forecast_unify_publish:
-      name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 6am ET)"
+      name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 7am ET)"
       description: >
         Full daily forecast pipeline:
           1. UCC Forecast Foundation V5   (parallel)
