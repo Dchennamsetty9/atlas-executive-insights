@@ -24,7 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com")
-GENIE_SPACE_ID  = os.environ.get("GENIE_SPACE_ID", "01f10b2015dc1186928a78ee0bb4869f")
+GENIE_SPACE_ID  = os.environ.get("GENIE_SPACE_ID", "01f163df8c351df5b4a7a45251c3e2e6")
 
 _POLL_INTERVAL = 2    # seconds between status checks
 _POLL_TIMEOUT  = 90   # seconds before giving up (Genie can be slow on cold start)

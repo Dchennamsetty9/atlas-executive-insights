@@ -55,6 +55,9 @@ env:
     value: "databricks-gemini-3-1-flash-lite"
 
   # Application settings
+  - name: GENIE_SPACE_ID
+    value: "01f163df8c351df5b4a7a45251c3e2e6"
+
   - name: ENVIRONMENT
     value: "production"
 
