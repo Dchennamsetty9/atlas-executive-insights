@@ -251,7 +251,7 @@ resources:
         - task_key: insights_generation
           job_cluster_key: atlas_shared_cluster
           notebook_task:
-            notebook_path: /Users/gaim-team/kpi_ai_insights
+            notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/Atlas AI Insights
             source: WORKSPACE
 
       email_notifications:
@@ -341,7 +341,7 @@ resources:
     # To run the whole pipeline in one job, add the model notebooks as upstream
     # tasks with depends_on (see commented example below).
     forecast_unify_publish:
-      name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 7am ET)"
+      name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 6am ET)"
       description: >
         Full daily forecast pipeline:
           1. UCC Forecast Foundation V5   (parallel)
@@ -352,7 +352,7 @@ resources:
 
       schedule:
         quartz_cron_expression: "0 0 7 * * ?"     # daily 07:00
-        timezone_id: America/New_York             # 7am ET (handles EST/EDT)
+        timezone_id: America/New_York             # 6am ET (handles EST/EDT)
         pause_status: UNPAUSED
 
       job_clusters:
