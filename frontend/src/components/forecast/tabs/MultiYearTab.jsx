@@ -62,7 +62,12 @@ const MultiYearTab = ({ loading, historicalView, graphInsights, multiYearView, s
       {multiYearView === 'timeline' && (
         <CardWrap downloadName="historical_trend_timeline">
           <SectionTitle>Historical Weekly Trend — Timeline {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
-          <GraphInsight summary={graphInsights.trend} />
+          <GraphInsight
+            summary={graphInsights.trend}
+            chartType="historical_trend_timeline"
+            metricName="Weekly Growth ARR timeline across historical periods"
+            dataPoints={historicalView}
+          />
           {loading ? <Skeleton height={260} /> : (
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={historicalView || []} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
