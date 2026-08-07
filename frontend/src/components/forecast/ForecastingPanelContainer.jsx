@@ -97,8 +97,9 @@ const ForecastingPanelContainer = () => {
 
   const fetchOverviewData = useCallback(async () => {
     if (fcType === 'forward_1yr') {
-      const [fw, modelsRes, fr, cb, rd] = await Promise.allSettled([
+      const [fw, mo, modelsRes, fr, cb, rd] = await Promise.allSettled([
         apiService.getForecastV2ForwardOutlook(activePl, activeGeo),
+        apiService.getForecastV2MonthlyCombined(activePl, activeGeo),
         apiService.getForecastV2Models(),
         apiService.getForecastV2Freshness(),
         apiService.getForecastV2ConfidenceBands('rolling', activePl, null, null, model),
@@ -127,12 +128,13 @@ const ForecastingPanelContainer = () => {
         setSource(fw.value?.source ?? null);
         if ((fw.value?.source ?? null) === 'demo' && fw.value?.error) setError(`Forecast data fallback: ${fw.value.error}`);
       }
+      if (mo.status === 'fulfilled') setMonthlyCombined(mo.value?.months ?? []);
       if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
       if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
       if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
       if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
 
-      const firstReject = [fw].find((r) => r.status === 'rejected');
+      const firstReject = [fw, mo].find((r) => r.status === 'rejected');
       if (firstReject) {
         setSource('demo');
         setError(firstReject.reason?.message || 'Some endpoints failed to load');
@@ -140,9 +142,10 @@ const ForecastingPanelContainer = () => {
       return;
     }
 
-    const [wk, yt, modelsRes, fr, cb, rd] = await Promise.allSettled([
+    const [wk, yt, mo, modelsRes, fr, cb, rd] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
+      apiService.getForecastV2MonthlyCombined(activePl, activeGeo),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
@@ -156,12 +159,13 @@ const ForecastingPanelContainer = () => {
       if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) setError(`Forecast data fallback: ${wk.value.error}`);
     }
     if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
+    if (mo.status === 'fulfilled') setMonthlyCombined(mo.value?.months ?? []);
     if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
 
-    const firstReject = [wk, yt].find((r) => r.status === 'rejected');
+    const firstReject = [wk, yt, mo].find((r) => r.status === 'rejected');
     if (firstReject) {
       setSource('demo');
       setError(firstReject.reason?.message || 'Some endpoints failed to load');

@@ -327,9 +327,10 @@ resources:
       name: "Forecast Pipeline — UCC V5 + ITSG V5 → Unify & Publish (Daily 7am ET)"
       description: >
         Full daily forecast pipeline:
-          1. UCC Forecast Foundation V5   (parallel)
-          2. ITSG Growth ARR V5           (parallel)
-          3. Forecast Unify & Publish     (after both V5 jobs complete)
+          1a. UCC Forecast Foundation V5   (parallel)
+          1b. ITSG Growth ARR V5           (parallel)
+          1c. arr_forecast_v2_main         (parallel — writes arr_forecast_v2 actuals + ETS/Prophet/LightGBM)
+          2.  Forecast Unify & Publish     (after all three complete)
         Writes to forecast_results / forecast_insights tables and grants the
         app service principal SELECT. Powers all Forecasting-panel tabs.
 
@@ -372,12 +373,36 @@ resources:
             notebook_path: /Users/dileep.chennamsetty@goto.com/ITSG_Growth_ARR_Forecasting_v5
             source: WORKSPACE
 
-        # ── Step 2: Unify & Publish (after both V5 jobs complete) ────────────
+        # ── Step 1c: arr_forecast_v2_main (parallel — writes arr_forecast_v2) ──
+        # Provides: actuals history + arr_ets, arr_prophet, arr_lightgbm columns
+        # Required by forecast_unify_publish (ACTUALS_SRC) and by the app's
+        # backtest accuracy chart and multi-model cumulative chart.
+        - task_key: arr_forecast_v2_main
+          job_cluster_key: forecast_ml_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/arr_forecast_v2_main
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: prophet==1.1.5
+            - pypi:
+                package: lightgbm>=4.3.0
+            - pypi:
+                package: statsmodels>=0.14.0
+            - pypi:
+                package: scikit-learn>=1.3.0
+
+        # ── Step 2: Unify & Publish (after all three complete) ────────────────
         - task_key: unify_publish
           depends_on:
             - task_key: ucc_forecast_v5
             - task_key: itsg_forecast_v5
+<<<<<<< Updated upstream
           environment_key: forecast_ml_env
+=======
+            - task_key: arr_forecast_v2_main
+          job_cluster_key: forecast_ml_cluster
+>>>>>>> Stashed changes
           notebook_task:
             notebook_path: notebooks/forecast_unify_publish
             source: GIT
