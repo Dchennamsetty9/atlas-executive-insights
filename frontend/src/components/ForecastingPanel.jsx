@@ -67,7 +67,12 @@ const MODEL_LABELS = {
 const formatModelLabel = (name) => MODEL_LABELS[name] || (name ? name.replace(/_/g,' ') : 'Unknown');
 
 // ── Colour constants ──────────────────────────────────────────────────────────
-const YEAR_COLORS  = { 2022: '#64748b', 2023: '#06b6d4', 2024: '#3b82f6', 2025: '#f59e0b', 2026: '#ef4444' };
+const _CURRENT_YEAR = new Date().getFullYear();
+const _YEAR_COLOR_PALETTE = ['#64748b', '#06b6d4', '#3b82f6', '#f59e0b', '#ef4444'];
+const YEAR_COLORS = Object.fromEntries(
+  [_CURRENT_YEAR - 2, _CURRENT_YEAR - 1, _CURRENT_YEAR, _CURRENT_YEAR + 1, _CURRENT_YEAR + 2]
+    .map((year, idx) => [year, _YEAR_COLOR_PALETTE[idx] ?? '#94a3b8'])
+);
 // 6 notebook models: ensemble, prophet, ets, lightgbm, mstl_v2, dhr_arima
 const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Mstl_v2: '#a78bfa', Dhr_arima: '#fb923c', Ensemble: '#00FF88' };
 // Keyed by lowercase model key (matches MODELS array and API params) — fixes pill color lookup for ets/lightgbm
@@ -1708,16 +1713,26 @@ const ForecastingPanel = () => {
 
   const activePl = prodLine !== 'All' ? prodLine : null;
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
+  const yearOptions = useMemo(() => {
+    const current = new Date().getFullYear();
+    return [current + 1, current, current - 1, current - 2];
+  }, []);
+  const useRollingWindow = fcType === 'rolling' && selectedQuarter == null;
+  const apiYear = useRollingWindow ? null : selectedYear;
+  const apiQuarter = selectedQuarter;
+  const periodLabel = useRollingWindow
+    ? 'Next 12 Months (Rolling)'
+    : (selectedQuarter != null ? `Q${selectedQuarter} ${selectedYear}` : `${selectedYear} Full Year`);
 
   const fetchOverviewData = useCallback(async () => {
     const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy] = await Promise.allSettled([
-      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
-      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
+      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
-      apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
-      apiService.getForecastV2WeeklyAllModels(activePl, selectedYear, selectedQuarter),
+      apiService.getForecastV2WeeklyAllModels(activePl, apiYear, apiQuarter),
       // Full-year rows for the Quarterly Summary bars: rolling covers only the
       // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
@@ -1750,7 +1765,7 @@ const ForecastingPanel = () => {
       setSource('demo');
       setError(firstReject.reason?.message || 'Some endpoints failed to load');
     }
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
+  }, [model, fcType, activePl, activeGeo, apiYear, apiQuarter, selectedYear]);
 
   const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
     if (tabLoadInFlightRef.current.has(targetTab)) return;
@@ -1769,12 +1784,12 @@ const ForecastingPanel = () => {
         if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
       } else if (targetTab === 'By Product') {
         const [bp] = await Promise.allSettled([
-          apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+          apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
         ]);
         if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
       } else if (targetTab === 'Monthly') {
         const [mo] = await Promise.allSettled([
-          apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+          apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
         ]);
         if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
       } else if (targetTab === 'Accuracy') {
@@ -1788,10 +1803,10 @@ const ForecastingPanel = () => {
         if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
       } else if (targetTab === 'Exec Mode') {
         const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
-          apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
-          apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
-          apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
-          apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
+          apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
+          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
+          apiService.getForecastV2RiskRadar(fcType, apiYear, apiQuarter, 20, model),
+          apiService.getForecastV2MeetingMode(model, apiYear, apiQuarter),
           apiService.getActions('pending'),
           apiService.getForecastV2GovernanceLog(),
           apiService.getForecastV2RunDelta(activePl, activeGeo),
@@ -1818,8 +1833,8 @@ const ForecastingPanel = () => {
     fcType,
     activePl,
     activeGeo,
-    selectedYear,
-    selectedQuarter,
+    apiYear,
+    apiQuarter,
     fetchOverviewData,
   ]);
 
@@ -2033,7 +2048,7 @@ const ForecastingPanel = () => {
               className="select-dark"
               style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
                        color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-              {[2026, 2025, 2024, 2023].map(yr => <option key={yr} value={yr}>{yr}</option>)}
+              {yearOptions.map(yr => <option key={yr} value={yr}>{yr}</option>)}
             </select>
             <select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)}
               className="select-dark"
@@ -2045,6 +2060,17 @@ const ForecastingPanel = () => {
               <option value="3">Q3 (Jul–Sep)</option>
               <option value="4">Q4 (Oct–Dec)</option>
             </select>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: useRollingWindow ? '#10b981' : '#94a3b8',
+              background: useRollingWindow ? 'rgba(16,185,129,0.12)' : 'rgba(148,163,184,0.12)',
+              border: useRollingWindow ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(148,163,184,0.2)',
+              padding: '3px 8px',
+              borderRadius: 999,
+            }}>
+              {periodLabel}
+            </span>
           </div>
         </div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
@@ -2463,7 +2489,11 @@ const ForecastingPanel = () => {
 
           {tab === 'Monthly' && (
             <CardWrap explainKey="monthly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-              <SectionTitle>Monthly Actuals vs Forecast Scenarios</SectionTitle>
+              <SectionTitle>
+                {useRollingWindow
+                  ? 'Monthly Actuals vs Forecast Scenarios (Next 12 Months)'
+                  : 'Monthly Actuals vs Forecast Scenarios'}
+              </SectionTitle>
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
             </CardWrap>
           )}
@@ -2489,7 +2519,7 @@ const ForecastingPanel = () => {
           )}
 
           {tab === 'Model Lab' && (
-            <>
+            <CardWrap explainKey="model_lab" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
               {prodLine === 'All' && (
                 <div style={{ padding: '8px 14px', marginBottom: 12, borderRadius: 8, fontSize: 12, color: '#93c5fd',
                               background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
@@ -2498,10 +2528,14 @@ const ForecastingPanel = () => {
                 </div>
               )}
               <ModelLabSection product={prodLine === 'ITSG' ? 'ITSG' : 'UCC'} salesMarket={salesMarket} />
-            </>
+            </CardWrap>
           )}
 
-          {tab === 'AI Insights' && <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />}
+          {tab === 'AI Insights' && (
+            <CardWrap explainKey="ai_insights" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
+              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
+            </CardWrap>
+          )}
 
           {tab === 'Exec Mode' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2551,7 +2585,7 @@ const ForecastingPanel = () => {
               })()}
 
               {/* CI Fan Chart — source: real model P10/P90 from arr_forecast_v2 p10/p90 columns */}
-              <CardWrap>
+              <CardWrap explainKey="exec_mode" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>Prediction Interval Fan — Source Model P10 / P50 / P90</SectionTitle>
                 {(() => {
                   const cb = confidenceBands;
