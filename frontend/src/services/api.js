@@ -154,18 +154,6 @@ export const apiService = {
     if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/monthly', { params });
   },
-  getForecastV2MonthlyCombined: (productLine = null, salesMarket = null) => {
-    const params = {};
-    if (productLine && productLine !== 'All') params.product_line = productLine;
-    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
-    return api.get('/api/forecast/v2/monthly-combined', { params });
-  },
-  getForecastV2ForwardOutlook: (productLine = null, salesMarket = null) => {
-    const params = {};
-    if (productLine && productLine !== 'All') params.product_line = productLine;
-    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
-    return api.get('/api/forecast/v2/forward-outlook', { params });
-  },
   getForecastV2Leaderboard: () => api.get('/api/forecast/v2/leaderboard'),
   getForecastV2AccuracyByQuarter: (productLine = null) => {
     const params = {};

@@ -53,52 +53,14 @@ export const buildDemoYtd = (weeklyRows) => {
 };
 
 export const buildDemoMonthly = () => {
-  const monthNames = [
-    '', 'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
+  const months = [
+    { year: 2026, quarter: 2, month: 6, month_name: 'June' },
+    { year: 2026, quarter: 3, month: 7, month_name: 'July' },
+    { year: 2026, quarter: 3, month: 8, month_name: 'August' },
+    { year: 2026, quarter: 3, month: 9, month_name: 'September' },
   ];
-  const rows = [];
-  let idx = 0;
-  for (let y = 2026; y <= 2027; y += 1) {
-    for (let m = 1; m <= 12; m += 1) {
-      const q = Math.floor((m - 1) / 3) + 1;
-      const likely = 41800000 + idx * 980000;
-      rows.push({
-        year: y,
-        quarter: q,
-        month: m,
-        month_name: monthNames[m],
-        arr_actual: y === 2026 && m <= 5 ? Math.round(likely * 0.99) : null,
-        arr_worst: Math.round(likely * 0.93),
-        arr_likely: Math.round(likely),
-        arr_best: Math.round(likely * 1.08),
-      });
-      idx += 1;
-    }
-  }
-  return rows;
+  return months.map((m, idx) => ({ ...m, arr_actual: idx === 0 ? 44200000 : null, arr_worst: 40500000 + idx * 1050000, arr_likely: 43100000 + idx * 1180000, arr_best: 46000000 + idx * 1260000 }));
 };
-
-export const buildDemoForwardOutlook = () => {
-  const now = new Date();
-  const rows = [];
-  const base = 10800000;
-  for (let i = 0; i < 52; i += 1) {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() + i * 7);
-    const likely = base + i * 120000 + Math.sin(i / 4) * 180000;
-    rows.push({
-      date: toIsoDate(d),
-      arr_actual: null,
-      arr_worst: Math.round(likely * 0.91),
-      arr_likely: Math.round(likely),
-      arr_best: Math.round(likely * 1.1),
-    });
-  }
-  return rows;
-};
-
-export const buildDemoMonthlyCombined = () => buildDemoMonthly();
 
 export const buildDemoHistorical = () => {
   const rows = [];
