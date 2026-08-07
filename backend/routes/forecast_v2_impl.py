@@ -70,7 +70,7 @@ _ACC_MODEL = {
 }
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
-VALID_FORECAST_TYPES = {"actuals", "rolling", "roy"}
+VALID_FORECAST_TYPES = {"actuals", "rolling", "roy", "forward_1yr"}
 CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "300"))
 _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
@@ -246,6 +246,12 @@ def _latest_run():
 
 
 def _effective_forecast_type(model: str, forecast_type: str) -> str:
+    # forward_1yr is a frontend semantic mode. Legacy arr_forecast_v2 tables only
+    # store rolling/roy/actuals, so keep existing endpoints functional by
+    # projecting forward_1yr to rolling unless a dedicated endpoint is used.
+    if forecast_type == "forward_1yr":
+        forecast_type = "rolling"
+
     source = _model_source(model)
     if source["has_forecast_type"]:
         return forecast_type
@@ -261,6 +267,7 @@ def _normalized_forecast_sql(
     sales_market: Optional[str],
     year: Optional[int] = None,
     quarter: Optional[int] = None,
+    rolling_next_year: bool = False,
 ) -> str:
     source = _model_source(model)
     table = source["table"]
@@ -271,9 +278,10 @@ def _normalized_forecast_sql(
     gf = _geo_filter(sales_market)
     yf = _year_filter(year)
     qf = _quarter_filter(quarter, year) if quarter else ""
+    rolling_filter = _rolling_next_year_filter() if (rolling_next_year and quarter is None) else ""
     
     if source["has_forecast_type"]:
-        date_filter = f"AND {qf}" if qf else f"AND {yf}"
+        date_filter = f"AND {qf}" if qf else (f"AND {rolling_filter}" if rolling_filter else f"AND {yf}")
         return f"""
             SELECT
                 CAST(ds AS STRING) AS ds,
@@ -291,7 +299,7 @@ def _normalized_forecast_sql(
             ORDER BY ds
         """
 
-    date_filter = f"AND {qf}" if qf else f"AND {yf}"
+    date_filter = f"AND {qf}" if qf else (f"AND {rolling_filter}" if rolling_filter else f"AND {yf}")
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
@@ -522,6 +530,125 @@ def _quarter_filter(quarter: Optional[int] = None, year: Optional[int] = None) -
         return ""
     m_start, m_end = month_ranges[quarter]
     return f"YEAR(ds) = {y} AND MONTH(ds) BETWEEN {m_start} AND {m_end}"
+
+
+def _rolling_next_year_filter() -> str:
+    """Quarter-anchored rolling 12-month window (e.g., Q3 -> next Q2)."""
+    return (
+        "CAST(ds AS DATE) >= CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE) "
+        "AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 12)"
+    )
+
+
+def _v5_latest_col(has_pg: bool) -> str:
+    return "run_date_utc" if has_pg else "run_timestamp_utc"
+
+
+def _v5_scope(product_line: Optional[str], sales_market: Optional[str]) -> tuple[str, str, str]:
+    product = _selected_product(None, product_line)
+    market = _normalize_market_value(sales_market)
+
+    if market != "Total":
+        grain = "market"
+    else:
+        grain = "total"
+
+    return product, market, grain
+
+
+def _v5_next_year_filter() -> str:
+    return (
+        "CAST(ds AS DATE) >= CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE) "
+        "AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE), 12)"
+    )
+
+
+def _v5_forward_sql(table: str, has_pg: bool, product: str, market: str, grain: str) -> str:
+    latest_col = _v5_latest_col(has_pg)
+    pg_clause = ""
+    if has_pg and product in {"UCC", "ITSG"}:
+        pg_clause = f"AND product_group = '{product}'"
+
+    market_clause = ""
+    if grain == "market" and market != "Total":
+        market_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
+
+    return f"""
+        SELECT
+            CAST(ds AS STRING) AS ds,
+            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
+            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+        FROM {table}
+        WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
+          AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+          {pg_clause}
+          {market_clause}
+          AND {latest_col} = (
+                SELECT MAX({latest_col})
+                FROM {table}
+                WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+                  {pg_clause}
+          )
+          AND {_v5_next_year_filter()}
+        GROUP BY ds
+        ORDER BY ds
+    """
+
+
+def _v5_monthly_sql(table: str, has_pg: bool, product: str, market: str, grain: str) -> str:
+    latest_col = _v5_latest_col(has_pg)
+    pg_clause = ""
+    if has_pg and product in {"UCC", "ITSG"}:
+        pg_clause = f"AND product_group = '{product}'"
+
+    market_clause = ""
+    if grain == "market" and market != "Total":
+        market_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
+
+    return f"""
+        SELECT
+            YEAR(ds) AS yr,
+            QUARTER(ds) AS qtr,
+            MONTH(ds) AS mth,
+            DATE_FORMAT(ds, 'MMMM') AS month_name,
+            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
+            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+        FROM {table}
+        WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
+          AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+          {pg_clause}
+          {market_clause}
+          AND {latest_col} = (
+                SELECT MAX({latest_col})
+                FROM {table}
+                WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+                  {pg_clause}
+          )
+          AND {_v5_next_year_filter()}
+        GROUP BY yr, qtr, mth, month_name
+        ORDER BY yr, mth
+    """
+
+
+def _actuals_monthly_next_year_sql(product_line: Optional[str], sales_market: Optional[str]) -> str:
+    return f"""
+        SELECT
+            YEAR(ds) AS yr,
+            QUARTER(ds) AS qtr,
+            MONTH(ds) AS mth,
+            DATE_FORMAT(ds, 'MMMM') AS month_name,
+            SUM(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS arr_actual
+        FROM {FC_TABLE}
+        WHERE forecast_type = 'actuals'
+          AND {_latest_run()}
+          {_product_filter(None, product_line)}
+          {_geo_filter(sales_market)}
+          AND {_v5_next_year_filter()}
+        GROUP BY yr, qtr, mth, month_name
+        ORDER BY yr, mth
+    """
 
 
 def _actuals_year_filter(year: Optional[int] = None) -> str:
@@ -848,9 +975,15 @@ async def get_weekly(
     forecast_type = _validate_forecast_type(forecast_type)
     model = _validate_model(model)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
-    
+
+    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
-    qtr_filter = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
+    if quarter:
+        qtr_filter = _quarter_filter(quarter, year)
+    elif rolling_next_year:
+        qtr_filter = _rolling_next_year_filter()
+    else:
+        qtr_filter = f"YEAR(ds) = {year}"
 
     try:
         key_product = _selected_product(product, product_line)
@@ -930,16 +1063,16 @@ async def get_weekly(
                 WHERE {_latest_run()}
                                 {_pf} {_gf}
                   AND (
-                        (forecast_type = 'actuals' AND YEAR(ds) = {year})
-                        OR (forecast_type IN ('rolling', 'roy') AND YEAR(ds) = {year}
+                        (forecast_type = 'actuals' AND {qtr_filter})
+                        OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter}
                             AND {_forecast_after_actuals_pred(_pf, _gf)})
                       )
                 ORDER BY ds
             """
         
         actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
-            _cached_query(_normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
-            _cached_query(_normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter), endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(_normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter, rolling_next_year=rolling_next_year), endpoint="/weekly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
+            _cached_query(_normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter, rolling_next_year=rolling_next_year), endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
             _cached_query(kpi_sql, endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter, metric="kpis"),
         )
     except Exception as exc:
@@ -1007,11 +1140,14 @@ async def get_monthly(
     lower_col = source["lower_col"]
     upper_col = source["upper_col"]
 
+    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    selected_year = year if year else datetime.date.today().year
+
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
-    yf = _year_filter(year)
-    qf = _quarter_filter(quarter, year) if quarter else ""
-    date_filter = f"AND {qf}" if qf else f"AND {yf}"
+    yf = _year_filter(selected_year)
+    qf = _quarter_filter(quarter, selected_year) if quarter else ""
+    date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
 
     # Closed quarter → actuals only. Current/future quarter → BOTH: actuals for
     # closed weeks + forecast for open weeks (spliced after the last actual, so
@@ -1065,7 +1201,8 @@ async def get_monthly(
             FROM {FC_TABLE}
             WHERE forecast_type = '{eff_forecast_type}'
               AND {_latest_run()}
-              AND {_forecast_after_actuals_pred(pf, gf)}
+                            -- Monthly table should show full forecast months (not only the
+                            -- remaining open weeks after latest actuals splice).
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
@@ -1121,7 +1258,10 @@ async def get_monthly(
             "arr_best":   _f(f.get("arr_best")) if f else None,
         })
 
-    months = _fill_monthly_gaps(months, year, include_actuals, include_forecasts, quarter)
+    if rolling_next_year:
+        months.sort(key=lambda r: (int(_f(r.get("year"))), int(_f(r.get("month")))))
+    else:
+        months = _fill_monthly_gaps(months, selected_year, include_actuals, include_forecasts, quarter)
     return {
         "source": "live",
         "model": model,
@@ -1154,12 +1294,13 @@ async def get_ytd(
     lower_col = source["lower_col"]
     upper_col = source["upper_col"]
 
+    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
     pf   = _product_filter(product, product_line)
     gf   = _geo_filter(sales_market)
     yf   = _year_filter(year)
     qf   = _quarter_filter(quarter, year) if quarter else ""
-    date_filter = f"AND {qf}" if qf else f"AND {yf}"
+    date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
 
     # Closed quarter → actuals only. Current/future quarter → keep BOTH so the
     # running total shows realized-to-date (amber) plus the forecast path. The
@@ -1228,20 +1369,26 @@ async def get_ytd(
     # start→end, or Jan 1→Dec 31), extended through the forecast weeks — capped
     # at the last date that actually has data so the line never flat-tails.
     import datetime as dt
-    if quarter is not None:
+    if rolling_next_year:
+        quarter_start = datetime.date.today().replace(month=(((datetime.date.today().month - 1) // 3) * 3) + 1, day=1)
+        range_start = quarter_start
+        range_end_seed = range_start + datetime.timedelta(days=370)
+        range_end = datetime.date(range_end_seed.year, range_end_seed.month, 1) - datetime.timedelta(days=1)
+    elif quarter is not None:
         qsm = (quarter - 1) * 3 + 1
         range_start = dt.date(year, qsm, 1)
         period_end = dt.date(year, 12, 31) if qsm + 2 >= 12 else (dt.date(year, qsm + 3, 1) - dt.timedelta(days=1))
+        range_end = period_end
     else:
         range_start = dt.date(year, 1, 1)
-        period_end = dt.date(year, 12, 31)
+        range_end = dt.date(year, 12, 31)
 
     _data_dates = [d for d in list(act_map.keys()) + list(fc_map.keys()) if d]
     if _data_dates:
         last_data = dt.date.fromisoformat(max(_data_dates)[:10])
-        range_end = min(period_end, max(last_data, min(dt.date.today(), period_end)))
+        range_end = min(range_end, max(last_data, min(dt.date.today(), range_end)))
     else:
-        range_end = min(dt.date.today(), period_end)
+        range_end = min(dt.date.today(), range_end)
     all_dates = [
         (range_start + dt.timedelta(days=i)).isoformat()
         for i in range((range_end - range_start).days + 1)
@@ -1295,8 +1442,14 @@ async def get_by_product(
     forecast_type = _validate_forecast_type(forecast_type)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
+    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
-    qf   = _quarter_filter(quarter, year) if quarter else f"YEAR(ds) = {year}"
+    if quarter:
+        period_filter = _quarter_filter(quarter, year)
+    elif rolling_next_year:
+        period_filter = _rolling_next_year_filter()
+    else:
+        period_filter = f"YEAR(ds) = {year}"
 
     # Totals are the period LANDING: actuals for closed weeks + forecast spliced
     # after the last actual (matches the Overview KPI and the AI insight). A
@@ -1348,7 +1501,7 @@ async def get_by_product(
                    CAST(Actuals AS DOUBLE) AS worst,
                    CAST(Actuals AS DOUBLE) AS best
             FROM {table}
-            WHERE forecast_type = 'actuals' AND {_latest_run()} AND {qf}
+                        WHERE forecast_type = 'actuals' AND {_latest_run()} AND {period_filter}
               AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 {extra_where}
             UNION ALL
             SELECT product, {norm_geo_expr} AS sales_market, ds,
@@ -1356,7 +1509,7 @@ async def get_by_product(
                    COALESCE(CAST({lower_col} AS DOUBLE), 0),
                    COALESCE(CAST({upper_col} AS DOUBLE), 0)
             FROM {table}
-            WHERE forecast_type = '{eff_forecast_type}' AND {_latest_run()} AND {qf}
+                        WHERE forecast_type = '{eff_forecast_type}' AND {_latest_run()} AND {period_filter}
               AND {_forecast_after_actuals_pred()} {extra_where}
         )"""
 
@@ -1562,8 +1715,13 @@ async def get_confidence_bands(
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
+    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     selected_year = year if year else datetime.date.today().year
-    date_filter = f"AND {_quarter_filter(quarter, selected_year)}" if quarter else f"AND {_year_filter(selected_year)}"
+    date_filter = (
+        f"AND {_quarter_filter(quarter, selected_year)}"
+        if quarter
+        else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {_year_filter(selected_year)}")
+    )
 
     # For non-ensemble selections, use the selected model's lower/upper bands.
     p10_col = source["lower_col"]
@@ -2196,6 +2354,162 @@ async def get_model_lab(
     }
 
 
+@router.get("/forward-outlook")
+async def get_forward_outlook(
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """
+    Forward 12-month weekly outlook from V5 forecast tables (Adaptive_Ensemble).
+    Returns actual+forecast-ready series for executive forward-looking visuals.
+    """
+    if not live_mode:
+        return _demo("rows")
+
+    product, market, grain = _v5_scope(product_line, sales_market)
+    candidates = [(APP_TABLE, True), (UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False)]
+
+    rows_raw = None
+    err = None
+    for table, has_pg in candidates:
+        try:
+            rows_raw = await _cached_query(
+                _v5_forward_sql(table, has_pg, product, market, grain),
+                endpoint="/forward-outlook",
+                model="ensemble",
+                forecast_type="forward_1yr",
+                product=product,
+                geo=market,
+                year=None,
+                quarter=None,
+                grain=grain,
+                table=table,
+            )
+            if rows_raw:
+                break
+        except Exception as exc:
+            err = str(exc)
+            logger.warning("[forecast/forward-outlook] %s query failed: %s", table, exc)
+
+    if not rows_raw:
+        return _demo("rows", error=err or "No V5 forward outlook rows")
+
+    rows = []
+    for r in rows_raw:
+        ds = str(r.get("ds") or "")[:10]
+        if not ds:
+            continue
+        rows.append({
+            "date": ds,
+            "arr_actual": None,
+            "arr_worst": round(_f(r.get("arr_worst")), 0),
+            "arr_likely": round(_f(r.get("arr_likely")), 0),
+            "arr_best": round(_f(r.get("arr_best")), 0),
+        })
+
+    return {
+        "source": "live",
+        "forecast_type": "forward_1yr",
+        "product": product,
+        "sales_market": market,
+        "rows": rows,
+    }
+
+
+@router.get("/monthly-combined")
+async def get_monthly_combined(
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """
+    Monthly combined view for the next 12 months:
+    - actuals from arr_forecast_v2 (closed weeks)
+    - forecast scenarios from V5 Adaptive_Ensemble output
+    """
+    if not live_mode:
+        return _demo("months")
+
+    product, market, grain = _v5_scope(product_line, sales_market)
+    candidates = [(APP_TABLE, True), (UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False)]
+
+    fc_rows_raw = None
+    err = None
+    for table, has_pg in candidates:
+        try:
+            fc_rows_raw = await _cached_query(
+                _v5_monthly_sql(table, has_pg, product, market, grain),
+                endpoint="/monthly-combined",
+                model="ensemble",
+                forecast_type="forward_1yr",
+                product=product,
+                geo=market,
+                year=None,
+                quarter=None,
+                grain=grain,
+                table=table,
+            )
+            if fc_rows_raw:
+                break
+        except Exception as exc:
+            err = str(exc)
+            logger.warning("[forecast/monthly-combined] %s query failed: %s", table, exc)
+
+    if not fc_rows_raw:
+        return _demo("months", error=err or "No V5 monthly combined rows")
+
+    try:
+        act_rows_raw = await _cached_query(
+            _actuals_monthly_next_year_sql(product_line, sales_market),
+            endpoint="/monthly-combined",
+            model="ensemble",
+            forecast_type="actuals",
+            product=_selected_product(None, product_line),
+            geo=_normalize_market_value(sales_market),
+            year=None,
+            quarter=None,
+            metric="actuals",
+        )
+    except Exception as exc:
+        logger.warning("[forecast/monthly-combined] actuals query failed: %s", exc)
+        act_rows_raw = []
+
+    act_map = {
+        (int(_f(r.get("yr"))), int(_f(r.get("mth")))): r
+        for r in act_rows_raw
+    }
+    fc_map = {
+        (int(_f(r.get("yr"))), int(_f(r.get("mth")))): r
+        for r in fc_rows_raw
+    }
+
+    months = []
+    for key in sorted(set(act_map) | set(fc_map)):
+        yr, mth = key
+        a = act_map.get(key)
+        f = fc_map.get(key)
+        src = f or a
+        months.append({
+            "year": yr,
+            "quarter": int(_f(src.get("qtr"))),
+            "month": mth,
+            "month_name": str(src.get("month_name") or ""),
+            "arr_actual": round(_f(a.get("arr_actual")), 0) if a else None,
+            "arr_worst": round(_f(f.get("arr_worst")), 0) if f else None,
+            "arr_likely": round(_f(f.get("arr_likely")), 0) if f else None,
+            "arr_best": round(_f(f.get("arr_best")), 0) if f else None,
+        })
+
+    return {
+        "source": "live",
+        "forecast_type": "forward_1yr",
+        "product": product,
+        "sales_market": market,
+        "months": months,
+    }
+
+
 # ── GET /weekly-all-models ────────────────────────────────────────────────────
 @router.get("/weekly-all-models")
 async def get_weekly_all_models(
@@ -2239,7 +2553,8 @@ async def get_weekly_all_models(
 
     yf = _year_filter(eff_year)
     qf = _quarter_filter(quarter, eff_year) if quarter else ""
-    date_filter = f"AND {qf}" if qf else f"AND {yf}"
+    rolling_next_year = (year is None and quarter is None)
+    date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
 
     # Use arr_forecast_v2 directly — it has per-model columns (arr_ets, arr_prophet,
     # arr_lightgbm, etc.) written by arr_forecast_v2_main.py.  forecast_results_v2compat

@@ -1,7 +1,16 @@
 import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiService } from '../../services/api';
 import { FC_TYPES, MODELS, MODEL_LB_KEY, MODEL_KEY_META, PROD_LINES, TABS } from './constants';
-import { buildDemoByProduct, buildDemoHistorical, buildDemoLeaderboard, buildDemoMonthly, buildDemoWeekly, buildDemoYtd } from './demoData';
+import {
+  buildDemoByProduct,
+  buildDemoForwardOutlook,
+  buildDemoHistorical,
+  buildDemoLeaderboard,
+  buildDemoMonthly,
+  buildDemoMonthlyCombined,
+  buildDemoWeekly,
+  buildDemoYtd,
+} from './demoData';
 import { Skeleton, formatModelLabel, fmtDate, fmtM, mapeColor, calculateStaleness } from './common';
 
 const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
@@ -12,6 +21,7 @@ const AccuracyTab = lazy(() => import('./tabs/AccuracyTab'));
 const ModelLabTab = lazy(() => import('./tabs/ModelLabTab'));
 const AiInsightsTab = lazy(() => import('./tabs/AiInsightsTab'));
 const ExecModeTab = lazy(() => import('./tabs/ExecModeTab'));
+const PlanningViewTab = lazy(() => import('./tabs/PlanningViewTab'));
 
 class TabErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { hasError: false }; }
@@ -47,6 +57,8 @@ const ForecastingPanelContainer = () => {
   const [byProduct, setByProduct] = useState(null);
   const [monthly, setMonthly] = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
+  const [forwardOutlook, setForwardOutlook] = useState(null);
+  const [monthlyCombined, setMonthlyCombined] = useState(null);
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness, setFreshness] = useState(null);
   const [confidence, setConfidence] = useState(null);
@@ -75,14 +87,65 @@ const ForecastingPanelContainer = () => {
 
   const activePl = prodLine !== 'All' ? prodLine : null;
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
+  const yearOptions = useMemo(() => {
+    const current = new Date().getFullYear();
+    return [current + 1, current, current - 1, current - 2];
+  }, []);
+  const useRollingWindow = (fcType === 'rolling' || fcType === 'forward_1yr') && selectedQuarter == null;
+  const apiYear = useRollingWindow ? null : selectedYear;
+  const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
+    if (fcType === 'forward_1yr') {
+      const [fw, modelsRes, fr, cb, rd] = await Promise.allSettled([
+        apiService.getForecastV2ForwardOutlook(activePl, activeGeo),
+        apiService.getForecastV2Models(),
+        apiService.getForecastV2Freshness(),
+        apiService.getForecastV2ConfidenceBands('rolling', activePl, null, null, model),
+        apiService.getForecastV2RunDelta(activePl, activeGeo),
+      ]);
+
+      if (fw.status === 'fulfilled') {
+        const rows = fw.value?.rows ?? [];
+        setForwardOutlook(rows);
+        setWeekly(rows);
+        let cumLikely = 0;
+        let cumWorst = 0;
+        let cumBest = 0;
+        setYtd(rows.map((r) => {
+          cumLikely += Number(r.arr_likely || 0);
+          cumWorst += Number(r.arr_worst || 0);
+          cumBest += Number(r.arr_best || 0);
+          return {
+            date: r.date,
+            ytd_actual: null,
+            ytd_worst: cumWorst,
+            ytd_likely: cumLikely,
+            ytd_best: cumBest,
+          };
+        }));
+        setSource(fw.value?.source ?? null);
+        if ((fw.value?.source ?? null) === 'demo' && fw.value?.error) setError(`Forecast data fallback: ${fw.value.error}`);
+      }
+      if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
+      if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
+      if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
+      if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+
+      const firstReject = [fw].find((r) => r.status === 'rejected');
+      if (firstReject) {
+        setSource('demo');
+        setError(firstReject.reason?.message || 'Some endpoints failed to load');
+      }
+      return;
+    }
+
     const [wk, yt, modelsRes, fr, cb, rd] = await Promise.allSettled([
-      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
-      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
+      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
-      apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
+      apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
     ]);
 
@@ -103,7 +166,7 @@ const ForecastingPanelContainer = () => {
       setSource('demo');
       setError(firstReject.reason?.message || 'Some endpoints failed to load');
     }
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
+  }, [model, fcType, activePl, activeGeo, apiYear, apiQuarter]);
 
   const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
     if (tabLoadInFlightRef.current.has(targetTab)) return;
@@ -119,21 +182,32 @@ const ForecastingPanelContainer = () => {
         const [hs] = await Promise.allSettled([apiService.getForecastV2Historical(null, activePl, activeGeo)]);
         if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
       } else if (targetTab === 'By Product') {
-        const [bp] = await Promise.allSettled([apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter)]);
+        const [bp] = await Promise.allSettled([apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter)]);
         if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
       } else if (targetTab === 'Monthly') {
-        const [mo] = await Promise.allSettled([apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model)]);
-        if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
+        if (fcType === 'forward_1yr') {
+          const [mo] = await Promise.allSettled([apiService.getForecastV2MonthlyCombined(activePl, activeGeo)]);
+          if (mo.status === 'fulfilled') {
+            setMonthlyCombined(mo.value?.months ?? []);
+            setMonthly(mo.value?.months ?? []);
+          }
+        } else {
+          const [mo] = await Promise.allSettled([apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model)]);
+          if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
+        }
+      } else if (targetTab === 'Planning View') {
+        const [mo] = await Promise.allSettled([apiService.getForecastV2MonthlyCombined(activePl, activeGeo)]);
+        if (mo.status === 'fulfilled') setMonthlyCombined(mo.value?.months ?? []);
       } else if (targetTab === 'Accuracy') {
         const [lb, bt] = await Promise.allSettled([apiService.getForecastV2Leaderboard(), apiService.getForecastV2Backtest(4, model, activePl, activeGeo)]);
         if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
         if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
       } else if (targetTab === 'Exec Mode') {
         const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
-          apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
-          apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
-          apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
-          apiService.getForecastV2MeetingMode(model, selectedYear, selectedQuarter),
+          apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
+          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
+          apiService.getForecastV2RiskRadar(fcType, apiYear, apiQuarter, 20, model),
+          apiService.getForecastV2MeetingMode(model, apiYear, apiQuarter),
           apiService.getActions('pending'),
           apiService.getForecastV2GovernanceLog(),
           apiService.getForecastV2RunDelta(activePl, activeGeo),
@@ -154,7 +228,7 @@ const ForecastingPanelContainer = () => {
       tabLoadInFlightRef.current.delete(targetTab);
       setLoading(false);
     }
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter, fetchOverviewData]);
+  }, [model, fcType, activePl, activeGeo, apiYear, apiQuarter, fetchOverviewData]);
 
   useEffect(() => { fetchTabData(tab); }, [tab, fetchTabData]);
 
@@ -186,17 +260,36 @@ const ForecastingPanelContainer = () => {
     const dWeekly = buildDemoWeekly(fcType);
     return {
       weekly: dWeekly,
+      forwardOutlook: buildDemoForwardOutlook(),
       ytd: buildDemoYtd(dWeekly),
       monthly: buildDemoMonthly(),
+      monthlyCombined: buildDemoMonthlyCombined(),
       historical: buildDemoHistorical(),
       byProduct: buildDemoByProduct(),
       leaderboard: buildDemoLeaderboard(),
     };
   }, [fcType]);
 
-  const weeklyView = (weekly && weekly.length > 0) ? weekly : (isDemo ? demoPayload.weekly : []);
+  const weeklyView = (() => {
+    if (fcType === 'forward_1yr') {
+      return (forwardOutlook && forwardOutlook.length > 0)
+        ? forwardOutlook
+        : (isDemo ? demoPayload.forwardOutlook : []);
+    }
+    return (weekly && weekly.length > 0) ? weekly : (isDemo ? demoPayload.weekly : []);
+  })();
   const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
-  const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
+  const monthlyView = (() => {
+    if (fcType === 'forward_1yr') {
+      return (monthlyCombined && monthlyCombined.length > 0)
+        ? monthlyCombined
+        : (isDemo ? demoPayload.monthlyCombined : []);
+    }
+    return (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
+  })();
+  const planningView = (monthlyCombined && monthlyCombined.length > 0)
+    ? monthlyCombined
+    : (isDemo ? demoPayload.monthlyCombined : []);
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
@@ -304,6 +397,7 @@ const ForecastingPanelContainer = () => {
       case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} runDate={freshnessStamp} />;
       case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} runDate={freshnessStamp} />;
       case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Planning View': return <PlanningViewTab loading={loading} monthlyView={planningView} byProductView={byProductView} runDate={freshnessStamp} />;
       case 'Accuracy': return <AccuracyTab loading={loading} leaderboardView={leaderboardView} graphInsights={graphInsights} model={model} prodLine={prodLine} salesMarket={salesMarket} runDate={freshnessStamp} />;
       case 'Model Lab': return <ModelLabTab prodLine={prodLine} salesMarket={salesMarket} />;
       case 'AI Insights': return <AiInsightsTab />;
@@ -350,7 +444,7 @@ const ForecastingPanelContainer = () => {
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>REGION</div><select value={salesMarket} onChange={(e) => setSalesMarket(e.target.value)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="All">All Regions</option><option value="NA">NA</option><option value="EMEA">EMEA</option><option value="APAC">APAC</option><option value="LATAM">LATAM</option></select></div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
-        <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div><div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>{FC_TYPES.map((f) => <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>)}<select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>{[2026, 2025, 2024, 2023].map((yr) => <option key={yr} value={yr}>{yr}</option>)}</select><select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="">Full Year</option><option value="1">Q1 (Jan–Mar)</option><option value="2">Q2 (Apr–Jun)</option><option value="3">Q3 (Jul–Sep)</option><option value="4">Q4 (Oct–Dec)</option></select></div></div>
+        <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div><div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>{FC_TYPES.map((f) => <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>)}<select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>{yearOptions.map((yr) => <option key={yr} value={yr}>{yr}</option>)}</select><select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="">Full Year</option><option value="1">Q1 (Jan–Mar)</option><option value="2">Q2 (Apr–Jun)</option><option value="3">Q3 (Jul–Sep)</option><option value="4">Q4 (Oct–Dec)</option></select></div></div>
       </div>
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
         {TABS.map((t, i) => <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} tabIndex={tab === t ? 0 : -1} onKeyDown={(e) => {

@@ -6,7 +6,7 @@ import PipelineChart from './components/PipelineChart';
 // TODO(M1.1 V1 retired): ForecastChart removed — replaced by ForecastingPanel (V2 path).
 // Deprecated files: frontend/src/components/charts/ForecastChart.jsx, backend/routes/forecast.py
 // import ForecastChart from './components/charts/ForecastChart';
-import ForecastingPanel from './components/ForecastingPanel';
+import ForecastingPanel from './components/forecast/ForecastingPanelContainer';
 import AIOrb from './components/ai/AIOrb';
 import AIChatPanel from './components/ai/AIChatPanel';
 import InsightPanel from './components/dashboard/InsightPanel';

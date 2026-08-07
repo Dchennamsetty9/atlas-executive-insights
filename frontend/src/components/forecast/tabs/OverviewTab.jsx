@@ -20,6 +20,12 @@ const OverviewTab = ({
   const qtdActual = qtdRows.reduce((sum, r) => sum + Number(r.arr_actual || 0), 0);
   const qtdPacedTarget = qtdRows.reduce((sum, r) => sum + Number(r.arr_likely || 0), 0);
   const qtdDelta = qtdActual - qtdPacedTarget;
+  const latestForecastRow = [...(weeklyView || [])].reverse().find((r) => r.arr_likely != null);
+  const latestLikely = Number(latestForecastRow?.arr_likely || 0);
+  const latestBandPct = latestLikely > 0
+    ? ((Number(latestForecastRow?.arr_best || 0) - Number(latestForecastRow?.arr_worst || 0)) / latestLikely) * 100
+    : null;
+  const activePeriod = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY ${selectedYear}`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -54,6 +60,23 @@ const OverviewTab = ({
       })()}
 
       <CardWrap downloadName="weekly_forecast_vs_actuals">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
+          <div style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.24)', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 9, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Executive Focus</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0' }}>{activePeriod}</div>
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>Primary forecast window</div>
+          </div>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 9, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Latest Most Likely</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: '#f1f5f9' }}>{fmtM(latestLikely)}</div>
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>Current forward weekly marker</div>
+          </div>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 9, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Confidence Spread</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: '#22d3ee' }}>{latestBandPct == null ? '—' : `${latestBandPct.toFixed(1)}%`}</div>
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>P10 to P90 width</div>
+          </div>
+        </div>
         {weeklyKpis && (
           <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
             <div style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.04))', border: '1px solid rgba(59,130,246,0.35)', borderRadius: 10, padding: '12px 14px' }}>
@@ -86,11 +109,9 @@ const OverviewTab = ({
         <GraphInsight summary={graphInsights.weekly} chartType="weekly_forecast" metricName="Weekly Growth ARR — actuals vs forecast scenarios" dataPoints={weeklyView} />
         <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-          <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
           <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-          <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
-          <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
           <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
+          <span style={{ color: '#38bdf8' }}>⋮ Today marker</span>
         </div>
         {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
       </CardWrap>

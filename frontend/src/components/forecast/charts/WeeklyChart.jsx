@@ -67,11 +67,23 @@ const WeeklyChart = ({ rows }) => {
     };
   });
 
+  const boundaryAreas = (() => {
+    const years = [...new Set(data.map((r) => Number(String(r.date || '').slice(0, 4))))]
+      .filter((y) => Number.isFinite(y) && y > 0);
+    const areas = [];
+    for (const y of years) {
+      areas.push({ x1: `${y}-03-31`, x2: `${y}-04-07` });
+      areas.push({ x1: `${y}-06-30`, x2: `${y}-07-07` });
+      areas.push({ x1: `${y}-09-30`, x2: `${y}-10-07` });
+    }
+    return areas;
+  })();
+
   const qEndWeeks = ['01-10', '04-03', '07-01', '10-01'];
   const _isInQtr = (d) => qEndWeeks.some((w) => d >= w && d < String(parseInt(w) + 1).padStart(2, '0'));  // eslint-disable-next-line no-unused-vars
 
   return (
-    <ResponsiveContainer width="100%" height={360}>
+    <ResponsiveContainer width="100%" height={390}>
       <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
@@ -88,8 +100,8 @@ const WeeklyChart = ({ rows }) => {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-        <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-        <YAxis tickFormatter={(v) => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} width={78} label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+        <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+        <YAxis tickFormatter={(v) => fmtM(v)} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={86} label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 11, style: { textAnchor: 'middle' } }} />
         <Tooltip content={<WeeklyChartTooltip />} />
         {hasTodayInRange && (
           <ReferenceLine
@@ -99,20 +111,17 @@ const WeeklyChart = ({ rows }) => {
             label={{ value: 'TODAY', position: 'insideTop', fill: '#38bdf8', fontSize: 9, fontWeight: 700 }}
           />
         )}
-        {/* Quarter boundary shading */}
-        <ReferenceArea x1="2026-03-31" x2="2026-04-07" fill="rgba(59,130,246,0.04)" stroke="none" />
-        <ReferenceArea x1="2026-06-30" x2="2026-07-07" fill="rgba(59,130,246,0.04)" stroke="none" />
-        <ReferenceArea x1="2026-09-30" x2="2026-10-07" fill="rgba(59,130,246,0.04)" stroke="none" />
+        {boundaryAreas.map((b, idx) => (
+          <ReferenceArea key={`${b.x1}-${idx}`} x1={b.x1} x2={b.x2} fill="rgba(59,130,246,0.04)" stroke="none" />
+        ))}
         {splitDate && <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4" label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />}
         {splitDate && <ReferenceLine x={splitDate} stroke="none" label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
         <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
         <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
         <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5} fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Line type="monotone" dataKey="worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Line type="monotone" dataKey="likely" name="Most Likely" stroke="#e2e8f0" strokeWidth={3} dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Line type="monotone" dataKey="best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
+        <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.8} fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" isAnimationActive animationDuration={300} animationEasing="ease-out" />
+        <Line type="monotone" dataKey="likely" name="Most Likely" stroke="#e2e8f0" strokeWidth={3.2} dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
       </ComposedChart>
     </ResponsiveContainer>
   );

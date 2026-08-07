@@ -1,7 +1,11 @@
-export const TABS = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Exec Mode'];
+export const TABS = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Planning View', 'Accuracy', 'Model Lab', 'AI Insights', 'Exec Mode'];
 export const MODELS = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 export const PROD_LINES = ['All', 'UCC', 'ITSG'];
-export const FC_TYPES = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
+export const FC_TYPES = [
+	{ key: 'rolling', label: '13-Week Quarter' },
+	{ key: 'roy', label: 'Rest of Year' },
+	{ key: 'forward_1yr', label: 'Forward 12 Months' },
+];
 
 export const MODEL_KEY_META = {
 	ensemble: { label: 'Ensemble', color: '#00FF88' },
