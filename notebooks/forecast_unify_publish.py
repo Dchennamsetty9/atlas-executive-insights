@@ -249,8 +249,9 @@ print(f"Rows incl. actuals: {combined.count()}")
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 6 — Total rollup (UCC + ITSG)
 total = (combined
-    .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type")
+    .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
          F.sum("p10").alias("p10"), F.sum("p50").alias("p50"), F.sum("p90").alias("p90"),
          F.sum("most_likely").alias("most_likely"),
@@ -750,6 +751,7 @@ if ge_rows:
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 9b — V2 compat views
 # Wide forecast view (mirrors arr_forecast_v2). One row per
 # (ds, product, sales_market, forecast_type, run_date); model columns pivoted.
 spark.sql(f"""
@@ -793,7 +795,7 @@ spark.sql(f"""
         MAX(CASE WHEN model = 'MSTL_v2'        THEN model_wape END) AS mape_mstl_v2,
         MAX(CASE WHEN model = 'DHR_ARIMA'      THEN model_wape END) AS mape_dhr_arima
     FROM filt
-    GROUP BY ds, product, sales_market, forecast_type, run_date
+    GROUP BY ds, product, sales_market, forecast_type, forecast_view, run_date
 """)
 
 # Leaderboard view (mirrors arr_forecast_v2_leaderboard). PRODUCT-LEVEL ONLY:
