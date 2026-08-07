@@ -393,7 +393,7 @@ const ForecastingPanelContainer = () => {
 
   const renderTab = () => {
     switch (tab) {
-      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} runDate={freshnessStamp} planningView={planningView} prodLine={prodLine} />;
       case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} runDate={freshnessStamp} />;
       case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} runDate={freshnessStamp} />;
       case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} runDate={freshnessStamp} />;

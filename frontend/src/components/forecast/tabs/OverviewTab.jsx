@@ -14,6 +14,8 @@ const OverviewTab = ({
   isDemo,
   graphInsights,
   runDate,
+  planningView,
+  prodLine,
 }) => {
   const todayIso = new Date().toISOString().slice(0, 10);
   const qtdRows = (weeklyView || []).filter((r) => r.date <= todayIso);
@@ -26,9 +28,85 @@ const OverviewTab = ({
     ? ((Number(latestForecastRow?.arr_best || 0) - Number(latestForecastRow?.arr_worst || 0)) / latestLikely) * 100
     : null;
   const activePeriod = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY ${selectedYear}`;
+  const planningQuarterly = (() => {
+    const grouped = {};
+    for (const m of planningView || []) {
+      const yr = Number(m.year);
+      const q = Number(m.quarter);
+      if (!yr || !q) continue;
+      const key = `${yr}-Q${q}`;
+      if (!grouped[key]) grouped[key] = { year: yr, quarter: q, actual: 0, likely: 0, worst: 0, best: 0 };
+      grouped[key].actual += Number(m.arr_actual || 0);
+      grouped[key].likely += Number(m.arr_likely || 0);
+      grouped[key].worst += Number(m.arr_worst || 0);
+      grouped[key].best += Number(m.arr_best || 0);
+    }
+    return Object.values(grouped).sort((a, b) => (a.year - b.year) || (a.quarter - b.quarter));
+  })();
+  const planningYears = (() => {
+    const preferred = [selectedYear, selectedYear + 1];
+    const available = [...new Set(planningQuarterly.map((r) => r.year))];
+    const merged = preferred.filter((y) => available.includes(y));
+    return merged.length > 0 ? merged : available.slice(0, 2);
+  })();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {planningYears.length > 0 && (
+        <CardWrap downloadName="overview_quarterly_summary">
+          <SectionTitle>Planning Snapshot — Quarterly Summary</SectionTitle>
+          <div style={{ fontSize: 10, color: '#64748b', marginBottom: 12 }}>
+            {isDemo ? 'Sample data shown. ' : ''}Realized actuals stacked with remaining forecast to show the full-year trajectory first.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: planningYears.length > 1 ? '1fr 1fr' : '1fr', gap: 12 }}>
+            {planningYears.map((yr) => {
+              const rows = planningQuarterly.filter((r) => r.year === yr);
+              const maxLikely = Math.max(1, ...rows.map((r) => Number(r.likely || 0)));
+              return (
+                <div key={yr} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '12px 12px 10px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd', marginBottom: 8 }}>
+                    QUARTERLY SUMMARY — {yr} · {prodLine === 'All' ? 'Combined' : prodLine}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, alignItems: 'end', minHeight: 180 }}>
+                    {[1, 2, 3, 4].map((q) => {
+                      const row = rows.find((r) => r.quarter === q) || { actual: 0, likely: 0, worst: 0, best: 0 };
+                      const actual = Number(row.actual || 0);
+                      const likely = Number(row.likely || 0);
+                      const remaining = Math.max(0, likely - actual);
+                      const barActual = Math.max(0, (actual / maxLikely) * 120);
+                      const barRem = Math.max(0, (remaining / maxLikely) * 120);
+                      const status = actual > 0 && remaining > 0 ? 'In Progress' : actual > 0 ? 'Actuals' : 'Forecast';
+                      return (
+                        <div key={`Q${q}`} style={{ textAlign: 'center' }}>
+                          <div style={{ height: 130, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                            <div style={{ width: 52, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)' }}>
+                              {barRem > 0 && <div style={{ height: `${barRem}px`, background: 'linear-gradient(180deg, #93c5fd 0%, #1d4ed8 100%)' }} />}
+                              {barActual > 0 && <div style={{ height: `${barActual}px`, background: 'linear-gradient(180deg, #fde68a 0%, #f59e0b 100%)' }} />}
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 6, fontSize: 11, color: '#f8fafc', fontWeight: 800 }}>Q{q}</div>
+                          <div style={{ fontSize: 10, color: status === 'Forecast' ? '#60a5fa' : '#f59e0b' }}>{status}</div>
+                          <div style={{ marginTop: 2, fontSize: 12, fontWeight: 800, color: status === 'Forecast' ? '#93c5fd' : '#f59e0b' }}>{fmtM(likely)}</div>
+                          {(actual > 0 || remaining > 0) && (
+                            <div style={{ marginTop: 2, fontSize: 10, color: '#64748b' }}>
+                              {actual > 0 ? fmtM(actual) : '—'}
+                              {remaining > 0 ? ` + ${fmtM(remaining)}` : ''}
+                            </div>
+                          )}
+                          {(row.worst > 0 || row.best > 0) && (
+                            <div style={{ marginTop: 2, fontSize: 10, color: '#475569' }}>{fmtM(row.worst)} – {fmtM(row.best)}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardWrap>
+      )}
+
       {loading ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>{[0, 1, 2, 3].map((i) => <Skeleton key={i} height={72} />)}</div> : weeklyView && weeklyView.length > 0 && (() => {
         const kp = weeklyKpis;
         const ml = kp?.most_likely ?? 0;
