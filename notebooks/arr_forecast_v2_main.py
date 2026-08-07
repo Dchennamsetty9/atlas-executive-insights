@@ -1,24 +1,84 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # ARR Forecast v2 — Main (ETS · Prophet · LightGBM · Ensemble)
+# MAGIC # ARR Forecast v2 — Main (Monthly Grain Forecasting Pipeline)
 # MAGIC
-# MAGIC **Key improvements over v1:**
-# MAGIC - Monthly aggregation (train on monthly → distribute to weekly for storage)
-# MAGIC - Log1p transform to reduce spike sensitivity
-# MAGIC - sMAPE evaluation (handles near-zero weeks)
-# MAGIC - Direct multi-output LightGBM (one model per horizon step — no compounding errors)
-# MAGIC - Pipeline regressors: created_arr, win_rate (lagged 1 month ≈ 4-8 weeks lead)
-# MAGIC - GoTo Central merged into ITSG
-# MAGIC - MC actuals override SFDC for all closed months
-# MAGIC - Target: sMAPE < 15% for all slices
+# MAGIC > **Status (Aug 2026):** This notebook produces `arr_forecast_v2` — one of the inputs to the unified forecast pipeline. The primary UCC forecasting engine is now **UCC Forecast Foundation V5** which uses a superior weekly-grain ensemble.
 # MAGIC
-# MAGIC **Companion notebook**: arr_forecast_v2_chronos.py — runs Chronos and MERGEs into same table
-# MAGIC **Output**: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+# MAGIC ---
+# MAGIC
+# MAGIC ## Current Production Architecture
+# MAGIC
+# MAGIC ### UCC V5 Ensemble (Primary — Weekly Grain)
+# MAGIC | Model | Holdout WAPE | Bias (MPE) | Role |
+# MAGIC |-------|-------------|-----------|------|
+# MAGIC | **Adaptive Ensemble** | **17.4%** | +8.0% | Production winner |
+# MAGIC | Prophet_trend | 20.3% | +19.6% | Trend component |
+# MAGIC | MSTL_v2 | 19.4% | +8.1% | Seasonal component |
+# MAGIC | DHR_ARIMA | 19.9% | +10.1% | Fourier harmonic |
+# MAGIC | Global_LGB_Q50_UCC | 22.2% | -5.6% | ML / bias diversifier |
+# MAGIC
+# MAGIC **Accuracy:** Weekly 17.4% WAPE → Monthly 8.2% → Cumulative 1.4% (30-week holdout Jan–Jul 2026)
+# MAGIC
+# MAGIC ### Data Flow
+# MAGIC ```
+# MAGIC SFDC (cds_sfdc_opp_products_latest)
+# MAGIC     |
+# MAGIC     v
+# MAGIC UCC Forecast V5  --> ucc_forecast_v5 --> ucc_forecast_latest (view)
+# MAGIC ITSG Forecast V5 --> itsg_forecast_v5
+# MAGIC     |
+# MAGIC     v
+# MAGIC forecast_unify_publish (Job 806678239454320)
+# MAGIC     |
+# MAGIC     v
+# MAGIC forecast_results --> forecast_results_latest (view)
+# MAGIC arr_forecast_all_models
+# MAGIC     |
+# MAGIC     v
+# MAGIC arr_forecast_exec_wide (view) --> Power BI / Atlas App
+# MAGIC ```
+# MAGIC
+# MAGIC ### Key Tables
+# MAGIC | Table | Description |
+# MAGIC |-------|-------------|
+# MAGIC | `datagroup_mdl.mdl_sales_analytics.ucc_forecast_v5` | UCC weekly forward forecast (primary) |
+# MAGIC | `datagroup_mdl.mdl_sales_analytics.itsg_forecast_v5` | ITSG weekly forward forecast |
+# MAGIC | `datagroup_mdl.mdl_sales_analytics.arr_forecast_v2` | This notebook's output (monthly-grain) |
+# MAGIC | `datagroup_mdl.mdl_sales_analytics.arr_forecast_all_models` | All models unified |
+# MAGIC | `datagroup_mdl.mdl_sales_analytics.arr_forecast_app_latest` | Atlas app table |
+# MAGIC
+# MAGIC ### Actuals Source
+# MAGIC - **Table:** `datagroup.datalake_transform.cds_sfdc_opp_products_latest`
+# MAGIC - **Definition:** `SUM(amount_towards_plan)` where `is_won=true`, `is_closed=true`, `product_group='UCC'`, `purchase_type_rollup='Growth'`, `demo_stage=0`, `close_date >= 2023-01-01`
+# MAGIC - **Aggregation:** Monday-bucketed `close_date` (weekly) or month-start (monthly)
+# MAGIC
+# MAGIC ### FY2026 Executive View (Adaptive Ensemble, Aug 6 2026)
+# MAGIC | Quarter | Actual | Forward Forecast | Planning Total |
+# MAGIC |---------|--------|-----------------|----------------|
+# MAGIC | Q1 | $13.66M | — | $13.66M (complete) |
+# MAGIC | Q2 | $14.18M | — | $14.18M (complete) |
+# MAGIC | Q3 | $4.58M | $9.98M | $14.56M (4/13 wks) |
+# MAGIC | Q4 | — | $15.12M | $15.12M (forecast) |
+# MAGIC | **FY2026** | | | **$57.52M** |
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## This Notebook (v2 Monthly Models)
+# MAGIC - Monthly aggregation → weekly distribution for storage
+# MAGIC - Log1p transform, sMAPE evaluation
+# MAGIC - ETS + Prophet + Direct LightGBM + Ensemble (legacy monthly-grain stack)
+# MAGIC - Pipeline regressors: win_rate_lag1, won_arr_roll3
+# MAGIC - GoTo Central merged into ITSG; MC actuals override SFDC for closed months
+# MAGIC - **Downstream:** `forecast_unify_publish` merges this with V5 outputs
+# MAGIC
+# MAGIC **Output**: `datagroup_mdl.mdl_sales_analytics.arr_forecast_v2`
 
 # COMMAND ----------
+
 # MAGIC %pip install prophet lightgbm statsmodels scikit-learn --quiet
 
 # COMMAND ----------
+
 import warnings, logging, math, datetime
 warnings.filterwarnings("ignore")
 logging.getLogger("prophet").setLevel(logging.ERROR)
@@ -38,8 +98,21 @@ SCHEMA    = "mdl_sales_analytics"
 OUT_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"
 LB_TABLE  = f"{CATALOG}.{SCHEMA}.arr_forecast_v2_leaderboard"
 
+# --- V5 Production Tables (primary forecasting outputs) ---
+UCC_V5_TABLE  = f"{CATALOG}.{SCHEMA}.ucc_forecast_v5"
+ITSG_V5_TABLE = f"{CATALOG}.{SCHEMA}.itsg_forecast_v5"
+APP_TABLE     = f"{CATALOG}.{SCHEMA}.arr_forecast_app_latest"
+ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_all_models"
+FORECAST_RESULTS = f"{CATALOG}.{SCHEMA}.forecast_results"
+
+# --- Source Tables ---
 SFDC_TABLE = "datalake_transform.cds_sfdc_opp_products_latest"
 MC_TABLE   = f"{CATALOG}.{SCHEMA}.mc_actuals"
+
+# --- V5 Ensemble Composition (Aug 2026) ---
+ENSEMBLE_COMPONENT_MODELS = ['Prophet_trend', 'MSTL_v2', 'DHR_ARIMA', 'Global_LGB_Q50_UCC']
+ENSEMBLE_WEIGHTING_METHOD = 'equal'  # 0.25 each
+RETAINED_PRODUCTION_MODELS = ['Prophet_trend', 'MSTL_v2', 'ETS', 'DHR_ARIMA', 'Global_LGB_Q50_UCC']
 
 TODAY           = datetime.date.today()
 RUN_DATE        = TODAY
@@ -47,9 +120,7 @@ CUR_MONTH_START = TODAY.replace(day=1)
 TRAIN_FROM      = "2022-01-01"
 
 ROLLING_MONTHS  = 3                        # ≈ 13 weeks
-ROY_MONTHS      = max(                     # calendar months remaining in year
-    round((datetime.date(TODAY.year, 12, 31) - CUR_MONTH_START).days / 30.44), 1
-)
+ROY_MONTHS      = 12                       # 4 quarters forward (full rolling year)
 HOLDOUT_MONTHS  = 3                        # holdout for sMAPE evaluation
 MIN_HISTORY     = 18                       # minimum months needed to train
 
@@ -87,9 +158,11 @@ print(f"Run: {RUN_DATE} | Current month: {CUR_MONTH_START}")
 print(f"Rolling: {ROLLING_MONTHS}m | RoY: {ROY_MONTHS}m")
 
 # COMMAND ----------
+
 # MAGIC %md ## 1 — Load SFDC Monthly Actuals
 
 # COMMAND ----------
+
 prod_case  = "CASE " + " ".join(
     f"WHEN product_genus='{k}' THEN '{v}'" for k,v in PRODUCT_MAP.items()
 ) + " ELSE 'Other' END"
@@ -103,30 +176,33 @@ sfdc_raw = spark.sql(f"""
         date_trunc('month', close_date)  AS month_start,
         {prod_case}                      AS product_group,
         {geo_case}                       AS geo,
-        SUM(COALESCE(arr, 0))            AS arr_sfdc
+        SUM(COALESCE(amount_towards_plan, 0))  AS arr_sfdc
     FROM {SFDC_TABLE}
     WHERE is_won        = 'True'
-      AND purchase_type = 'Growth'
+      AND purchase_type_rollup = 'Growth'
       AND close_date   >= '{TRAIN_FROM}'
       AND close_date   <  current_date()
-      AND COALESCE(arr, 0) > 0
+      AND COALESCE(amount_towards_plan, 0) > 0
     GROUP BY 1, 2, 3
 """).filter(
     F.col("product_group").isin("UCC","ITSG") &
     F.col("geo").isin("NA","EMEA","APAC","LATAM")
 )
 
-# Total aggregates
-sfdc_tot_p = sfdc_raw.groupBy("month_start","geo").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total"))
-sfdc_tot_g = sfdc_raw.groupBy("month_start","product_group").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("geo",F.lit("Total"))
-sfdc_tot   = sfdc_raw.groupBy("month_start").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total"))
-sfdc_all   = sfdc_raw.union(sfdc_tot_p).union(sfdc_tot_g).union(sfdc_tot)
+# Total aggregates — .select() ensures consistent column order for position-based union
+_cols = ["month_start","product_group","geo","arr_sfdc"]
+sfdc_tot_p = sfdc_raw.groupBy("month_start","geo").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total")).select(*_cols)
+sfdc_tot_g = sfdc_raw.groupBy("month_start","product_group").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("geo",F.lit("Total")).select(*_cols)
+sfdc_tot   = sfdc_raw.groupBy("month_start").agg(F.sum("arr_sfdc").alias("arr_sfdc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total")).select(*_cols)
+sfdc_all   = sfdc_raw.select(*_cols).union(sfdc_tot_p).union(sfdc_tot_g).union(sfdc_tot)
 print("SFDC monthly rows:", sfdc_all.count())
 
 # COMMAND ----------
+
 # MAGIC %md ## 2 — Pipeline Regressors (leading indicators, lagged 1 month)
 
 # COMMAND ----------
+
 try:
     pipeline_raw = spark.sql(f"""
         SELECT
@@ -159,9 +235,11 @@ except Exception as e:
     HAS_REGRESSORS = False
 
 # COMMAND ----------
+
 # MAGIC %md ## 3 — MC Reconciled Actuals (closed months)
 
 # COMMAND ----------
+
 geo_case_mc = "CASE " + " ".join(
     f"WHEN `Sales Market`='{k}' THEN '{v}'" for k,v in GEO_NORM.items()
 ) + " ELSE 'Other' END"
@@ -185,10 +263,11 @@ try:
         F.col("product_group").isin("UCC","ITSG") &
         F.col("geo").isin("NA","EMEA","APAC","LATAM")
     )
-    mc_tot_p = mc_raw.groupBy("month_start","geo").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total"))
-    mc_tot_g = mc_raw.groupBy("month_start","product_group").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("geo",F.lit("Total"))
-    mc_tot   = mc_raw.groupBy("month_start").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total"))
-    mc_all   = mc_raw.union(mc_tot_p).union(mc_tot_g).union(mc_tot)
+    _mc_cols = ["month_start","product_group","geo","arr_mc"]
+    mc_tot_p = mc_raw.groupBy("month_start","geo").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total")).select(*_mc_cols)
+    mc_tot_g = mc_raw.groupBy("month_start","product_group").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("geo",F.lit("Total")).select(*_mc_cols)
+    mc_tot   = mc_raw.groupBy("month_start").agg(F.sum("arr_mc").alias("arr_mc")).withColumn("product_group",F.lit("Total")).withColumn("geo",F.lit("Total")).select(*_mc_cols)
+    mc_all   = mc_raw.select(*_mc_cols).union(mc_tot_p).union(mc_tot_g).union(mc_tot)
     print("MC monthly rows:", mc_all.count())
     HAS_MC = True
 except Exception as e:
@@ -197,9 +276,11 @@ except Exception as e:
     HAS_MC = False
 
 # COMMAND ----------
+
 # MAGIC %md ## 4 — Blend Actuals (MC overrides SFDC for closed months)
 
 # COMMAND ----------
+
 blended_sdf = (
     sfdc_all
     .join(
@@ -223,21 +304,23 @@ blended_pd["arr_actuals"] = pd.to_numeric(blended_pd["arr_actuals"], errors="coe
 print(f"Blended monthly rows: {len(blended_pd)}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 5 — Weekly-within-Month Distribution Pattern
 
 # COMMAND ----------
+
 # Compute historical weekly share within each month from raw SFDC weekly data
 sfdc_weekly_raw = spark.sql(f"""
     SELECT
         date_trunc('week',  close_date) AS week_start,
         date_trunc('month', close_date) AS month_start,
-        SUM(COALESCE(arr,0))            AS arr_sfdc
+        SUM(COALESCE(amount_towards_plan,0))  AS arr_sfdc
     FROM {SFDC_TABLE}
     WHERE is_won        = 'True'
-      AND purchase_type = 'Growth'
+      AND purchase_type_rollup = 'Growth'
       AND close_date   >= '2023-01-01'
       AND close_date   <  current_date()
-      AND COALESCE(arr, 0) > 0
+      AND COALESCE(amount_towards_plan, 0) > 0
     GROUP BY 1, 2
     ORDER BY 1
 """).toPandas()
@@ -293,9 +376,11 @@ def monthly_to_weekly(month_start: pd.Timestamp, monthly_value: float) -> list[d
             for d, s in zip(mondays_in_month, shares)]
 
 # COMMAND ----------
+
 # MAGIC %md ## 6 — Model Functions (Monthly Grain)
 
 # COMMAND ----------
+
 def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Symmetric MAPE — robust to near-zero actuals."""
     denom = (np.abs(y_true) + np.abs(y_pred)) / 2.0
@@ -523,9 +608,11 @@ def fit_lgb_direct(y: np.ndarray, dates: pd.DatetimeIndex, h: int,
 
 
 # COMMAND ----------
+
 # MAGIC %md ## 7 — sMAPE Holdout Evaluation
 
 # COMMAND ----------
+
 def holdout_smape(y: np.ndarray, dates: pd.DatetimeIndex,
                    model_fn, h: int = HOLDOUT_MONTHS,
                    reg_df: pd.DataFrame = None) -> float:
@@ -548,9 +635,11 @@ def holdout_smape(y: np.ndarray, dates: pd.DatetimeIndex,
         return 999.0
 
 # COMMAND ----------
+
 # MAGIC %md ## 8 — Forecast Slice Function
 
 # COMMAND ----------
+
 def forecast_slice_monthly(product_group: str, geo: str,
                             h: int, forecast_type: str) -> pd.DataFrame:
     """
@@ -628,9 +717,11 @@ def forecast_slice_monthly(product_group: str, geo: str,
     })
 
 # COMMAND ----------
+
 # MAGIC %md ## 9 — Main Loop
 
 # COMMAND ----------
+
 all_fc_rows   = []   # forecast rows (future weeks)
 all_act_rows  = []   # actuals rows (historical weeks)
 
@@ -714,20 +805,30 @@ for product_group, geo in SLICES:
 
 actuals_pd  = pd.DataFrame(all_act_rows)
 forecast_pd = pd.DataFrame(all_fc_rows)
-combined_pd = pd.concat([actuals_pd, forecast_pd], ignore_index=True)
+
+# ── Forecast View Tagging ─────────────────────────────────────────────────────
+# 'boq' = pure model forecast only (no actuals substitution)
+# 'adaptive' = actuals for closed periods + forecast for open periods
+actuals_pd["forecast_view"] = "adaptive"        # actuals only in adaptive view
+fc_boq      = forecast_pd.copy(); fc_boq["forecast_view"] = "boq"
+fc_adaptive = forecast_pd.copy(); fc_adaptive["forecast_view"] = "adaptive"
+
+combined_pd = pd.concat([actuals_pd, fc_boq, fc_adaptive], ignore_index=True)
 combined_pd["run_date"] = pd.Timestamp(RUN_DATE).date()
 
 print(f"\nTotal rows: {len(combined_pd)}")
-print(combined_pd.groupby(["product","sales_market","forecast_type"]).size().to_string())
+print(combined_pd.groupby(["product","sales_market","forecast_type","forecast_view"]).size().to_string())
 
 # COMMAND ----------
+
 # MAGIC %md ## 9b — Band Calibration Backtest
 
 # COMMAND ----------
+
 # Validate coverage: how often do actuals fall within the ensemble P10-P90 band?
 # Target: 80% of actuals should fall within best/worst bands
-actuals_rows = combined_pd[combined_pd["forecast_type"] == "actuals"].copy()
-forecast_rows = combined_pd[combined_pd["forecast_type"].isin(["rolling", "roy"])].copy()
+actuals_rows = combined_pd[(combined_pd["forecast_type"] == "actuals") & (combined_pd["forecast_view"] == "adaptive")].copy()
+forecast_rows = combined_pd[(combined_pd["forecast_type"].isin(["rolling", "roy"])) & (combined_pd["forecast_view"] == "boq")].copy()
 
 # Merge actuals with 1-step-ahead forecasts (most recent forecast before each actual date)
 # For this backtest, find closest prior forecast for each actual date
@@ -766,9 +867,11 @@ if merged_backtest:
     print(f"{'='*55}\n")
 
 # COMMAND ----------
+
 # MAGIC %md ## 10 — Write to Delta Table
 
 # COMMAND ----------
+
 OUTPUT_SCHEMA = StructType([
     StructField("ds",             DateType(),   True),
     StructField("product",        StringType(), True),
@@ -790,6 +893,7 @@ OUTPUT_SCHEMA = StructType([
     StructField("mape_mstl_v2",   DoubleType(), True),
     StructField("mape_dhr_arima", DoubleType(), True),
     StructField("forecast_type",  StringType(), True),
+    StructField("forecast_view",  StringType(), True),
     StructField("run_date",       DateType(),   True),
 ])
 
@@ -826,6 +930,7 @@ spark.sql(f"""
         mape_mstl_v2  DOUBLE      COMMENT '3-month holdout sMAPE — MSTL_v2',
         mape_dhr_arima DOUBLE     COMMENT '3-month holdout sMAPE — DHR-ARIMA',
         forecast_type STRING      COMMENT 'actuals | rolling | roy',
+        forecast_view STRING      COMMENT 'boq = pure model forecast | adaptive = actuals-blended',
         run_date      DATE        COMMENT 'Notebook run date'
     )
     USING DELTA
@@ -844,6 +949,7 @@ for _col, _comment in [
     ("arr_dhr_arima", "DHR-ARIMA point forecast"),
     ("mape_mstl_v2",  "3-month holdout sMAPE — MSTL_v2"),
     ("mape_dhr_arima","3-month holdout sMAPE — DHR-ARIMA"),
+    ("forecast_view", "boq = pure model forecast | adaptive = actuals-blended"),
 ]:
     try:
         spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS ({_col} DOUBLE COMMENT '{_comment}')")
@@ -856,9 +962,11 @@ out_sdf.write.format("delta").mode("append").option("mergeSchema", "true").saveA
 print(f"✅  {out_sdf.count()} rows → {OUT_TABLE}")
 
 # COMMAND ----------
+
 # MAGIC %md ## 11 — Leaderboard
 
 # COMMAND ----------
+
 lb_rows = []
 for product_group, geo in SLICES:
     mask = ((blended_pd["product_group"] == product_group) &
@@ -902,13 +1010,42 @@ lb_sdf.write.mode("append").saveAsTable(LB_TABLE)
 print(f"✅  Leaderboard → {LB_TABLE}")
 
 # COMMAND ----------
-print("""
-Next step: run arr_forecast_v2_chronos.py to fill arr_chronos column
-and recompute ensemble with all 5 models.
 
-GRANT statements (run in SQL after first successful run):
-  GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
-    TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
-  GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
-    TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
+print("""
+===============================================================================
+  ARR FORECAST V2 PIPELINE COMPLETE
+===============================================================================
+
+  Output written: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+
+  NEXT STEPS (in order):
+  ─────────────────────
+  1. Run 'forecast_unify_publish' (Job 806678239454320) to merge:
+       - ucc_forecast_v5 (UCC weekly V5 ensemble)
+       - itsg_forecast_v5 (ITSG weekly V5 ensemble)
+       - arr_forecast_v2 (this notebook's monthly-grain output)
+     Into: forecast_results -> forecast_results_latest (view)
+
+  2. Run 'arr_forecast_all_models' notebook to unify all model outputs
+     Into: arr_forecast_all_models -> arr_forecast_exec_wide (view)
+
+  3. Atlas App (atlas-executive-insights) auto-reads from:
+       - arr_forecast_app_latest (UCC V5 writes directly)
+       - forecast_results_latest (from forecast_unify_publish)
+
+  CURRENT V5 ENSEMBLE (Aug 2026):
+    Models: Prophet_trend + MSTL_v2 + DHR_ARIMA + Global_LGB_Q50_UCC
+    Weights: Equal (0.25 each)
+    Holdout WAPE: 17.4% (weekly) / 8.2% (monthly) / 1.4% (cumulative)
+    FY2026 Planning: $57.5M
+
+  ACTUALS (through Jul 27, 2026):
+    Q1: $13.66M | Q2: $14.18M | Q3 (4 wks): $4.58M
+
+  GRANT statements (already applied):
+    GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+      TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
+    GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
+      TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`;
+===============================================================================
 """)

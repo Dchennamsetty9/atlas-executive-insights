@@ -63,11 +63,15 @@ GRAPH_EXPLAIN_TABLE = f"{CATALOG}.{SCHEMA}.forecast_graph_explanations"
 APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
 REC_MODEL       = "Adaptive_Ensemble"   # the model flagged recommended_for_exec
 ROLLING_WEEKS   = 13
-SCHEMA_VERSION  = "2.0"
+SCHEMA_VERSION  = "2.1"
+
+# Fiscal year boundary: last Monday of FY2026. Weeks beyond this = forward_1yr.
+# GoTo fiscal year = calendar year.
+FY_END_DATE = "2026-12-28"   # last Monday of FY2026 (auto-roll: update annually)
 
 # Canonical unified schema (long format — one row per model per week per scenario).
 BASE = ["run_date", "ds", "product", "sales_market", "grain_level", "model",
-        "forecast_type", "actual", "p10", "p50", "p90", "most_likely",
+        "forecast_type", "forecast_view", "actual", "p10", "p50", "p90", "most_likely",
         "recommended_for_exec", "source_run_ts", "published_at_utc"]
 COLS = BASE + ["model_wape", "model_mape"]   # accuracy joined on at the end
 
@@ -118,6 +122,7 @@ def normalize_forecast(df, product):
         .withColumn("most_likely", F.col("p50"))
         .withColumn("actual", F.lit(None).cast("double"))
         .withColumn("forecast_type", F.lit(None).cast("string"))  # set in Cell 4
+        .withColumn("forecast_view", F.lit("adaptive"))            # default; BOQ rows added in Cell 4b
         .withColumn("source_run_ts",
                     F.col("run_timestamp_utc") if "run_timestamp_utc" in cols
                     else F.lit(None).cast("timestamp")))
@@ -143,23 +148,56 @@ print(f"Normalized forecast rows: {fc.count()}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cell 4 — Tag forecast_type (rolling = next 13 wks, roy = rest of year)
+# MAGIC ## Cell 4 — Tag forecast_type (rolling / roy / forward_1yr)
 # MAGIC
-# MAGIC Forward weeks are emitted twice so both panel views work: every forward week
-# MAGIC as `roy`, and the first 13 weeks additionally as `rolling`.
+# MAGIC Three-way DISJOINT tagging:
+# MAGIC - `rolling` = next 13 weeks (current quarter)
+# MAGIC - `roy` = rest of fiscal year (after rolling, through FY_END_DATE)
+# MAGIC - `forward_1yr` = weeks beyond the current fiscal year (2027+ extension from Step 15C/8C)
+# MAGIC
+# MAGIC All three are disjoint — the app sums `rolling + roy` for current-FY totals,
+# MAGIC and uses `forward_1yr` for the next-year planning view.
 
 # COMMAND ----------
 
 min_ds = fc.agg(F.min("ds")).collect()[0][0]
 rolling_cutoff = min_ds + timedelta(weeks=ROLLING_WEEKS - 1)
+fy_end = datetime.strptime(FY_END_DATE, "%Y-%m-%d").date()
 
-# rolling = next 13 weeks; roy = the rest of the year AFTER that window.
+# Three-way DISJOINT tagging:
+#   rolling     = next 13 weeks (current quarter forward)
+#   roy         = rest of current fiscal year AFTER the rolling window
+#   forward_1yr = all weeks BEYOND the current fiscal year end (2027+)
 # They MUST be disjoint: the app's KPI query sums forecast_type IN
 # ('rolling','roy'), so overlapping rows double-count the quarter total.
-rolling = fc.where(F.col("ds") <= F.lit(rolling_cutoff)).withColumn("forecast_type", F.lit("rolling"))
-roy     = fc.where(F.col("ds") >  F.lit(rolling_cutoff)).withColumn("forecast_type", F.lit("roy"))
-forecasts = rolling.unionByName(roy)
-print(f"Forecast rows after rolling/roy split: {forecasts.count()} (cutoff {rolling_cutoff})")
+rolling     = fc.where(F.col("ds") <= F.lit(rolling_cutoff)).withColumn("forecast_type", F.lit("rolling"))
+roy         = fc.where((F.col("ds") > F.lit(rolling_cutoff)) & (F.col("ds") <= F.lit(fy_end))).withColumn("forecast_type", F.lit("roy"))
+forward_1yr = fc.where(F.col("ds") > F.lit(fy_end)).withColumn("forecast_type", F.lit("forward_1yr"))
+forecasts = rolling.unionByName(roy).unionByName(forward_1yr)
+print(f"Forecast rows after 3-way split: {forecasts.count()}")
+print(f"  rolling: {rolling.count()} (through {rolling_cutoff})")
+print(f"  roy: {roy.count()} (through {fy_end})")
+print(f"  forward_1yr: {forward_1yr.count()} (beyond FY into 2027+)")
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 4b — Generate BOQ (pure-model) view rows
+# BOQ rows = duplicate of ALL forecast rows but tagged forecast_view='boq'.
+# BOQ = "Beginning of Quarter" pure model prediction — no actuals blended.
+# The adaptive view (default) will blend actuals in the app layer;
+# the BOQ view gives a stable plan target that doesn't change mid-quarter.
+#
+# Both views share the same forecast_type tagging (rolling/roy/forward_1yr)
+# so the app can filter by horizon AND by view independently.
+
+boq_forecasts = forecasts.withColumn("forecast_view", F.lit("boq"))
+# Original forecasts already have forecast_view='adaptive' from normalize step
+forecasts_with_views = forecasts.unionByName(boq_forecasts)
+print(f"Forecast rows with both views: {forecasts_with_views.count()} "
+      f"(adaptive: {forecasts.count()}, boq: {boq_forecasts.count()})")
+
+# Replace 'forecasts' variable for downstream cells
+forecasts = forecasts_with_views
 
 # COMMAND ----------
 
@@ -189,6 +227,7 @@ def build_actuals():
             grain.alias("grain_level"),
             F.lit("ACTUAL").alias("model"),
             F.lit("actuals").alias("forecast_type"),
+            F.lit("adaptive").alias("forecast_view"),
             F.col("Actuals").cast("double").alias("actual"),
             F.lit(None).cast("double").alias("p10"),
             F.lit(None).cast("double").alias("p50"),
@@ -727,11 +766,12 @@ spark.sql(f"""
         -- overlapping rows from an older run).
         SELECT fr.* FROM {RESULTS_TABLE} fr
         LEFT JOIN cutoff c ON fr.product = c.product
-        WHERE fr.forecast_type <> 'roy' OR c.roll_end IS NULL OR fr.ds > c.roll_end
+        WHERE (fr.forecast_type <> 'roy' OR c.roll_end IS NULL OR fr.ds > c.roll_end)
+          AND (fr.forecast_view = 'adaptive' OR fr.forecast_view IS NULL)
     )
     SELECT
         CAST(ds AS TIMESTAMP) AS ds,
-        product, sales_market, forecast_type, run_date,
+        product, sales_market, forecast_type, forecast_view, run_date,
         MAX(CASE WHEN model = 'ACTUAL'            THEN actual END) AS Actuals,
         COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p50 END),
                  MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Most_Likely,
@@ -865,7 +905,7 @@ models   = sorted([row["model"] for row in r.select("model").distinct().collect(
 assert n > 0, "forecast_results_latest is empty."
 assert r.where(F.col("p50").isNotNull()).count() > 0, "No non-null p50."
 assert "Total" in products, "Total rollup missing."
-assert any(ft in ftypes for ft in ("rolling", "roy")), "No forecast rows."
+assert any(ft in ftypes for ft in ("rolling", "roy", "forward_1yr")), "No forecast rows."
 assert "actuals" in ftypes, "No actuals rows — check arr_forecast_v2 source."
 
 print(f"forecast_results_latest: {n} rows")
