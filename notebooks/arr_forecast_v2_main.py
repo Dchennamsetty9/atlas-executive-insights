@@ -949,13 +949,22 @@ for _col, _comment in [
     ("arr_dhr_arima", "DHR-ARIMA point forecast"),
     ("mape_mstl_v2",  "3-month holdout sMAPE — MSTL_v2"),
     ("mape_dhr_arima","3-month holdout sMAPE — DHR-ARIMA"),
-    ("forecast_view", "boq = pure model forecast | adaptive = actuals-blended"),
 ]:
     try:
         spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS ({_col} DOUBLE COMMENT '{_comment}')")
         print(f"[arr_forecast_v2_main] Added column {_col} to {OUT_TABLE}")
     except Exception:
         pass  # Column already exists
+
+# forecast_view is STRING — drop DOUBLE version if present, re-add as STRING
+_fv_type = [r.data_type for r in spark.sql(f"DESCRIBE {OUT_TABLE}").collect() if r.col_name == "forecast_view"]
+if _fv_type and _fv_type[0].lower() != "string":
+    spark.sql(f"ALTER TABLE {OUT_TABLE} DROP COLUMN forecast_view")
+    spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS (forecast_view STRING COMMENT 'boq = pure model forecast | adaptive = actuals-blended')")
+    print(f"[arr_forecast_v2_main] Rebuilt forecast_view as STRING in {OUT_TABLE}")
+elif not _fv_type:
+    spark.sql(f"ALTER TABLE {OUT_TABLE} ADD COLUMNS (forecast_view STRING COMMENT 'boq = pure model forecast | adaptive = actuals-blended')")
+    print(f"[arr_forecast_v2_main] Added column forecast_view to {OUT_TABLE}")
 
 spark.sql(f"DELETE FROM {OUT_TABLE} WHERE product IN ('UCC','Total') AND run_date = '{RUN_DATE}'")
 out_sdf.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(OUT_TABLE)

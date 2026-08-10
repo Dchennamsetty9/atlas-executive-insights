@@ -2,27 +2,126 @@
 # MAGIC %md
 # MAGIC # Forecast Unify & Publish
 # MAGIC
-# MAGIC Consolidates the per-product V5 forecasting outputs into **one results table**
+# MAGIC Consolidates the per-product V5 forecasting outputs into **one unified results table**
 # MAGIC and **one AI-insights table** that the executive app reads directly — with all
 # MAGIC information every Forecasting-panel tab needs.
 # MAGIC
-# MAGIC **Sources (verified via Unity Catalog):**
-# MAGIC - `ucc_forecast_v5`, `itsg_forecast_v5` — per-model forward forecast (p10/p50/p90).
-# MAGIC   Note: `ucc.ds` is DATE, `itsg.ds` is TIMESTAMP → both cast to DATE.
-# MAGIC - `arr_forecast_v2` — source of **actuals** (Overview/YTD/Monthly/Multi-Year tabs).
-# MAGIC - `ucc_forecast_monitoring_baseline` / `itsg_forecast_monitoring_baseline` —
-# MAGIC   per-model **WAPE/MAPE** (Accuracy tab).
+# MAGIC ---
 # MAGIC
-# MAGIC **Design decisions (confirmed with Dileep):**
-# MAGIC 1. Actuals pulled from `arr_forecast_v2.Actuals`.
-# MAGIC 2. Accuracy = per-model WAPE (relabelled from MAPE in the UI).
-# MAGIC 3. Forward rows tagged both `rolling` (next 13 wks) and `roy` (rest of year).
-# MAGIC 4. `Total` = UCC + ITSG, summed in this notebook.
+# MAGIC ## Upstream Source Tables (`datagroup_mdl.mdl_sales_analytics`)
 # MAGIC
-# MAGIC **Outputs:** `forecast_results` (+ `forecast_results_latest` view),
-# MAGIC `forecast_insights`, `forecast_publish_log`. GRANTed to the app service principal.
+# MAGIC | Table | Rows | Date Range | Models | Schema Highlights |
+# MAGIC |-------|------|-----------|--------|-------------------|
+# MAGIC | `ucc_forecast_v5` | 756 | 2026-08-10 to 2026-12-28 | 6 | Full quantiles p10-p90 by 10s, total + market grain, 21 forward weeks |
+# MAGIC | `itsg_forecast_v5` | 972 | 2026-08-10 to 2027-08-09 | 6 | p10/p50/p90, total + market grain, forward + 2027 extension |
+# MAGIC | `arr_forecast_v2` | ~5,600 | 2023-01 to present | — | Source of **actuals** (column `Actuals`); monthly grain |
+# MAGIC | `ucc_forecast_monitoring_baseline` | 439 | — | 6 | Per-model holdout WAPE/RMSE, alert thresholds |
+# MAGIC | `itsg_forecast_monitoring_baseline` | ~50 | — | 6 | Per-model WAPE/MAPE by metric_scope |
+# MAGIC | `ucc_forecast_boq` | 444 | 2026-04-06 to 2027-08-09 | 7 | Rolling 1-year BOQ plan, full p10-p90 quantiles |
+# MAGIC | `ucc_forecast_cbe` | 426 | 2026-04-06 to 2027-08-09 | 6 | Current Best Estimate (actuals + forecast), cumulative QTD, pace vs BOQ |
+# MAGIC | `ucc_forecast_vintages` | 17,424 | 2026-07-06 to 2026-12-28 | 6 | Append-only forecast history for vintage tracking |
+# MAGIC | `ucc_forecast_v4` | 792 | 2026-08-03 to 2026-12-28 | 6 | Legacy mirror for backward compatibility |
+# MAGIC | `itsg_forecast_boq` | 432 | 2026-03-30 to 2027-08-09 | 6 | Rolling 1-year BOQ plan, p10/p50/p90 quantiles, forecast only |
+# MAGIC | `itsg_forecast_cbe` | 432 | 2026-03-30 to 2027-08-09 | 6 | Current Best Estimate (actuals + forecast), cumulative QTD, pace vs BOQ |
+# MAGIC | `itsg_forecast_v4` | 972 | 2026-08-10 to 2027-02-08 | 6 | Legacy mirror for backward compatibility |
 # MAGIC
-# MAGIC **Schedule:** daily ~07:00 America/New_York (see `forecast_unify_daily` in `databricks.yml`).
+# MAGIC **Notes:**
+# MAGIC - `ucc_forecast_v5` uses DATE for `ds`; `itsg_forecast_v5` uses TIMESTAMP — both cast to DATE here.
+# MAGIC - **UCC quantiles**: full fan (p10, p20, ..., p90 by 10s) in V5/BOQ/CBE; this notebook propagates p10/p50/p90 to `forecast_results`.
+# MAGIC - **ITSG quantiles**: p10/p50/p90 only (series is noisier at ~$350K avg weekly, ~30% WAPE; intermediate quantiles add marginal value). MC-based for Ensemble, holdout-residual-based for individual models.
+# MAGIC - UCC models: `Adaptive_Ensemble`, `Prophet_trend`, `MSTL_v2`, `DHR_ARIMA`, `Global_LGB_Q50_UCC`, `ETS`.
+# MAGIC - ITSG models: `Adaptive_Ensemble`, `ETS`, `MSTL_v2`, `Global_LGB_Q50_ITSG`, `Prophet_trend`, `DHR_ARIMA`.
+# MAGIC - Both products' BOQ/CBE tables share the same schema and consumption patterns (forecast only vs forecast+actuals).
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## Outputs Written by This Notebook
+# MAGIC
+# MAGIC | Table / View | Mode | Purpose |
+# MAGIC |-------------|------|--------|
+# MAGIC | `forecast_results` | Overwrite (replaceWhere = today) | Unified long-format: all models, products, forecast_types, both views |
+# MAGIC | `forecast_results_latest` (view) | Recreated | Latest run_date slice for app queries |
+# MAGIC | `forecast_insights` | Overwrite | AI-insights tab: momentum, risk, confidence per product |
+# MAGIC | `forecast_graph_explanations` | Overwrite | Per-graph "explain this chart" text (3 products x 5 regions x 2 periods x 10 graphs) |
+# MAGIC | `forecast_publish_log` | Append | Observability: row counts, schema version, timestamps |
+# MAGIC | `forecast_results_v2compat` (view) | Recreated | Wide-format compat (mirrors `arr_forecast_v2` schema for app endpoints) |
+# MAGIC | `forecast_leaderboard_v2compat` (view) | Recreated | Model accuracy leaderboard for the Accuracy tab |
+# MAGIC | `forecast_insights_v2compat` (view) | Recreated | Insights reshaped for legacy app endpoint |
+# MAGIC
+# MAGIC All tables/views GRANTed SELECT to app service principal `324a6ec7-...`.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## Design Decisions
+# MAGIC
+# MAGIC 1. **Actuals** pulled from `arr_forecast_v2.Actuals` (monthly grain, UCC + ITSG).
+# MAGIC 2. **Accuracy** = per-model holdout WAPE from monitoring baselines.
+# MAGIC 3. **Three-way disjoint tagging**: `rolling` (next 13 wks), `roy` (rest of FY), `forward_1yr` (2027+).
+# MAGIC 4. **Two forecast views**: `adaptive` (default, app blends actuals in) + `boq` (pure model, stable plan target).
+# MAGIC 5. **Total rollup**: UCC + ITSG summed per (ds, market, model, forecast_type, view).
+# MAGIC 6. **Insights**: deterministic (no LLM) — momentum from trajectory slope, confidence from band spread + WAPE.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## How the App Reads the Output
+# MAGIC
+# MAGIC The executive app reads from `forecast_results_latest` (the latest `run_date` slice).
+# MAGIC Two primary consumption patterns:
+# MAGIC
+# MAGIC ### Pattern 1 — Forecast Only (BOQ / Pure Model)
+# MAGIC ```sql
+# MAGIC SELECT * FROM forecast_results_latest
+# MAGIC WHERE forecast_view = 'boq'
+# MAGIC   AND forecast_type IN ('rolling', 'roy', 'forward_1yr')
+# MAGIC ```
+# MAGIC - **Use case**: Beginning-of-Quarter plan target, stable reference that doesn't shift as actuals arrive.
+# MAGIC - **Rows**: One per (ds, model, product, sales_market, grain_level) — forward weeks only.
+# MAGIC - **Columns used**: `p10`, `p50` (= `most_likely`), `p90` for scenario bands.
+# MAGIC - **No actuals blended** — pure model output locked at forecast time.
+# MAGIC
+# MAGIC ### Pattern 2 — Forecast + Actuals (Adaptive / CBE)
+# MAGIC ```sql
+# MAGIC SELECT * FROM forecast_results_latest
+# MAGIC WHERE forecast_view = 'adaptive'
+# MAGIC ```
+# MAGIC - **Use case**: Overview KPI, YTD cumulative, weekly chart, monthly comparisons.
+# MAGIC - **Rows include**:
+# MAGIC   - `forecast_type = 'actuals'` — closed weeks with `actual` populated, model = `ACTUAL`.
+# MAGIC   - `forecast_type = 'rolling'` — next 13 open weeks (current quarter forward).
+# MAGIC   - `forecast_type = 'roy'` — rest of FY after rolling window.
+# MAGIC   - `forecast_type = 'forward_1yr'` — 2027+ planning horizon.
+# MAGIC - **KPI formula**: `SUM(actual) WHERE actuals + SUM(p50) WHERE rolling/roy` = current-quarter landing.
+# MAGIC - Actuals update daily as weeks close; forecast portion shrinks over the quarter.
+# MAGIC
+# MAGIC ### Pattern 3 — V2 Compat Wide Format (Legacy Endpoints)
+# MAGIC ```sql
+# MAGIC SELECT * FROM forecast_results_v2compat
+# MAGIC ```
+# MAGIC - **Use case**: Drop-in replacement for `arr_forecast_v2` in existing dashboard SQL.
+# MAGIC - **Columns**: `Actuals`, `Most_Likely`, `Worst_Case`, `Best_Case`, `p10`, `p50`, `p90` (pivoted from long).
+# MAGIC - One row per (ds, product, sales_market, forecast_type, run_date).
+# MAGIC
+# MAGIC ### Pattern 4 — Model Accuracy (Leaderboard Tab)
+# MAGIC ```sql
+# MAGIC SELECT * FROM forecast_leaderboard_v2compat
+# MAGIC ```
+# MAGIC - Per-model WAPE from monitoring baselines, by product.
+# MAGIC
+# MAGIC ### Upstream Planning Tables (Not Published Here, But App-Accessible)
+# MAGIC
+# MAGIC | Table | Product | Pattern | Description |
+# MAGIC |-------|---------|---------|-------------|
+# MAGIC | `ucc_forecast_boq` | UCC | Forecast only | Rolling 1-year pure model plan, full p10-p90 by 10s quantiles |
+# MAGIC | `ucc_forecast_cbe` | UCC | Forecast + Actuals | Actuals for closed weeks + forecast for open, `pace_vs_boq_pct`, cumulative QTD |
+# MAGIC | `ucc_forecast_v5` | UCC | Forecast only | 21-week forward, 6 models, total + market grain, full p10-p90 quantiles |
+# MAGIC | `itsg_forecast_boq` | ITSG | Forecast only | Rolling 1-year pure model plan, p10/p50/p90 quantiles |
+# MAGIC | `itsg_forecast_cbe` | ITSG | Forecast + Actuals | Actuals for closed weeks + forecast for open, `pace_vs_boq_pct`, cumulative QTD |
+# MAGIC | `itsg_forecast_v5` | ITSG | Forecast only | 27-week forward, 6 models, total + market grain, p10/p50/p90 |
+# MAGIC
+# MAGIC The `cbe` table is the closest analog to Pattern 2 at weekly grain with QTD tracking;
+# MAGIC `boq` is the closest to Pattern 1 with a full rolling 1-year window.
+# MAGIC
+# MAGIC **Schedule:** daily \~07:00 America/New_York (see `forecast_unify_publish.job.yml`).
 
 # COMMAND ----------
 
@@ -883,13 +982,40 @@ display(log_df)
 
 # COMMAND ----------
 
-for kind, obj in [("TABLE", RESULTS_TABLE), ("VIEW", RESULTS_VIEW),
-                  ("TABLE", INSIGHTS_TABLE), ("TABLE", PUBLISH_LOG),
-                  ("VIEW", RESULTS_V2_VIEW), ("VIEW", LEADERBOARD_VIEW),
-                  ("VIEW", INSIGHTS_V2_VIEW), ("TABLE", GRAPH_EXPLAIN_TABLE)]:
+# All tables/views the app needs access to:
+# 1. Outputs written by this notebook
+# 2. Upstream planning tables (BOQ, CBE, V5, V4, vintages, monitoring baselines)
+SCHEMA_PREFIX = f"{CATALOG}.{SCHEMA}"
+
+GRANT_TARGETS = [
+    # --- Outputs of this notebook ---
+    ("TABLE", RESULTS_TABLE),
+    ("VIEW",  RESULTS_VIEW),
+    ("TABLE", INSIGHTS_TABLE),
+    ("TABLE", PUBLISH_LOG),
+    ("VIEW",  RESULTS_V2_VIEW),
+    ("VIEW",  LEADERBOARD_VIEW),
+    ("VIEW",  INSIGHTS_V2_VIEW),
+    ("TABLE", GRAPH_EXPLAIN_TABLE),
+    # --- UCC upstream planning tables ---
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_v5"),
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_v4"),
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_boq"),
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_cbe"),
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_vintages"),
+    ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_monitoring_baseline"),
+    # --- ITSG upstream planning tables ---
+    ("TABLE", f"{SCHEMA_PREFIX}.itsg_forecast_v5"),
+    ("TABLE", f"{SCHEMA_PREFIX}.itsg_forecast_v4"),
+    ("TABLE", f"{SCHEMA_PREFIX}.itsg_forecast_boq"),
+    ("TABLE", f"{SCHEMA_PREFIX}.itsg_forecast_cbe"),
+    ("TABLE", f"{SCHEMA_PREFIX}.itsg_forecast_monitoring_baseline"),
+]
+
+for kind, obj in GRANT_TARGETS:
     spark.sql(f"GRANT SELECT ON {kind} {obj} TO `{APP_SERVICE_PRINCIPAL}`")
     print(f"  GRANT SELECT on {kind} {obj}")
-print("App service principal can now read the published tables.")
+print(f"\nGranted SELECT on {len(GRANT_TARGETS)} objects to app service principal.")
 
 # COMMAND ----------
 
