@@ -378,11 +378,12 @@ def build_historical_actuals_from_v2(cbe_earliest_ds):
             .when(F.upper(F.trim(F.col("sales_market"))) == "UNKNOWN", F.lit("Unknown"))
             .otherwise(F.trim(F.col("sales_market"))))
 
-    # Only UCC rows (ITSG values are inflated in this table — not Growth ARR)
-    # Also include Total rows for the combined view
+    # Only UCC rows (ITSG values are inflated in this table — not Growth ARR).
+    # DO NOT include 'Total' — it includes ALL product revenue (not Growth-only).
+    # The Total rollup in Cell 6 will compute correct Total = UCC + ITSG.
     out = (v2
         .where(f"forecast_type = 'actuals' AND ds < '{cbe_earliest_ds}'")
-        .where("product IN ('UCC', 'Total')")
+        .where("product = 'UCC'")
         .select(
             F.current_date().alias("run_date"),
             F.to_date("ds").alias("ds"),
