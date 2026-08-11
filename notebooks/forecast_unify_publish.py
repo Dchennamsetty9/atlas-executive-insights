@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Forecast Unify & Publish
 # MAGIC
@@ -304,7 +308,12 @@ forecasts = forecasts_with_views
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cell 5 — Pull actuals from `arr_forecast_v2`
+# MAGIC ## Cell 5 — Pull actuals (CBE current + arr_forecast_v2 historical)
+# MAGIC
+# MAGIC Current actuals (2026+) from CBE tables (TRUE Growth ARR from SFDC).
+# MAGIC Historical actuals (2022-2025) from `arr_forecast_v2` for UCC + Total only
+# MAGIC (ITSG values there are inflated — not Growth ARR). This gives the Multi-Year
+# MAGIC seasonality overlay full year-over-year coverage.
 
 # COMMAND ----------
 
@@ -349,7 +358,66 @@ def build_actuals_from_cbe(cbe_table, product):
 ucc_actuals  = build_actuals_from_cbe(UCC_CBE_SRC, "UCC")
 itsg_actuals = build_actuals_from_cbe(ITSG_CBE_SRC, "ITSG")
 
-actual_parts = [a for a in (ucc_actuals, itsg_actuals) if a is not None]
+# ── Historical actuals from arr_forecast_v2 (pre-CBE window) ─────────────────
+# The CBE tables start ~2025-12-29. For the Multi-Year seasonality overlay,
+# the app needs 2022-2025 actuals. UCC actuals in arr_forecast_v2 are correct
+# (Growth ARR). ITSG actuals there are inflated (all revenue, not Growth) so
+# we only pull UCC + Total from arr_forecast_v2 for the historical window.
+
+def build_historical_actuals_from_v2(cbe_earliest_ds):
+    """Pull UCC + Total historical actuals from arr_forecast_v2 for dates
+    BEFORE the CBE window starts. These give the Multi-Year tab full YoY data."""
+    ARR_V2 = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"
+    try:
+        v2 = spark.table(ARR_V2)
+    except Exception as exc:
+        print(f"  WARN arr_forecast_v2 unavailable: {exc}")
+        return None
+
+    mkt = (F.when(F.upper(F.trim(F.col("sales_market"))).isin("ALL", "TOTAL"), F.lit("Total"))
+            .when(F.upper(F.trim(F.col("sales_market"))) == "UNKNOWN", F.lit("Unknown"))
+            .otherwise(F.trim(F.col("sales_market"))))
+
+    # Only UCC rows (ITSG values are inflated in this table — not Growth ARR)
+    # Also include Total rows for the combined view
+    out = (v2
+        .where(f"forecast_type = 'actuals' AND ds < '{cbe_earliest_ds}'")
+        .where("product IN ('UCC', 'Total')")
+        .select(
+            F.current_date().alias("run_date"),
+            F.to_date("ds").alias("ds"),
+            F.col("product"),
+            mkt.alias("sales_market"),
+            F.lit("total").alias("grain_level"),
+            F.lit("ACTUAL").alias("model"),
+            F.lit("actuals").alias("forecast_type"),
+            F.lit("adaptive").alias("forecast_view"),
+            F.col("Actuals").cast("double").alias("actual"),
+            F.lit(None).cast("double").alias("p10"),
+            F.lit(None).cast("double").alias("p50"),
+            F.lit(None).cast("double").alias("p90"),
+            F.col("Actuals").cast("double").alias("most_likely"),
+            F.lit(0).cast("bigint").alias("recommended_for_exec"),
+            F.lit(None).cast("timestamp").alias("source_run_ts"),
+            F.current_timestamp().alias("published_at_utc"),
+        ).select(*BASE)
+        .where("actual IS NOT NULL")  # skip nulls
+    )
+    n = out.count()
+    print(f"  Historical actuals from arr_forecast_v2 (pre-CBE): {n} rows")
+    return out
+
+# Determine the earliest date in CBE actuals to avoid overlap
+cbe_min_ds = "2025-12-29"  # CBE window start (aligned Monday before Jan 1 2026)
+if ucc_actuals is not None:
+    _cbe_min = ucc_actuals.agg(F.min("ds")).collect()[0][0]
+    if _cbe_min:
+        cbe_min_ds = str(_cbe_min)
+
+hist_actuals = build_historical_actuals_from_v2(cbe_min_ds)
+
+# ── Combine all actuals ──────────────────────────────────────────────────────
+actual_parts = [a for a in (ucc_actuals, itsg_actuals, hist_actuals) if a is not None]
 if actual_parts:
     actuals = actual_parts[0]
     for a in actual_parts[1:]:
