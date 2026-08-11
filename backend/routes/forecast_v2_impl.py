@@ -60,6 +60,12 @@ ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
 UCC_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_accuracy_history`"
 # Precomputed per-graph "explain this chart" text (forecast_unify_publish notebook).
 GRAPH_EXPLAIN_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_graph_explanations`"
+# Scenario analysis tables (forecast_unify_publish Cell 13).
+SCENARIO_GRID_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_scenario_grid`"
+SENSITIVITY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_sensitivity`"
+MODEL_SCENARIOS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_model_scenarios`"
+HIST_SCENARIOS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_historical_scenarios`"
+
 _GRAPH_KEYS = {"weekly", "ytd", "seasonality", "by_product", "monthly",
                "accuracy", "model_lab", "backtest",
                "quarterly_outlook", "multi_model"}
@@ -3192,4 +3198,295 @@ async def create_governance_log(
     """Append governance decision entry."""
     payload = user_prefs_service.append_governance_log(user_id, body.model_dump())
     return {"success": True, "data": payload}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO ANALYSIS ENDPOINTS (powers Exec Mode scenario UI)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/scenario-grid")
+async def get_scenario_grid(
+    product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    quarter:      Optional[str] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
+):
+    """
+    Named scenario outcomes (Conservative / Baseline / Stretch) from real model
+    quantiles, broken down by product x market x fiscal quarter.
+
+    The UI shows 1-click scenario buttons and the sliders interpolate between
+    these real model-derived outcomes.
+    """
+    if not live_mode:
+        return _demo("scenarios", error="Databricks unavailable")
+
+    effective_product = _selected_product(product, product_line)
+    effective_market = _normalize_market_value(sales_market)
+
+    where_parts = ["run_date = (SELECT MAX(run_date) FROM " + SCENARIO_GRID_TABLE + ")"]
+    if effective_product != "Total" or product_line:
+        where_parts.append(f"product = '{effective_product}'")
+    if effective_market != "Total":
+        where_parts.append(f"sales_market = '{effective_market}'")
+    if quarter:
+        where_parts.append(f"fiscal_quarter = '{quarter}'")
+
+    where_clause = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT
+            product,
+            sales_market,
+            fiscal_quarter,
+            ROUND(conservative, 2) AS conservative,
+            ROUND(baseline, 2) AS baseline,
+            ROUND(stretch, 2) AS stretch,
+            ROUND(most_likely, 2) AS most_likely,
+            CAST(weeks_in_quarter AS INT) AS weeks_in_quarter,
+            ROUND(actual_to_date, 2) AS actual_to_date,
+            CAST(actual_weeks AS INT) AS actual_weeks,
+            CAST(fiscal_year AS INT) AS fiscal_year,
+            source_model
+        FROM {SCENARIO_GRID_TABLE}
+        WHERE {where_clause}
+        ORDER BY product, fiscal_quarter, sales_market
+    """
+
+    try:
+        rows = await _cached_query(sql, endpoint="/scenario-grid",
+                                   product=effective_product,
+                                   geo=effective_market, quarter=quarter)
+    except Exception as exc:
+        logger.warning("[forecast/scenario-grid] query failed: %s", exc)
+        return _demo("scenarios", error=str(exc))
+
+    scenarios = [{
+        "product": r.get("product"),
+        "sales_market": r.get("sales_market"),
+        "fiscal_quarter": r.get("fiscal_quarter"),
+        "conservative": _f(r.get("conservative")),
+        "baseline": _f(r.get("baseline")),
+        "stretch": _f(r.get("stretch")),
+        "most_likely": _f(r.get("most_likely")),
+        "weeks_in_quarter": int(_f(r.get("weeks_in_quarter"))),
+        "actual_to_date": _f(r.get("actual_to_date"), default=None),
+        "actual_weeks": int(_f(r.get("actual_weeks"))) if r.get("actual_weeks") else None,
+        "fiscal_year": int(_f(r.get("fiscal_year"))),
+        "source_model": r.get("source_model"),
+    } for r in rows]
+
+    return {"source": "live", "scenarios": scenarios}
+
+
+@router.get("/sensitivity")
+async def get_sensitivity_coefficients(
+    product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
+):
+    """
+    Per-driver elasticity coefficients computed from historical pipeline data.
+
+    Powers the Pipeline Sensitivity Simulator with real data-driven relationships:
+    - win_rate: % ARR change per 1 percentage-point change in win rate
+    - deal_size: % ARR change per 1% change in avg deal size
+    - coverage: % ARR change per 0.1x change in pipeline coverage
+    - pipeline_volume: % ARR change per 1% change in opened deal count
+
+    The UI sliders multiply these coefficients by the user's adjustment to compute
+    a realistic scenario delta, grounded in historical correlation.
+    """
+    if not live_mode:
+        return _demo("coefficients", error="Databricks unavailable")
+
+    effective_product = _selected_product(product, product_line)
+    effective_market = _normalize_market_value(sales_market)
+
+    where_parts = ["run_date = (SELECT MAX(run_date) FROM " + SENSITIVITY_TABLE + ")"]
+    if effective_product != "Total":
+        where_parts.append(f"product = '{effective_product}'")
+    if effective_market != "Total":
+        where_parts.append(f"sales_market = '{effective_market}'")
+
+    where_clause = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT
+            product,
+            sales_market,
+            driver,
+            driver_unit,
+            ROUND(baseline_value, 2) AS baseline_value,
+            ROUND(elasticity_pct, 4) AS elasticity_pct,
+            ROUND(correlation, 3) AS correlation,
+            CAST(n_observations AS INT) AS n_observations,
+            description
+        FROM {SENSITIVITY_TABLE}
+        WHERE {where_clause}
+        ORDER BY product, sales_market, driver
+    """
+
+    try:
+        rows = await _cached_query(sql, endpoint="/sensitivity",
+                                   product=effective_product,
+                                   geo=effective_market)
+    except Exception as exc:
+        logger.warning("[forecast/sensitivity] query failed: %s", exc)
+        return _demo("coefficients", error=str(exc))
+
+    coefficients = [{
+        "product": r.get("product"),
+        "sales_market": r.get("sales_market"),
+        "driver": r.get("driver"),
+        "driver_unit": r.get("driver_unit"),
+        "baseline_value": _f(r.get("baseline_value")),
+        "elasticity_pct": _f(r.get("elasticity_pct")),
+        "correlation": _f(r.get("correlation")),
+        "n_observations": int(_f(r.get("n_observations"))),
+        "description": r.get("description"),
+    } for r in rows]
+
+    return {"source": "live", "coefficients": coefficients}
+
+
+@router.get("/model-scenarios")
+async def get_model_scenarios(
+    product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
+):
+    """
+    Model-as-scenario mapping: each forecasting model classified as a scenario
+    archetype (conservative / baseline / stretch) based on its bias vs ensemble.
+
+    Powers the "Use model X as a scenario" dropdown and comparison charts.
+    Returns % deviation from ensemble and accuracy metrics for context.
+    """
+    if not live_mode:
+        return _demo("models", error="Databricks unavailable")
+
+    effective_product = _selected_product(product, product_line)
+
+    where_parts = ["run_date = (SELECT MAX(run_date) FROM " + MODEL_SCENARIOS_TABLE + ")"]
+    if effective_product != "Total":
+        where_parts.append(f"product = '{effective_product}'")
+
+    where_clause = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT
+            product,
+            model,
+            scenario_archetype,
+            ROUND(pct_vs_ensemble, 2) AS pct_vs_ensemble,
+            ROUND(fy_forecast_p50, 2) AS fy_forecast_p50,
+            ROUND(wape, 2) AS wape,
+            ROUND(cv_wape, 2) AS cv_wape,
+            description
+        FROM {MODEL_SCENARIOS_TABLE}
+        WHERE {where_clause}
+        ORDER BY product, pct_vs_ensemble
+    """
+
+    try:
+        rows = await _cached_query(sql, endpoint="/model-scenarios",
+                                   product=effective_product)
+    except Exception as exc:
+        logger.warning("[forecast/model-scenarios] query failed: %s", exc)
+        return _demo("models", error=str(exc))
+
+    models = [{
+        "product": r.get("product"),
+        "model": r.get("model"),
+        "scenario_archetype": r.get("scenario_archetype"),
+        "pct_vs_ensemble": _f(r.get("pct_vs_ensemble")),
+        "fy_forecast_p50": _f(r.get("fy_forecast_p50")),
+        "wape": _f(r.get("wape"), default=None),
+        "cv_wape": _f(r.get("cv_wape"), default=None),
+        "description": r.get("description"),
+    } for r in rows]
+
+    return {"source": "live", "models": models}
+
+
+@router.get("/historical-scenarios")
+async def get_historical_scenarios(
+    product:      Optional[str] = Query(None),
+    product_line: Optional[str] = Query(None),
+    sales_market: Optional[str] = Query(None),
+    fiscal_year:  Optional[int] = Query(None),
+    live_mode:    bool          = Depends(_live_mode_dependency),
+):
+    """
+    Historical quarterly pipeline conditions alongside actual ARR outcomes.
+
+    Powers the "When conditions were X, ARR was Y" what-if anchoring panel.
+    Shows win_rate, deal_size, coverage, pipeline_volume for each quarter
+    so leadership can compare current conditions to historical analogs.
+    """
+    if not live_mode:
+        return _demo("history", error="Databricks unavailable")
+
+    effective_product = _selected_product(product, product_line)
+    effective_market = _normalize_market_value(sales_market)
+
+    where_parts = ["run_date = (SELECT MAX(run_date) FROM " + HIST_SCENARIOS_TABLE + ")"]
+    if effective_product != "Total":
+        where_parts.append(f"product = '{effective_product}'")
+    if effective_market != "Total":
+        where_parts.append(f"sales_market = '{effective_market}'")
+    if fiscal_year:
+        where_parts.append(f"fiscal_year = {int(fiscal_year)}")
+
+    where_clause = " AND ".join(where_parts)
+
+    sql = f"""
+        SELECT
+            product,
+            period,
+            CAST(fiscal_year AS INT) AS fiscal_year,
+            fiscal_quarter,
+            sales_market,
+            ROUND(CAST(actual_arr AS DOUBLE), 2) AS actual_arr,
+            ROUND(CAST(pipeline_created AS DOUBLE), 2) AS pipeline_created,
+            CAST(deals_won AS INT) AS deals_won,
+            CAST(deals_opened AS INT) AS deals_opened,
+            ROUND(CAST(avg_deal_size AS DOUBLE), 2) AS avg_deal_size,
+            ROUND(win_rate_pct, 2) AS win_rate_pct,
+            ROUND(CAST(coverage_x AS DOUBLE), 2) AS coverage_x,
+            ROUND(qoq_growth_pct, 1) AS qoq_growth_pct
+        FROM {HIST_SCENARIOS_TABLE}
+        WHERE {where_clause}
+        ORDER BY fiscal_year, fiscal_quarter, sales_market
+    """
+
+    try:
+        rows = await _cached_query(sql, endpoint="/historical-scenarios",
+                                   product=effective_product,
+                                   geo=effective_market, year=fiscal_year)
+    except Exception as exc:
+        logger.warning("[forecast/historical-scenarios] query failed: %s", exc)
+        return _demo("history", error=str(exc))
+
+    history = [{
+        "product": r.get("product"),
+        "period": r.get("period"),
+        "fiscal_year": int(_f(r.get("fiscal_year"))),
+        "fiscal_quarter": r.get("fiscal_quarter"),
+        "sales_market": r.get("sales_market"),
+        "actual_arr": _f(r.get("actual_arr")),
+        "pipeline_created": _f(r.get("pipeline_created")),
+        "deals_won": int(_f(r.get("deals_won"))),
+        "deals_opened": int(_f(r.get("deals_opened"))),
+        "avg_deal_size": _f(r.get("avg_deal_size")),
+        "win_rate_pct": _f(r.get("win_rate_pct")),
+        "coverage_x": _f(r.get("coverage_x")),
+        "qoq_growth_pct": _f(r.get("qoq_growth_pct"), default=None),
+    } for r in rows]
+
+    return {"source": "live", "history": history}
 
