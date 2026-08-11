@@ -137,7 +137,10 @@ SCHEMA  = "mdl_sales_analytics"
 
 UCC_SRC       = f"{CATALOG}.{SCHEMA}.ucc_forecast_v5"
 ITSG_SRC      = f"{CATALOG}.{SCHEMA}.itsg_forecast_v5"
-ACTUALS_SRC   = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"          # source of Actuals
+# Actuals from CBE tables (TRUE weekly SFDC Growth ARR — replaces arr_forecast_v2
+# which had inflated ITSG numbers from non-Growth revenue streams)
+UCC_CBE_SRC   = f"{CATALOG}.{SCHEMA}.ucc_forecast_cbe"
+ITSG_CBE_SRC  = f"{CATALOG}.{SCHEMA}.itsg_forecast_cbe"
 UCC_BASELINE  = f"{CATALOG}.{SCHEMA}.ucc_forecast_monitoring_baseline"
 ITSG_BASELINE = f"{CATALOG}.{SCHEMA}.itsg_forecast_monitoring_baseline"
 
@@ -305,39 +308,55 @@ forecasts = forecasts_with_views
 
 # COMMAND ----------
 
-def build_actuals():
+def build_actuals_from_cbe(cbe_table, product):
+    """Pull actual rows from a CBE table (source='actual').
+    CBE tables have one row per (model, ds, grain_level, sales_market) for closed weeks.
+    We pick model='Adaptive_Ensemble' to deduplicate (all models carry the same actual value)."""
     try:
-        av2 = spark.table(ACTUALS_SRC)
+        cbe = spark.table(cbe_table)
     except Exception as exc:
-        print(f"  WARN actuals source unavailable: {exc}")
+        print(f"  WARN {cbe_table} unavailable: {exc}")
         return None
-    grain = (F.when(F.upper(F.trim(F.col("sales_market"))).isin("ALL", "TOTAL"), F.lit("total"))
-              .otherwise(F.lit("market")))
+
     mkt = (F.when(F.upper(F.trim(F.col("sales_market"))).isin("ALL", "TOTAL"), F.lit("Total"))
             .when(F.upper(F.trim(F.col("sales_market"))) == "UNKNOWN", F.lit("Unknown"))
             .otherwise(F.trim(F.col("sales_market"))))
-    return (av2
-        .where("forecast_type = 'actuals' AND Actuals IS NOT NULL AND product IN ('UCC','ITSG')")
+
+    out = (cbe
+        .where("source = 'actual' AND model = 'Adaptive_Ensemble'")
         .select(
             F.current_date().alias("run_date"),
             F.to_date("ds").alias("ds"),
-            F.col("product"),
+            F.lit(product).alias("product"),
             mkt.alias("sales_market"),
-            grain.alias("grain_level"),
+            F.col("grain_level"),
             F.lit("ACTUAL").alias("model"),
             F.lit("actuals").alias("forecast_type"),
             F.lit("adaptive").alias("forecast_view"),
-            F.col("Actuals").cast("double").alias("actual"),
+            F.col("forecast").cast("double").alias("actual"),
             F.lit(None).cast("double").alias("p10"),
             F.lit(None).cast("double").alias("p50"),
             F.lit(None).cast("double").alias("p90"),
-            F.col("Actuals").cast("double").alias("most_likely"),
+            F.col("forecast").cast("double").alias("most_likely"),
             F.lit(0).cast("bigint").alias("recommended_for_exec"),
             F.lit(None).cast("timestamp").alias("source_run_ts"),
             F.current_timestamp().alias("published_at_utc"),
         ).select(*BASE))
+    n = out.count()
+    print(f"  {product} actuals from {cbe_table}: {n} rows")
+    return out
 
-actuals = build_actuals()
+ucc_actuals  = build_actuals_from_cbe(UCC_CBE_SRC, "UCC")
+itsg_actuals = build_actuals_from_cbe(ITSG_CBE_SRC, "ITSG")
+
+actual_parts = [a for a in (ucc_actuals, itsg_actuals) if a is not None]
+if actual_parts:
+    actuals = actual_parts[0]
+    for a in actual_parts[1:]:
+        actuals = actuals.unionByName(a)
+else:
+    actuals = None
+
 combined = forecasts if actuals is None else forecasts.unionByName(actuals)
 print(f"Rows incl. actuals: {combined.count()}")
 
