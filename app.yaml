@@ -63,6 +63,8 @@ env:
   - name: ENVIRONMENT
     value: "production"
 
+  # v2.1 — P0-P2 improvements deployed 2026-08-11
+
   - name: DEBUG
     value: "False"
 
