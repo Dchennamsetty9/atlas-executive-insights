@@ -73,6 +73,13 @@ const ForecastingPanelContainer = () => {
   const [simDealSize, setSimDealSize] = useState(1.0);
   const [simCoverage, setSimCoverage] = useState(3.2);
 
+  // ── Scenario Analysis State (cross-tab) ─────────────────────────────────────
+  const [selectedScenario, setSelectedScenario] = useState(null); // null | 'conservative' | 'baseline' | 'stretch'
+  const [scenarioGrid, setScenarioGrid] = useState(null);         // from /scenario-grid
+  const [sensitivityData, setSensitivityData] = useState(null);   // from /sensitivity
+  const [modelScenarios, setModelScenarios] = useState(null);     // from /model-scenarios
+  const [historicalScenarios, setHistoricalScenarios] = useState(null); // from /historical-scenarios
+
   const activePl = prodLine !== 'All' ? prodLine : null;
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
@@ -129,7 +136,7 @@ const ForecastingPanelContainer = () => {
         if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
         if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
       } else if (targetTab === 'Exec Mode') {
-        const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
+        const [conf, bridge, radar, meeting, act, gov, rd, sg, sens, ms, hs] = await Promise.allSettled([
           apiService.getForecastV2Confidence(model, selectedYear, selectedQuarter),
           apiService.getForecastV2DriverBridge(selectedYear, selectedQuarter, model),
           apiService.getForecastV2RiskRadar(fcType, selectedYear, selectedQuarter, 20, model),
@@ -137,6 +144,10 @@ const ForecastingPanelContainer = () => {
           apiService.getActions('pending'),
           apiService.getForecastV2GovernanceLog(),
           apiService.getForecastV2RunDelta(activePl, activeGeo),
+          apiService.getForecastV2ScenarioGrid(activePl, activeGeo, selectedQuarter ? `Q${selectedQuarter}` : null),
+          apiService.getForecastV2Sensitivity(activePl, activeGeo),
+          apiService.getForecastV2ModelScenarios(activePl),
+          apiService.getForecastV2HistoricalScenarios(activePl, activeGeo),
         ]);
         if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
         if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
@@ -145,6 +156,10 @@ const ForecastingPanelContainer = () => {
         if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
         if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
         if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+        if (sg.status === 'fulfilled') setScenarioGrid(sg.value?.scenarios ?? null);
+        if (sens.status === 'fulfilled') setSensitivityData(sens.value?.coefficients ?? null);
+        if (ms.status === 'fulfilled') setModelScenarios(ms.value?.models ?? null);
+        if (hs.status === 'fulfilled') setHistoricalScenarios(hs.value?.history ?? null);
       }
 
       loadedTabsRef.current.add(targetTab);
@@ -263,10 +278,44 @@ const ForecastingPanelContainer = () => {
   const simulatedScenario = useMemo(() => {
     const baseLikely = (weeklyView || []).filter((r) => r.arr_likely != null).reduce((s, r) => s + Number(r.arr_likely || 0), 0);
     if (!baseLikely) return { base: 0, worst: 0, best: 0 };
+    
+    // Use real sensitivity coefficients when available; fall back to heuristic
+    if (sensitivityData && sensitivityData.length > 0) {
+      const getElasticity = (driver) => {
+        const coeff = sensitivityData.find((c) => c.driver === driver);
+        return coeff ? coeff.elasticity_pct : 0;
+      };
+      const getBaseline = (driver) => {
+        const coeff = sensitivityData.find((c) => c.driver === driver);
+        return coeff ? coeff.baseline_value : null;
+      };
+      // Compute % delta from baseline for each driver
+      const wrBaseline = getBaseline('win_rate') || 31.8;
+      const wrDelta = (simWinRate - wrBaseline); // in pp
+      const dsMultDelta = (simDealSize - 1.0) * 100; // in %
+      const covBaseline = getBaseline('coverage') || 3.2;
+      const covDelta = (simCoverage - covBaseline) * 10; // in 0.1x units
+      // Volume proxy: use cycle time as inverse volume proxy (shorter cycle = more throughput)
+      const volDelta = ((45 - simCycle) / 45) * 100; // rough % change in volume
+
+      const totalPctChange = (wrDelta * getElasticity('win_rate')) +
+                             (dsMultDelta * getElasticity('deal_size')) +
+                             (covDelta * getElasticity('coverage')) +
+                             (volDelta * getElasticity('pipeline_volume') * 0.01);
+
+      const base = baseLikely * (1 + totalPctChange / 100);
+      // Use scenario grid for worst/best if available
+      const gridTotal = (scenarioGrid || []).find((s) => s.product === 'Total' && s.sales_market === 'Total');
+      const worst = gridTotal ? gridTotal.conservative : base * 0.88;
+      const best = gridTotal ? gridTotal.stretch : base * 1.12;
+      return { base, worst, best, source: 'sensitivity' };
+    }
+
+    // Fallback: simple arithmetic
     const multiplier = (simWinRate / 31.8) * (45 / Math.max(20, simCycle)) * simDealSize * (simCoverage / 3.2);
     const base = baseLikely * multiplier;
-    return { base, worst: base * 0.92, best: base * 1.08 };
-  }, [weeklyView, simWinRate, simCycle, simDealSize, simCoverage]);
+    return { base, worst: base * 0.92, best: base * 1.08, source: 'heuristic' };
+  }, [weeklyView, simWinRate, simCycle, simDealSize, simCoverage, sensitivityData, scenarioGrid]);
 
   const refreshActionData = useCallback(async () => {
     try {
@@ -300,14 +349,14 @@ const ForecastingPanelContainer = () => {
 
   const renderTab = () => {
     switch (tab) {
-      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} runDate={freshnessStamp} />;
-      case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} runDate={freshnessStamp} />;
-      case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} runDate={freshnessStamp} />;
-      case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} runDate={freshnessStamp} />;
+      case 'Overview': return <OverviewTab loading={loading} weeklyView={weeklyView} ytdView={ytdView} weeklyKpis={weeklyKpis} selectedYear={selectedYear} selectedQuarter={selectedQuarter} runDelta={runDelta} trust={trust} isDemo={isDemo} graphInsights={graphInsights} runDate={freshnessStamp} selectedScenario={selectedScenario} scenarioGrid={scenarioGrid} />;
+      case 'Multi-Year': return <MultiYearTab loading={loading} historicalView={historicalView} graphInsights={graphInsights} multiYearView={multiYearView} setMultiYearView={setMultiYearView} pill={pill} runDate={freshnessStamp} selectedScenario={selectedScenario} scenarioGrid={scenarioGrid} />;
+      case 'By Product': return <ByProductTab loading={loading} byProductView={byProductView} graphInsights={graphInsights} runDate={freshnessStamp} selectedScenario={selectedScenario} scenarioGrid={scenarioGrid} />;
+      case 'Monthly': return <MonthlyTab loading={loading} monthlyView={monthlyView} graphInsights={graphInsights} runDate={freshnessStamp} selectedScenario={selectedScenario} scenarioGrid={scenarioGrid} />;
       case 'Accuracy': return <AccuracyTab loading={loading} leaderboardView={leaderboardView} graphInsights={graphInsights} model={model} prodLine={prodLine} salesMarket={salesMarket} runDate={freshnessStamp} />;
       case 'Model Lab': return <ModelLabTab prodLine={prodLine} salesMarket={salesMarket} />;
       case 'AI Insights': return <AiInsightsTab />;
-      case 'Exec Mode': return <ExecModeTab confidenceBands={confidenceBands} weeklyKpis={weeklyKpis} confidence={confidence} meetingMode={meetingMode} driverBridge={driverBridge} simWinRate={simWinRate} setSimWinRate={setSimWinRate} simCycle={simCycle} setSimCycle={setSimCycle} simDealSize={simDealSize} setSimDealSize={setSimDealSize} simCoverage={simCoverage} setSimCoverage={setSimCoverage} simulatedScenario={simulatedScenario} riskRadar={riskRadar} actionDraft={actionDraft} setActionDraft={setActionDraft} submitAction={submitAction} actions={actions} markActionDone={markActionDone} decisionDraft={decisionDraft} setDecisionDraft={setDecisionDraft} submitDecisionLog={submitDecisionLog} governanceLog={governanceLog} runDate={freshnessStamp} />;
+      case 'Exec Mode': return <ExecModeTab confidenceBands={confidenceBands} weeklyKpis={weeklyKpis} confidence={confidence} meetingMode={meetingMode} driverBridge={driverBridge} simWinRate={simWinRate} setSimWinRate={setSimWinRate} simCycle={simCycle} setSimCycle={setSimCycle} simDealSize={simDealSize} setSimDealSize={setSimDealSize} simCoverage={simCoverage} setSimCoverage={setSimCoverage} simulatedScenario={simulatedScenario} riskRadar={riskRadar} actionDraft={actionDraft} setActionDraft={setActionDraft} submitAction={submitAction} actions={actions} markActionDone={markActionDone} decisionDraft={decisionDraft} setDecisionDraft={setDecisionDraft} submitDecisionLog={submitDecisionLog} governanceLog={governanceLog} runDate={freshnessStamp} selectedScenario={selectedScenario} setSelectedScenario={setSelectedScenario} scenarioGrid={scenarioGrid} sensitivityData={sensitivityData} modelScenarios={modelScenarios} historicalScenarios={historicalScenarios} />;
       default: return null;
     }
   };
@@ -347,6 +396,8 @@ const ForecastingPanelContainer = () => {
 
       <div style={{ padding: '10px 14px', marginBottom: 10, borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>PRODUCT</div><div style={{ display: 'flex', gap: 4 }}>{PROD_LINES.map((pl) => <button key={pl} onClick={() => setProdLine(pl)} style={pill(prodLine === pl, pl === 'UCC' ? '#3b82f6' : pl === 'ITSG' ? '#10b981' : null)}>{pl}</button>)}</div></div>
+        <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+        <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>SCENARIO</div><div style={{ display: 'flex', gap: 4 }}>{[{key: null, label: 'Actual'}, {key: 'conservative', label: 'Conservative'}, {key: 'baseline', label: 'Baseline'}, {key: 'stretch', label: 'Stretch'}].map((s) => <button key={s.key || 'none'} onClick={() => setSelectedScenario(s.key)} style={pill(selectedScenario === s.key, s.key === 'conservative' ? '#ef4444' : s.key === 'stretch' ? '#10b981' : s.key === 'baseline' ? '#3b82f6' : null)}>{s.label}</button>)}</div></div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>REGION</div><select value={salesMarket} onChange={(e) => setSalesMarket(e.target.value)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="All">All Regions</option><option value="NA">NA</option><option value="EMEA">EMEA</option><option value="APAC">APAC</option><option value="LATAM">LATAM</option></select></div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />

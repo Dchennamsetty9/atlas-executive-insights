@@ -265,6 +265,33 @@ export const apiService = {
     return api.get('/api/forecast/v2/intelligence', { params });
   },
 
+  // ── Scenario Analysis Endpoints ───────────────────────────────────────────
+  getForecastV2ScenarioGrid: (productLine = null, salesMarket = null, quarter = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (quarter) params.quarter = quarter;
+    return api.get('/api/forecast/v2/scenario-grid', { params });
+  },
+  getForecastV2Sensitivity: (productLine = null, salesMarket = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/sensitivity', { params });
+  },
+  getForecastV2ModelScenarios: (productLine = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    return api.get('/api/forecast/v2/model-scenarios', { params });
+  },
+  getForecastV2HistoricalScenarios: (productLine = null, salesMarket = null, fiscalYear = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    if (fiscalYear) params.fiscal_year = fiscalYear;
+    return api.get('/api/forecast/v2/historical-scenarios', { params });
+  },
+
   // AI chart annotation — LLM one-line finding for a chart (Databricks Claude via ai_service)
   getAIChartAnnotation: (chartType, dataPoints, metricName) =>
     api.post('/api/ai/chart-annotation', { chart_type: chartType, data_points: dataPoints, metric_name: metricName }),
