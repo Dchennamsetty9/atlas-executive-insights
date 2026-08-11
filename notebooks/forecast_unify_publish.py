@@ -1131,3 +1131,370 @@ print(f"  models        : {models}")
 print(f"  WAPE attached : {r.where(F.col('model_wape').isNotNull()).count()} rows")
 print(f"  insight scopes: {[row['product'] for row in spark.table(INSIGHTS_TABLE).where(F.col('run_date')==F.current_date()).select('product').collect()]}")
 print('\nPublish complete — app reads forecast_results / forecast_insights.')
+
+# COMMAND ----------
+
+# DBTITLE 1,Scenario Analysis Engine
+# MAGIC %md
+# MAGIC ## Cell 13 — Scenario Analysis Engine
+# MAGIC
+# MAGIC Creates four tables that power the improved Exec Mode scenario-analysis UI:
+# MAGIC
+# MAGIC | Table | Purpose |
+# MAGIC |-------|--------|
+# MAGIC | `forecast_scenario_grid` | Named scenarios (Conservative/Baseline/Stretch) using real model quantiles, quarterly |
+# MAGIC | `forecast_sensitivity` | Per-driver elasticity coefficients computed from historical pipeline data |
+# MAGIC | `forecast_model_scenarios` | Maps each model to a scenario archetype with directional metadata |
+# MAGIC | `forecast_historical_scenarios` | Quarterly pipeline metrics + actual outcomes for "what-if" validation |
+# MAGIC
+# MAGIC The UI reads these to:
+# MAGIC 1. **One-click scenarios** — leadership picks Conservative/Baseline/Stretch and ALL tabs update
+# MAGIC 2. **Real sliders** — sensitivity coefficients ground the simulator in actual data relationships
+# MAGIC 3. **Model-as-scenario** — each model output becomes a named scenario for comparison
+# MAGIC 4. **Historical anchoring** — "When conditions looked like X, ARR was Y"
+
+# COMMAND ----------
+
+# DBTITLE 1,Build scenario analysis tables
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO ANALYSIS ENGINE — 4 tables for exec scenario analysis
+# ══════════════════════════════════════════════════════════════════════════════
+import numpy as np
+from pyspark.sql import Window
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, DateType
+
+SCENARIO_GRID_TABLE = f"{CATALOG}.{SCHEMA}.forecast_scenario_grid"
+SENSITIVITY_TABLE   = f"{CATALOG}.{SCHEMA}.forecast_sensitivity"
+MODEL_SCENARIO_TABLE = f"{CATALOG}.{SCHEMA}.forecast_model_scenarios"
+HIST_SCENARIO_TABLE  = f"{CATALOG}.{SCHEMA}.forecast_historical_scenarios"
+
+# ─── 1. NAMED SCENARIO GRID ─────────────────────────────────────────────────
+# Pre-compute quarterly outcomes at 3 named scenarios from real model quantiles.
+# Conservative = P10, Baseline = P50 (most_likely), Stretch = P90.
+# Broken down by product, quarter, and sales_market.
+
+def build_scenario_grid():
+    """Build quarterly scenario grid from forecast_results (adaptive view)."""
+    r = spark.table(RESULTS_VIEW)
+    
+    # Only forecast rows (not actuals) in the adaptive view, current FY
+    fwd = r.where(
+        "forecast_view = 'adaptive' AND forecast_type IN ('rolling', 'roy') "
+        f"AND ds <= '{FY_END_DATE}' AND model != 'ACTUAL'"
+    )
+    
+    # Assign fiscal quarter (GoTo FY = calendar year)
+    fwd = fwd.withColumn("fiscal_quarter", F.concat(F.lit("Q"), F.quarter("ds").cast("string")))
+    
+    # Aggregate by (product, sales_market, quarter, model)
+    # Then across models: use recommended_for_exec=1 (Adaptive_Ensemble) for named scenarios
+    rec = fwd.where(f"model = '{REC_MODEL}'")
+    
+    grid = rec.groupBy("product", "sales_market", "fiscal_quarter").agg(
+        F.sum("p10").alias("conservative"),
+        F.sum("p50").alias("baseline"),
+        F.sum("p90").alias("stretch"),
+        F.sum("most_likely").alias("most_likely"),
+        F.count("*").alias("weeks_in_quarter"),
+    )
+    
+    # Also compute actuals for closed quarters
+    act = r.where("forecast_type = 'actuals' AND model = 'ACTUAL'")
+    act_q = (act
+        .withColumn("fiscal_quarter", F.concat(F.lit("Q"), F.quarter("ds").cast("string")))
+        .where(f"YEAR(ds) = 2026")
+        .groupBy("product", "sales_market", "fiscal_quarter")
+        .agg(F.sum("actual").alias("actual_to_date"), F.count("*").alias("actual_weeks"))
+    )
+    
+    # Join actuals where available
+    grid = grid.join(act_q, ["product", "sales_market", "fiscal_quarter"], "left")
+    
+    # Add metadata
+    grid = (grid
+        .withColumn("run_date", F.current_date())
+        .withColumn("fiscal_year", F.lit(2026))
+        .withColumn("scenario_source", F.lit("model_quantiles"))
+        .withColumn("source_model", F.lit(REC_MODEL))
+    )
+    
+    return grid
+
+scenario_grid = build_scenario_grid()
+scenario_grid.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SCENARIO_GRID_TABLE)
+print(f"1. Wrote {scenario_grid.count()} rows to {SCENARIO_GRID_TABLE}")
+scenario_grid.show(truncate=False)
+
+# ─── 2. SENSITIVITY COEFFICIENTS ────────────────────────────────────────────
+# Compute elasticity: how much does quarterly ARR change when a driver changes?
+# Based on historical quarterly data from kpi_pacing_sfdc.
+
+def build_sensitivity_coefficients():
+    """Compute per-driver elasticity from historical pipeline → ARR relationships."""
+    qtr_stats = spark.sql("""
+        SELECT 
+            product_group as product,
+            CONCAT('Q', QUARTER(dte)) as fiscal_quarter,
+            YEAR(dte) as fiscal_year,
+            sales_market,
+            SUM(won_amount) as won_arr,
+            SUM(opened_amount) as opened_arr,
+            SUM(won_opps) as won_deals,
+            SUM(opened_opps) as opened_deals,
+            ROUND(SUM(won_amount) / NULLIF(SUM(won_opps), 0), 2) as avg_deal_size,
+            ROUND(SUM(won_opps) * 100.0 / NULLIF(SUM(opened_opps), 0), 2) as win_rate_pct,
+            ROUND(SUM(opened_amount) / NULLIF(SUM(won_amount), 0), 2) as coverage_x
+        FROM datagroup_mdl.mdl_sales_analytics.kpi_pacing_sfdc
+        WHERE product_grain = 'genus'
+          AND product_group IN ('UCC', 'ITSG')
+          AND purchase_type IN ('New', 'Add-On')
+          AND sales_market IN ('NA', 'EMEA', 'APAC', 'LATAM')
+          AND YEAR(dte) BETWEEN 2023 AND 2026
+        GROUP BY product_group, QUARTER(dte), YEAR(dte), sales_market
+        HAVING SUM(won_amount) > 0 AND SUM(opened_opps) > 10
+    """)
+    
+    # Convert to pandas for regression
+    pdf = qtr_stats.toPandas()
+    
+    results = []
+    for product in pdf['product'].unique():
+        for market in pdf['sales_market'].unique():
+            subset = pdf[(pdf['product'] == product) & (pdf['sales_market'] == market)]
+            if len(subset) < 4:
+                continue
+            
+            won_arr = subset['won_arr'].values.astype(float)
+            mean_arr = won_arr.mean()
+            if mean_arr == 0:
+                continue
+            
+            # Win rate elasticity: % change in ARR per 1pp change in win rate
+            wr = subset['win_rate_pct'].values.astype(float)
+            if wr.std() > 0 and len(wr) >= 4:
+                corr = np.corrcoef(wr, won_arr)[0, 1]
+                slope = corr * won_arr.std() / wr.std()  # linear regression slope
+                elasticity_wr = (slope / mean_arr) * 100  # % ARR change per 1pp win rate
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': 'win_rate', 'driver_unit': 'percentage_point',
+                    'baseline_value': round(float(wr.mean()), 1),
+                    'elasticity_pct': round(float(elasticity_wr), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(subset)),
+                    'description': f'1pp higher win rate -> +{elasticity_wr:.1f}% ARR'
+                })
+            
+            # Deal size elasticity: % change in ARR per 1% change in deal size
+            ds_val = subset['avg_deal_size'].values.astype(float)
+            if ds_val.std() > 0 and len(ds_val) >= 4:
+                corr = np.corrcoef(ds_val, won_arr)[0, 1]
+                # Normalize: 1% deal size change
+                slope = corr * won_arr.std() / ds_val.std()
+                elasticity_ds = (slope * (ds_val.mean() * 0.01)) / mean_arr * 100
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': 'deal_size', 'driver_unit': 'percent_change',
+                    'baseline_value': round(float(ds_val.mean()), 0),
+                    'elasticity_pct': round(float(elasticity_ds), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(subset)),
+                    'description': f'1% larger deals -> +{elasticity_ds:.2f}% ARR'
+                })
+            
+            # Coverage elasticity: % change in ARR per 0.1x coverage change
+            cov = subset['coverage_x'].values.astype(float)
+            if cov.std() > 0 and len(cov) >= 4:
+                corr = np.corrcoef(cov, won_arr)[0, 1]
+                slope = corr * won_arr.std() / cov.std()
+                elasticity_cov = (slope * 0.1) / mean_arr * 100  # per 0.1x coverage
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': 'coverage', 'driver_unit': '0.1x_change',
+                    'baseline_value': round(float(cov.mean()), 2),
+                    'elasticity_pct': round(float(elasticity_cov), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(subset)),
+                    'description': f'+0.1x coverage -> {elasticity_cov:+.2f}% ARR'
+                })
+            
+            # Volume (opened deals) elasticity: % ARR per 1% more opened deals
+            od = subset['opened_deals'].values.astype(float)
+            if od.std() > 0 and len(od) >= 4:
+                corr = np.corrcoef(od, won_arr)[0, 1]
+                slope = corr * won_arr.std() / od.std()
+                elasticity_od = (slope * (od.mean() * 0.01)) / mean_arr * 100
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': 'pipeline_volume', 'driver_unit': 'percent_change',
+                    'baseline_value': round(float(od.mean()), 0),
+                    'elasticity_pct': round(float(elasticity_od), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(subset)),
+                    'description': f'1% more opened deals -> +{elasticity_od:.2f}% ARR'
+                })
+    
+    sens_df = spark.createDataFrame(results)
+    sens_df = sens_df.withColumn("run_date", F.current_date())
+    return sens_df
+
+sensitivity = build_sensitivity_coefficients()
+sensitivity.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SENSITIVITY_TABLE)
+print(f"\n2. Wrote {sensitivity.count()} rows to {SENSITIVITY_TABLE}")
+sensitivity.where("sales_market = 'NA'").orderBy("product", "driver").show(truncate=False)
+
+# ─── 3. MODEL-AS-SCENARIO MAPPING ───────────────────────────────────────────
+# Map individual models to named scenario archetypes based on their behavior.
+# Uses backtest/holdout bias direction to classify as conservative/neutral/stretch.
+
+def build_model_scenarios():
+    """Classify each model as a scenario archetype based on its bias profile."""
+    # Get model performance from monitoring baselines
+    # UCC baseline uses holdout_wape_baseline/cv_wape_baseline (no metric_scope)
+    # Deduplicate to one row per model (take latest by run_timestamp_utc)
+    w_ucc = Window.partitionBy("model").orderBy(F.desc("run_timestamp_utc"))
+    ucc_bl = (spark.table(UCC_BASELINE)
+        .withColumn("_rn", F.row_number().over(w_ucc))
+        .where("_rn = 1").drop("_rn")
+        .select(
+            F.lit("UCC").alias("product"),
+            F.col("model"),
+            F.col("holdout_wape_baseline").cast("double").alias("wape"),
+            F.col("cv_wape_baseline").cast("double").alias("cv_wape"),
+        )
+    )
+    
+    # ITSG baseline has wape/mape/metric_scope — dedup same way
+    w_itsg = Window.partitionBy("model").orderBy(F.desc("run_timestamp_utc"))
+    itsg_bl = (spark.table(ITSG_BASELINE)
+        .withColumn("_rn", F.row_number().over(w_itsg))
+        .where("_rn = 1").drop("_rn")
+        .select(
+            F.lit("ITSG").alias("product"),
+            F.col("model"),
+            F.col("holdout_wape_baseline").cast("double").alias("wape"),
+            F.col("cv_wape_baseline").cast("double").alias("cv_wape"),
+        )
+    )
+    
+    baselines = ucc_bl.unionByName(itsg_bl, allowMissingColumns=True)
+    
+    # Also look at actual FY2026 sum by model from forecast_results
+    model_totals = (spark.table(RESULTS_VIEW)
+        .where(f"forecast_view='adaptive' AND forecast_type IN ('rolling','roy') AND ds <= '{FY_END_DATE}' AND model != 'ACTUAL' AND sales_market = 'Total' AND grain_level = 'total'")
+        .groupBy("product", "model")
+        .agg(F.sum("p50").alias("fy_forecast_p50"))
+    )
+    
+    # Get the ensemble (baseline) total per product
+    ensemble_totals = model_totals.where(f"model = '{REC_MODEL}'").select(
+        F.col("product"), F.col("fy_forecast_p50").alias("ensemble_p50")
+    )
+    
+    # Join and compute relative positioning
+    model_pos = model_totals.join(ensemble_totals, "product", "left")
+    model_pos = model_pos.withColumn(
+        "pct_vs_ensemble",
+        F.round((F.col("fy_forecast_p50") - F.col("ensemble_p50")) / F.col("ensemble_p50") * 100, 2)
+    )
+    
+    # Classify: <-5% = conservative, >+5% = stretch, else = neutral/baseline
+    model_pos = model_pos.withColumn(
+        "scenario_archetype",
+        F.when(F.col("pct_vs_ensemble") < -5, F.lit("conservative"))
+         .when(F.col("pct_vs_ensemble") > 5, F.lit("stretch"))
+         .otherwise(F.lit("baseline"))
+    )
+    
+    # Join accuracy
+    result = model_pos.join(baselines, ["product", "model"], "left")
+    result = (result
+        .withColumn("run_date", F.current_date())
+        .withColumn("description", 
+            F.when(F.col("scenario_archetype") == "conservative", 
+                   F.concat(F.lit("Tends "), F.round(F.abs(F.col("pct_vs_ensemble")), 1).cast("string"), F.lit("% below ensemble — use for downside planning")))
+             .when(F.col("scenario_archetype") == "stretch",
+                   F.concat(F.lit("Tends "), F.round(F.col("pct_vs_ensemble"), 1).cast("string"), F.lit("% above ensemble — use for stretch/upside targets")))
+             .otherwise(F.lit("Aligned with ensemble baseline — primary planning model"))
+        )
+    )
+    return result
+
+model_scenarios = build_model_scenarios()
+model_scenarios.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(MODEL_SCENARIO_TABLE)
+print(f"\n3. Wrote {model_scenarios.count()} rows to {MODEL_SCENARIO_TABLE}")
+model_scenarios.select("product", "model", "scenario_archetype", "pct_vs_ensemble", "wape").orderBy("product", "pct_vs_ensemble").show(truncate=False)
+
+# ─── 4. HISTORICAL SCENARIOS (WHAT-IF TABLE) ────────────────────────────────
+# Quarterly pipeline conditions alongside actual ARR outcomes for anchoring.
+# "When win rate was 35% and coverage was 3.2x, we closed $X"
+
+def build_historical_scenarios():
+    """Build quarterly history of pipeline conditions vs actual outcomes."""
+    hist = spark.sql("""
+        SELECT 
+            product_group as product,
+            CONCAT(YEAR(dte), '-Q', QUARTER(dte)) as period,
+            YEAR(dte) as fiscal_year,
+            CONCAT('Q', QUARTER(dte)) as fiscal_quarter,
+            sales_market,
+            ROUND(SUM(won_amount), 2) as actual_arr,
+            ROUND(SUM(opened_amount), 2) as pipeline_created,
+            CAST(SUM(won_opps) AS INT) as deals_won,
+            CAST(SUM(opened_opps) AS INT) as deals_opened,
+            ROUND(SUM(won_amount) / NULLIF(SUM(won_opps), 0), 2) as avg_deal_size,
+            ROUND(SUM(won_opps) * 100.0 / NULLIF(SUM(opened_opps), 0), 2) as win_rate_pct,
+            ROUND(SUM(opened_amount) / NULLIF(SUM(won_amount), 0), 2) as coverage_x,
+            -- QoQ growth for context
+            LAG(SUM(won_amount)) OVER (
+                PARTITION BY product_group, sales_market 
+                ORDER BY YEAR(dte), QUARTER(dte)
+            ) as prev_q_arr
+        FROM datagroup_mdl.mdl_sales_analytics.kpi_pacing_sfdc
+        WHERE product_grain = 'genus'
+          AND product_group IN ('UCC', 'ITSG')
+          AND purchase_type IN ('New', 'Add-On')
+          AND sales_market IN ('NA', 'EMEA', 'APAC', 'LATAM')
+          AND YEAR(dte) BETWEEN 2023 AND 2026
+        GROUP BY product_group, YEAR(dte), QUARTER(dte), sales_market
+        HAVING SUM(won_amount) > 0 AND SUM(opened_opps) > 10
+    """)
+    
+    # Add QoQ growth rate
+    hist = hist.withColumn(
+        "qoq_growth_pct",
+        F.round((F.col("actual_arr") - F.col("prev_q_arr")) / F.col("prev_q_arr") * 100, 1)
+    ).drop("prev_q_arr")
+    
+    # Add Total product = UCC + ITSG rollup
+    total = (hist
+        .groupBy("period", "fiscal_year", "fiscal_quarter", "sales_market")
+        .agg(
+            F.sum("actual_arr").alias("actual_arr"),
+            F.sum("pipeline_created").alias("pipeline_created"),
+            F.sum("deals_won").alias("deals_won"),
+            F.sum("deals_opened").alias("deals_opened"),
+            F.round(F.sum("actual_arr") / F.sum("deals_won"), 2).alias("avg_deal_size"),
+            F.round(F.sum("deals_won") * 100.0 / F.sum("deals_opened"), 2).alias("win_rate_pct"),
+            F.round(F.sum("pipeline_created") / F.sum("actual_arr"), 2).alias("coverage_x"),
+        )
+        .withColumn("product", F.lit("Total"))
+        .withColumn("qoq_growth_pct", F.lit(None).cast("double"))
+    )
+    
+    combined = hist.unionByName(total, allowMissingColumns=True)
+    combined = combined.withColumn("run_date", F.current_date())
+    return combined
+
+hist_scenarios = build_historical_scenarios()
+hist_scenarios.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(HIST_SCENARIO_TABLE)
+print(f"\n4. Wrote {hist_scenarios.count()} rows to {HIST_SCENARIO_TABLE}")
+hist_scenarios.where("product = 'UCC' AND sales_market = 'NA'").orderBy("period").show(truncate=False)
+
+print("\n" + "="*70)
+print("SCENARIO ANALYSIS ENGINE COMPLETE")
+print(f"  {SCENARIO_GRID_TABLE}: Named scenario outcomes (Conservative/Baseline/Stretch)")
+print(f"  {SENSITIVITY_TABLE}: Per-driver elasticity coefficients")
+print(f"  {MODEL_SCENARIO_TABLE}: Model-to-scenario archetype mapping")
+print(f"  {HIST_SCENARIO_TABLE}: Historical what-if anchoring data")
+print("="*70)
