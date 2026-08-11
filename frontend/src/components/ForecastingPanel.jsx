@@ -285,6 +285,16 @@ const WeeklyChart = ({ rows }) => {
   const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
 
+  // Quarter boundary dates for reference lines (GoTo fiscal = calendar year)
+  const qBoundaries = combined.reduce((acc, r) => {
+    const d = new Date(r.date);
+    const qtr = Math.floor(d.getMonth() / 3) + 1;
+    const key = `Q${qtr}`;
+    if (!acc[key] || r.date < acc[key]) acc[key] = r.date;
+    return acc;
+  }, {});
+  const qBoundaryDates = Object.entries(qBoundaries).filter(([k]) => k !== 'Q1').map(([k, v]) => ({ label: k, date: v }));
+
   // Build unified dataset — bands use stacking trick: floor (transparent) + range (colored).
   // Stored Worst_Case/Best_Case are the model's P10/P90 → an 80% prediction interval.
   // The inner ~50% band (≈P25–P75) is derived by z-score scaling of the P10/P90 spread
@@ -367,6 +377,11 @@ const WeeklyChart = ({ rows }) => {
           <ReferenceLine x={splitDate} stroke="none"
             label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
         )}
+        {/* Quarter boundary reference lines */}
+        {qBoundaryDates.map(qb => (
+          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.25)" strokeDasharray="3 3"
+            label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
+        ))}
         {/* Outer 80% band (P10–P90): transparent floor stacked under colored band */}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
               legendType="none" connectNulls dot={false} />
@@ -584,8 +599,22 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     );
   };
 
+  // YTD progress annotation
+  const totalActual = qtrs.reduce((s, q) => s + (q.actual ?? 0), 0);
+  const totalLanding = qtrs.reduce((s, q) => s + (q.landing ?? 0), 0);
+  const ytdPct = totalLanding > 0 ? ((totalActual / totalLanding) * 100).toFixed(0) : 0;
+
   return (
     <div>
+      {/* YTD Progress Annotation */}
+      {totalActual > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, padding: '8px 14px', borderRadius: 8, background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.15)' }}>
+          <div style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+            YTD: {fmtM(totalActual)} of {fmtM(totalLanding)} = {ytdPct}% pace
+          </div>
+          <div style={{ fontSize: 10, color: '#64748b' }}>FY {year} · Realized vs Full-Year Landing</div>
+        </div>
+      )}
       <svg width="0" height="0" style={{ position:'absolute' }}>
         <defs>
           <linearGradient id="qg-actual" x1="0" y1="0" x2="0" y2="1">
@@ -1698,6 +1727,11 @@ const ForecastingPanel = () => {
   const [governanceLog, setGovernanceLog] = useState([]);
   const [actionDraft, setActionDraft] = useState({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
   const [decisionDraft, setDecisionDraft] = useState({ decision: '', owner: '', expected_impact: '', reason: '' });
+  const [scenarioGrid, setScenarioGrid] = useState([]);
+  const [sensitivityData, setSensitivityData] = useState([]);
+  const [modelScenarios, setModelScenarios] = useState([]);
+  const [historicalScenarios, setHistoricalScenarios] = useState([]);
+  const [selectedScenario, setSelectedScenario] = useState(null);
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
@@ -1802,7 +1836,7 @@ const ForecastingPanel = () => {
         if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
         if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
       } else if (targetTab === 'Exec Mode') {
-        const [conf, bridge, radar, meeting, act, gov, rd] = await Promise.allSettled([
+        const [conf, bridge, radar, meeting, act, gov, rd, sg, sens, ms, hs] = await Promise.allSettled([
           apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
           apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
           apiService.getForecastV2RiskRadar(fcType, apiYear, apiQuarter, 20, model),
@@ -1810,6 +1844,10 @@ const ForecastingPanel = () => {
           apiService.getActions('pending'),
           apiService.getForecastV2GovernanceLog(),
           apiService.getForecastV2RunDelta(activePl, activeGeo),
+          apiService.getForecastV2ScenarioGrid(activePl, activeGeo, apiQuarter),
+          apiService.getForecastV2Sensitivity(activePl, activeGeo),
+          apiService.getForecastV2ModelScenarios(activePl),
+          apiService.getForecastV2HistoricalScenarios(activePl, activeGeo, apiYear),
         ]);
         if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
         if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
@@ -1818,6 +1856,10 @@ const ForecastingPanel = () => {
         if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
         if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
         if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+        if (sg.status === 'fulfilled') setScenarioGrid(sg.value?.data ?? sg.value?.rows ?? []);
+        if (sens.status === 'fulfilled') setSensitivityData(sens.value?.data ?? sens.value?.rows ?? []);
+        if (ms.status === 'fulfilled') setModelScenarios(ms.value?.data ?? ms.value?.rows ?? []);
+        if (hs.status === 'fulfilled') setHistoricalScenarios(hs.value?.data ?? hs.value?.rows ?? []);
       }
 
       loadedTabsRef.current.add(targetTab);
@@ -2267,10 +2309,10 @@ const ForecastingPanel = () => {
                             { label: selectedQuarter ? 'Actuals (QTD)' : 'Actuals YTD', val: ytdActual, color: '#f59e0b',
                               sub: selectedQuarter ? `Realized so far in Q${selectedQuarter} ${selectedYear}` : `Realized so far in ${selectedYear}` },
                           ].map(({ label, val, color, sub }) => (
-                            <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px' }}>
-                              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{label}</div>
-                              <div style={{ fontSize: 22, fontWeight: 800, color, letterSpacing: -0.5, lineHeight: 1 }}>{fmtM(val)}</div>
-                              <div style={{ fontSize: 10, color: '#334155', marginTop: 4 }}>{sub}</div>
+                            <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}>
+                               <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>{label}</div>
+                               <div style={{ fontSize: 28, fontWeight: 900, color, letterSpacing: -0.8, lineHeight: 1 }}>{fmtM(val)}</div>
+                               <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>{sub}</div>
                             </div>
                           ))}
                         </div>
@@ -2446,6 +2488,40 @@ const ForecastingPanel = () => {
                   )}
                 </CardWrap>
               )}
+
+              {/* 2027 Forward Outlook — derived from forward_1yr forecast rows */}
+              {weeklyView && (() => {
+                const fwd = (weeklyView || []).filter(r => r.type === 'forecast' && new Date(r.date) > new Date('2026-12-28'));
+                if (fwd.length === 0) return null;
+                const fwdTotal = fwd.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
+                const fwdWorst = fwd.reduce((s, r) => s + (r.arr_worst ?? r.arr_likely ?? 0), 0);
+                const fwdBest  = fwd.reduce((s, r) => s + (r.arr_best ?? r.arr_likely ?? 0), 0);
+                const fwdWeeks = fwd.length;
+                return (
+                  <CardWrap downloadName="forward_outlook_2027">
+                    <SectionTitle>2027 Forward Outlook</SectionTitle>
+                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>Model-projected Growth ARR beyond current fiscal year ({fwdWeeks} weeks into 2027). Early directional estimate only.</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                      <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.18)' }}>
+                        <div style={{ fontSize: 9, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Most Likely</div>
+                        <div style={{ fontSize: 22, fontWeight: 900, color: '#93c5fd', letterSpacing: -0.5 }}>{fmtM(fwdTotal)}</div>
+                        <div style={{ fontSize: 10, color: '#475569', marginTop: 3 }}>{fwdWeeks} weeks projected</div>
+                      </div>
+                      <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)' }}>
+                        <div style={{ fontSize: 9, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Conservative</div>
+                        <div style={{ fontSize: 22, fontWeight: 900, color: '#ef4444', letterSpacing: -0.5 }}>{fmtM(fwdWorst)}</div>
+                      </div>
+                      <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                        <div style={{ fontSize: 9, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Stretch</div>
+                        <div style={{ fontSize: 22, fontWeight: 900, color: '#10b981', letterSpacing: -0.5 }}>{fmtM(fwdBest)}</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: '#334155', marginTop: 8, padding: '6px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      Annualized weekly rate: ~{fmtM(fwdTotal / Math.max(1, fwdWeeks) * 52)}/yr implied run-rate
+                    </div>
+                  </CardWrap>
+                );
+              })()}
             </div>
           )}
 
@@ -2791,6 +2867,118 @@ const ForecastingPanel = () => {
                   {(!governanceLog || governanceLog.length === 0) && <div style={{ fontSize: 11, color: '#64748b' }}>No governance entries yet.</div>}
                 </div>
               </CardWrap>
+
+              {/* ── Scenario Grid — Quarterly scenario comparison ──────────────── */}
+              {scenarioGrid && scenarioGrid.length > 0 && (
+                <CardWrap>
+                  <SectionTitle>Quarterly Scenario Grid</SectionTitle>
+                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Model-derived conservative / baseline / stretch scenarios by quarter. Source: Adaptive Ensemble P10/P50/P90.</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        {['Product', 'Quarter', 'Conservative', 'Baseline', 'Stretch', 'Most Likely', 'Actual YTD', 'Wks'].map(h =>
+                          <th key={h} style={{ padding: '6px 10px', textAlign: h === 'Product' || h === 'Quarter' ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>)}
+                      </tr></thead>
+                      <tbody>{scenarioGrid.map((r, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <td style={{ padding: '6px 10px', fontSize: 11, color: '#f1f5f9' }}>{r.product}</td>
+                          <td style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>{r.fiscal_quarter}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#ef4444' }}>{fmtM(r.conservative)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#93c5fd' }}>{fmtM(r.baseline)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#10b981' }}>{fmtM(r.stretch)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f1f5f9', fontWeight: 700 }}>{fmtM(r.most_likely)}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: r.actual_to_date ? '#f59e0b' : '#334155' }}>{r.actual_to_date ? fmtM(r.actual_to_date) : '\u2014'}</td>
+                          <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#475569' }}>{r.actual_weeks ?? '\u2014'}/{r.weeks_in_quarter ?? 13}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </CardWrap>
+              )}
+
+              {/* ── Driver Sensitivity — Real elasticity from model analysis ───── */}
+              {sensitivityData && sensitivityData.length > 0 && (
+                <CardWrap>
+                  <SectionTitle>Driver Sensitivity Analysis</SectionTitle>
+                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Estimated elasticity: % change in weekly ARR per +1 std-dev change in each driver.</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
+                    {sensitivityData.map((d, i) => {
+                      const absE = Math.abs(d.elasticity_pct || 0);
+                      const barW = Math.min(100, absE * 8);
+                      const positive = (d.elasticity_pct || 0) >= 0;
+                      return (
+                        <div key={i} style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <div style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 600 }}>{d.driver}</div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: positive ? '#10b981' : '#ef4444' }}>{positive ? '+' : ''}{Number(d.elasticity_pct).toFixed(2)}%</div>
+                          </div>
+                          <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: 4 }}>
+                            <div style={{ width: `${barW}%`, height: '100%', background: positive ? '#10b981' : '#ef4444', borderRadius: 999 }} />
+                          </div>
+                          <div style={{ fontSize: 10, color: '#475569' }}>{d.description || `Correlation: ${Number(d.correlation || 0).toFixed(2)}`}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardWrap>
+              )}
+
+              {/* ── Model-as-Scenario Selector ─────────────────────────────────── */}
+              {modelScenarios && modelScenarios.length > 0 && (
+                <CardWrap>
+                  <SectionTitle>Model-as-Scenario Comparison</SectionTitle>
+                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Each model archetype produces a different forecast shape. Select one to view its implied outlook.</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {modelScenarios.map((ms) => (
+                      <button key={ms.model || ms.archetype} onClick={() => setSelectedScenario(ms.model || ms.archetype)}
+                        style={{ padding: '6px 14px', borderRadius: 8, fontSize: 11, fontWeight: selectedScenario === (ms.model || ms.archetype) ? 700 : 500, cursor: 'pointer',
+                          background: selectedScenario === (ms.model || ms.archetype) ? 'rgba(59,130,246,0.2)' : 'rgba(255,255,255,0.04)',
+                          border: selectedScenario === (ms.model || ms.archetype) ? '1px solid rgba(59,130,246,0.5)' : '1px solid rgba(255,255,255,0.08)',
+                          color: selectedScenario === (ms.model || ms.archetype) ? '#93c5fd' : '#94a3b8' }}>
+                        {ms.model || ms.archetype}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                    {modelScenarios.filter(ms => !selectedScenario || (ms.model || ms.archetype) === selectedScenario).slice(0, 6).map((ms, i) => (
+                      <div key={i} style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div style={{ fontSize: 10, color: '#64748b', marginBottom: 2 }}>{ms.model || ms.archetype}</div>
+                        <div style={{ fontSize: 11, color: '#cbd5e1' }}>{ms.description || ms.outlook || '\u2014'}</div>
+                        {ms.implied_fy_total != null && <div style={{ fontSize: 14, fontWeight: 700, color: '#93c5fd', marginTop: 4 }}>{fmtM(ms.implied_fy_total)}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </CardWrap>
+              )}
+
+              {/* ── Historical What-If Panel ───────────────────────────────────── */}
+              {historicalScenarios && historicalScenarios.length > 0 && (
+                <CardWrap>
+                  <SectionTitle>Historical What-If Scenarios</SectionTitle>
+                  <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>If current-quarter conditions matched a historical quarter, what would the landing look like?</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        {['Quarter', 'Condition', 'Implied Weekly', 'Implied Qtr', 'vs Baseline', 'Confidence'].map(h =>
+                          <th key={h} style={{ padding: '6px 10px', textAlign: h === 'Quarter' || h === 'Condition' ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>)}
+                      </tr></thead>
+                      <tbody>{historicalScenarios.map((hs, i) => {
+                        const vsBase = hs.vs_baseline_pct ?? ((hs.implied_qtr && weeklyKpis?.most_likely) ? ((hs.implied_qtr / weeklyKpis.most_likely - 1) * 100) : null);
+                        return (
+                          <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                            <td style={{ padding: '6px 10px', fontSize: 11, color: '#f1f5f9' }}>{hs.reference_quarter || hs.fiscal_quarter}</td>
+                            <td style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>{hs.condition || hs.description || '\u2014'}</td>
+                            <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#e2e8f0' }}>{hs.implied_weekly ? fmtM(hs.implied_weekly) : '\u2014'}</td>
+                            <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f1f5f9', fontWeight: 700 }}>{hs.implied_qtr ? fmtM(hs.implied_qtr) : '\u2014'}</td>
+                            <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: vsBase != null ? (vsBase >= 0 ? '#10b981' : '#ef4444') : '#475569', fontWeight: 700 }}>{vsBase != null ? `${vsBase >= 0 ? '+' : ''}${Number(vsBase).toFixed(1)}%` : '\u2014'}</td>
+                            <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#94a3b8' }}>{hs.confidence || hs.n_observations || '\u2014'}</td>
+                          </tr>
+                        );
+                      })}</tbody>
+                    </table>
+                  </div>
+                </CardWrap>
+              )}
             </div>
           )}
 

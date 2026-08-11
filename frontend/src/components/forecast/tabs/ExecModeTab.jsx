@@ -26,6 +26,12 @@ const ExecModeTab = ({
   submitDecisionLog,
   governanceLog,
   runDate,
+  selectedScenario,
+  setSelectedScenario,
+  scenarioGrid,
+  sensitivityData,
+  modelScenarios,
+  historicalScenarios,
 }) => {
   const heroLikely = weeklyKpis?.most_likely ?? confidenceBands?.most_likely ?? 0;
   const p10Floor = confidenceBands?.p10 ?? weeklyKpis?.worst_case ?? 0;
@@ -199,6 +205,118 @@ const ExecModeTab = ({
           {(!governanceLog || governanceLog.length === 0) && <div style={{ fontSize: 11, color: '#64748b' }}>No governance entries yet.</div>}
         </div>
       </CardWrap>
+
+      {/* ── Scenario Grid — Quarterly scenario comparison from real model data ── */}
+      {scenarioGrid && scenarioGrid.length > 0 && (
+        <CardWrap downloadName="scenario_grid">
+          <SectionTitle>Quarterly Scenario Grid</SectionTitle>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Model-derived conservative / baseline / stretch scenarios by quarter. Source: Adaptive Ensemble P10/P50/P90.</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                {['Product', 'Quarter', 'Conservative', 'Baseline', 'Stretch', 'Most Likely', 'Actual YTD', 'Wks'].map(h =>
+                  <th key={h} style={{ padding: '6px 10px', textAlign: h === 'Product' || h === 'Quarter' ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>{scenarioGrid.map((r, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <td style={{ padding: '6px 10px', fontSize: 11, color: '#f1f5f9' }}>{r.product}</td>
+                  <td style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>{r.fiscal_quarter}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#ef4444' }}>{fmtM(r.conservative)}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#93c5fd' }}>{fmtM(r.baseline)}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#10b981' }}>{fmtM(r.stretch)}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f1f5f9', fontWeight: 700 }}>{fmtM(r.most_likely)}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: r.actual_to_date ? '#f59e0b' : '#334155' }}>{r.actual_to_date ? fmtM(r.actual_to_date) : '—'}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#475569' }}>{r.actual_weeks ?? '—'}/{r.weeks_in_quarter ?? 13}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </CardWrap>
+      )}
+
+      {/* ── Driver Sensitivity — Real elasticity from model analysis ── */}
+      {sensitivityData && sensitivityData.length > 0 && (
+        <CardWrap downloadName="driver_sensitivity">
+          <SectionTitle>Driver Sensitivity Analysis</SectionTitle>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Estimated elasticity: % change in weekly ARR per +1 std-dev change in each driver. Derived from historical correlation analysis.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
+            {sensitivityData.map((d, i) => {
+              const absE = Math.abs(d.elasticity_pct || 0);
+              const barW = Math.min(100, absE * 8);
+              const positive = (d.elasticity_pct || 0) >= 0;
+              return (
+                <div key={i} style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 600 }}>{d.driver}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: positive ? '#10b981' : '#ef4444' }}>{positive ? '+' : ''}{Number(d.elasticity_pct).toFixed(2)}%</div>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: 4 }}>
+                    <div style={{ width: `${barW}%`, height: '100%', background: positive ? '#10b981' : '#ef4444', borderRadius: 999 }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: '#475569' }}>{d.description || `Correlation: ${Number(d.correlation || 0).toFixed(2)}`}</div>
+                </div>
+              );
+            })}
+          </div>
+        </CardWrap>
+      )}
+
+      {/* ── Model-as-Scenario Selector ── */}
+      {modelScenarios && modelScenarios.length > 0 && (
+        <CardWrap downloadName="model_scenarios">
+          <SectionTitle>Model-as-Scenario Comparison</SectionTitle>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>Each model archetype produces a different forecast shape. Select one to view its implied outlook.</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            {modelScenarios.map((ms) => (
+              <button key={ms.model || ms.archetype} onClick={() => setSelectedScenario && setSelectedScenario(ms.model || ms.archetype)}
+                style={{ padding: '6px 14px', borderRadius: 8, fontSize: 11, fontWeight: selectedScenario === (ms.model || ms.archetype) ? 700 : 500, cursor: 'pointer',
+                  background: selectedScenario === (ms.model || ms.archetype) ? 'rgba(59,130,246,0.2)' : 'rgba(255,255,255,0.04)',
+                  border: selectedScenario === (ms.model || ms.archetype) ? '1px solid rgba(59,130,246,0.5)' : '1px solid rgba(255,255,255,0.08)',
+                  color: selectedScenario === (ms.model || ms.archetype) ? '#93c5fd' : '#94a3b8' }}>
+                {ms.model || ms.archetype}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            {modelScenarios.filter(ms => !selectedScenario || (ms.model || ms.archetype) === selectedScenario).slice(0, 6).map((ms, i) => (
+              <div key={i} style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <div style={{ fontSize: 10, color: '#64748b', marginBottom: 2 }}>{ms.model || ms.archetype}</div>
+                <div style={{ fontSize: 11, color: '#cbd5e1' }}>{ms.description || ms.outlook || '—'}</div>
+                {ms.implied_fy_total != null && <div style={{ fontSize: 14, fontWeight: 700, color: '#93c5fd', marginTop: 4 }}>{fmtM(ms.implied_fy_total)}</div>}
+              </div>
+            ))}
+          </div>
+        </CardWrap>
+      )}
+
+      {/* ── Historical What-If Panel ── */}
+      {historicalScenarios && historicalScenarios.length > 0 && (
+        <CardWrap downloadName="historical_scenarios">
+          <SectionTitle>Historical What-If Scenarios</SectionTitle>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>If current-quarter conditions matched a historical quarter, what would the landing look like? Based on actual seasonal patterns and growth rates observed in prior periods.</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                {['Quarter', 'Condition', 'Implied Weekly', 'Implied Qtr', 'vs Baseline', 'Confidence'].map(h =>
+                  <th key={h} style={{ padding: '6px 10px', textAlign: h === 'Quarter' || h === 'Condition' ? 'left' : 'right', fontSize: 10, color: '#64748b' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>{historicalScenarios.map((hs, i) => {
+                const vsBase = hs.vs_baseline_pct ?? ((hs.implied_qtr && weeklyKpis?.most_likely) ? ((hs.implied_qtr / weeklyKpis.most_likely - 1) * 100) : null);
+                return (
+                  <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <td style={{ padding: '6px 10px', fontSize: 11, color: '#f1f5f9' }}>{hs.reference_quarter || hs.fiscal_quarter}</td>
+                    <td style={{ padding: '6px 10px', fontSize: 11, color: '#94a3b8' }}>{hs.condition || hs.description || '—'}</td>
+                    <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#e2e8f0' }}>{hs.implied_weekly ? fmtM(hs.implied_weekly) : '—'}</td>
+                    <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#f1f5f9', fontWeight: 700 }}>{hs.implied_qtr ? fmtM(hs.implied_qtr) : '—'}</td>
+                    <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: vsBase != null ? (vsBase >= 0 ? '#10b981' : '#ef4444') : '#475569', fontWeight: 700 }}>{vsBase != null ? `${vsBase >= 0 ? '+' : ''}${Number(vsBase).toFixed(1)}%` : '—'}</td>
+                    <td style={{ padding: '6px 10px', textAlign: 'right', fontSize: 11, color: '#94a3b8' }}>{hs.confidence || hs.n_observations || '—'}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        </CardWrap>
+      )}
     </div>
   );
 };

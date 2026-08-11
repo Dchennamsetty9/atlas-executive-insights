@@ -475,10 +475,11 @@ except Exception as exc:
 try:
     i = _latest(ITSG_BASELINE, "run_date_utc")
     if "metric_scope" in i.columns:
-        tot = i.where(F.lower(F.col("metric_scope")) == "total")
+        tot = i.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
         i = tot if tot.count() > 0 else i
     i = i.select(F.lit("ITSG").alias("product"), F.col("model"),
-                 F.col("wape").alias("model_wape"), F.col("mape").alias("model_mape"))
+                 F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).alias("model_wape"),
+                 F.col("mape").alias("model_mape"))
     acc_parts.append(i)
 except Exception as exc:
     print(f"  WARN ITSG baseline skipped: {exc}")

@@ -41,6 +41,8 @@ env:
   # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
   - name: FORECAST_V2_RESULTS_TABLE
     value: "forecast_results_v2compat"
+  - name: FORECAST_V2_LEADERBOARD_TABLE
+    value: "forecast_leaderboard_v2compat"
   
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.
