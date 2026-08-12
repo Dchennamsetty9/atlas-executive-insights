@@ -2367,6 +2367,26 @@ const ForecastingPanel = () => {
                 );
               })()}
 
+              {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
+                  truncated by the 13-week window; current quarter stacks
+                  realized (orange) + remaining forecast (blue) */}
+              {(yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
+                <CardWrap downloadName="quarterly_summary"
+                          explainKey="quarterly_outlook" explainProductLine={prodLine}
+                          explainRegion={salesMarket} explainYear={selectedYear}>
+                  <SectionTitle>
+                    Quarterly Summary — {selectedYear}
+                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  </SectionTitle>
+                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
+                    <span><span style={{ color: '#f59e0b' }}>■</span> Realized actuals</span>
+                    <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
+                    <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
+                  </div>
+                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
+                </CardWrap>
+              )}
+
               <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
@@ -2407,26 +2427,6 @@ const ForecastingPanel = () => {
                 </SectionTitle>
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
-
-              {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
-                  truncated by the 13-week window; current quarter stacks
-                  realized (orange) + remaining forecast (blue) */}
-              {(yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
-                <CardWrap downloadName="quarterly_summary"
-                          explainKey="quarterly_outlook" explainProductLine={prodLine}
-                          explainRegion={salesMarket} explainYear={selectedYear}>
-                  <SectionTitle>
-                    Quarterly Summary — {selectedYear}
-                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
-                  </SectionTitle>
-                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14 }}>
-                    <span><span style={{ color: '#f59e0b' }}>■</span> Realized actuals</span>
-                    <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
-                    <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
-                  </div>
-                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
-                </CardWrap>
-              )}
 
               {/* Multi-model cumulative — only show if data exists */}
               {allModels && allModels.length > 0 && (
