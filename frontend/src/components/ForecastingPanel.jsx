@@ -1546,7 +1546,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
 };
 
 // ── Main panel ────────────────────────────────────────────────────────────────
-const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Exec Mode'];
+const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Plan Tracking', 'Exec Mode'];
 // 6 notebook models: Adaptive_Ensemble, Prophet_trend, ETS, LightGBM (Global_LGB_Q50), MSTL_v2, DHR_ARIMA
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
@@ -1835,6 +1835,12 @@ const ForecastingPanel = () => {
         if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
         if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
         if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
+      } else if (targetTab === 'Plan Tracking') {
+        await fetchOverviewData();
+        const [bridge] = await Promise.allSettled([
+          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
+        ]);
+        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
       } else if (targetTab === 'Exec Mode') {
         const [conf, bridge, radar, meeting, act, gov, rd, sg, sens, ms, hs] = await Promise.allSettled([
           apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
@@ -2611,6 +2617,77 @@ const ForecastingPanel = () => {
             <CardWrap explainKey="ai_insights" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
               <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
             </CardWrap>
+          )}
+
+          {tab === 'Plan Tracking' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <CardWrap>
+                <SectionTitle>Plan Attainment</SectionTitle>
+                {loading ? <Skeleton height={150} /> : (() => {
+                  const ytd = weeklyKpis?.ytd_actuals ?? 0;
+                  const plan = weeklyKpis?.most_likely ?? 0;
+                  const pct = plan > 0 ? Math.min((ytd / plan) * 100, 100) : 0;
+                  const statusColor = pct >= 95 ? '#10b981' : pct >= 80 ? '#f59e0b' : '#ef4444';
+                  const statusLabel = pct >= 95 ? 'On Track' : pct >= 80 ? 'Watch' : 'At Risk';
+                  return (
+                    <div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 12 }}>
+                        <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Actuals</div>
+                          <div style={{ fontSize: 26, fontWeight: 900, color: '#f59e0b' }}>{fmtM(ytd)}</div>
+                        </div>
+                        <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Plan / Target</div>
+                          <div style={{ fontSize: 26, fontWeight: 900, color: '#93c5fd' }}>{fmtM(plan)}</div>
+                        </div>
+                        <div style={{ padding: '12px 14px', borderRadius: 10, background: `${statusColor}18`, border: `1px solid ${statusColor}44` }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Attainment</div>
+                          <div style={{ fontSize: 26, fontWeight: 900, color: statusColor }}>{pct.toFixed(1)}%</div>
+                          <div style={{ fontSize: 11, color: statusColor, fontWeight: 700 }}>{statusLabel}</div>
+                        </div>
+                      </div>
+                      <div style={{ height: 14, background: 'rgba(255,255,255,0.06)', borderRadius: 8, overflow: 'hidden' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: statusColor, transition: 'width 0.4s ease' }} />
+                      </div>
+                    </div>
+                  );
+                })()}
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>Actuals vs Planned Pace</SectionTitle>
+                {loading ? <Skeleton height={220} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+              </CardWrap>
+
+              <CardWrap>
+                <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+                {loading ? <Skeleton height={160} /> : (
+                  <div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {(driverBridge?.components || []).slice(0, 6).map((c, i) => {
+                        const positive = (c.value || 0) >= 0;
+                        const denom = Math.max(1, Math.abs(driverBridge?.variance || 1));
+                        const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / denom * 100));
+                        return (
+                          <div key={i} style={{ display: 'grid', gridTemplateColumns: '220px 1fr 80px', gap: 8, alignItems: 'center' }}>
+                            <div style={{ fontSize: 11, color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.driver || `Driver ${i + 1}`}</div>
+                            <div style={{ height: 10, background: 'rgba(255,255,255,0.06)', borderRadius: 6, overflow: 'hidden' }}>
+                              <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
+                            </div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: positive ? '#10b981' : '#ef4444', textAlign: 'right' }}>{fmtM(c.value || 0)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </CardWrap>
+            </div>
           )}
 
           {tab === 'Exec Mode' && (
