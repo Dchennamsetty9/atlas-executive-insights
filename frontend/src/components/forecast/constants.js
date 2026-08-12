@@ -1,4 +1,4 @@
-export const TABS = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Exec Mode'];
+export const TABS = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Plan Tracking', 'Exec Mode'];
 export const MODELS = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 export const PROD_LINES = ['All', 'UCC', 'ITSG'];
 export const FC_TYPES = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
