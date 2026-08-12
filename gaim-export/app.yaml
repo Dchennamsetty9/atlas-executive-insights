@@ -1,0 +1,78 @@
+# Databricks Apps Configuration
+# Deploy this app to your Databricks workspace
+
+name: gaim-executive-app
+version: 1.0.0
+description: GAIM Executive App - AI-Powered Executive Analytics Dashboard
+
+# Application entry point — reads DATABRICKS_APP_PORT at runtime (Databricks Apps requirement)
+command:
+  - python
+  - backend/start.py
+
+# Python dependencies
+requirements: requirements.txt
+
+# Environment configuration
+env:
+  # Port for the application (required by Databricks Apps)
+  - name: PORT
+    value: "8000"
+  
+  # Note: DATABRICKS_HOST and DATABRICKS_TOKEN are automatically provided by Databricks Apps
+  # Do NOT set them here - they are injected at runtime
+  
+  # Data source configuration
+  - name: DATABRICKS_CATALOG
+    value: "datagroup_mdl"
+  
+  - name: DATABRICKS_SCHEMA
+    value: "mdl_sales_analytics"
+  
+  - name: DATABRICKS_HTTP_PATH
+    value: "/sql/1.0/warehouses/c24ee33594e13e93"
+
+  # Preferred alias used by forecasting module and deployment guides
+  - name: DATABRICKS_SQL_WAREHOUSE_PATH
+    value: "/sql/1.0/warehouses/c24ee33594e13e93"
+
+  # Use the unified V5-notebook compat view as the forecast table.
+  # forecast_results_v2compat is created daily by forecast_unify_publish and has
+  # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
+  - name: FORECAST_V2_RESULTS_TABLE
+    value: "forecast_results_v2compat"
+  - name: FORECAST_V2_LEADERBOARD_TABLE
+    value: "forecast_leaderboard_v2compat"
+  
+  # Force live Databricks queries even outside the Databricks hostname check.
+  # Safe to set on Databricks Apps — token_available() still guards the connection.
+  - name: FORCE_LIVE_DATA
+    value: "true"
+
+  # Model-serving endpoints used by backend/services/ai_service.py
+  - name: DATABRICKS_AI_PRIMARY_ENDPOINT
+    value: "databricks-claude-sonnet-4-5"
+
+  - name: DATABRICKS_AI_FALLBACK_ENDPOINT
+    value: "databricks-gemini-3-1-flash-lite"
+
+  # Application settings
+  - name: GENIE_SPACE_ID
+    value: "01f163df8c351df5b4a7a45251c3e2e6"
+
+  - name: ENVIRONMENT
+    value: "production"
+
+  # v2.1 — P0-P2 improvements deployed 2026-08-11
+
+  - name: DEBUG
+    value: "False"
+
+# Health check
+health_check:
+  path: /api/health
+  port: 8000
+  interval_seconds: 30
+
+# Port mapping
+port: 8000

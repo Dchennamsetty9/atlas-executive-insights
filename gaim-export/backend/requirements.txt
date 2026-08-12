@@ -1,0 +1,5 @@
+# Single source of truth is the repo-root requirements.txt (used by app.yaml
+# and CI). This shim keeps the documented local flow working —
+#   cd backend && pip install -r requirements.txt
+# — without the two files drifting apart. (Audit M2)
+-r ../requirements.txt
