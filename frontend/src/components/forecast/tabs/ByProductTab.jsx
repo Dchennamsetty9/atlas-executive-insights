@@ -96,11 +96,7 @@ const ByProductTab = ({ loading, byProductView, graphInsights, runDate }) => {
       {!loading && byProductView?.by_geo?.length > 0 && (
         <CardWrap downloadName="forecast_by_geography">
           <SectionTitle>Forecast by Geography {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
-          <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            <span><span style={{ color: '#ef4444' }}>■</span> Risk Floor</span>
-            <span><span style={{ color: '#ffffff' }}>■</span> Most Likely</span>
-            <span><span style={{ color: '#10b981' }}>■</span> Stretch Case</span>
-          </div>
+
           <GeoBarChart rows={byProductView.by_geo} />
         </CardWrap>
       )}
