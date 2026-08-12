@@ -5,6 +5,7 @@ Focused regression tests for rolling forecast date-window behavior.
 """
 
 import asyncio
+import datetime
 import pathlib
 import sys
 import types
@@ -62,9 +63,11 @@ def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch
     assert result["months"] == []
     assert len(captured_sql) == 2  # actuals query + forecast query
 
-    forecast_sql = next(
-        sql for sql in captured_sql if "forecast_type = 'rolling'" in sql and "arr_likely" in sql
-    )
+    forecast_sql = next(sql for sql in captured_sql if "arr_likely" in sql)
+
+    # Rolling monthly should combine rolling+roy, and include forward_1yr in
+    # next-year window mode so Jan/Feb next-year rows are not dropped.
+    assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in forecast_sql
 
     # Rolling full-year mode should use the quarter-anchored next-12-month window.
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in forecast_sql
@@ -74,6 +77,80 @@ def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch
     assert "CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE))" not in forecast_sql
 
 
-def test_forward_1yr_aliases_to_rolling_for_legacy_sources():
+def test_forward_1yr_is_not_aliased_for_forecast_type_sources():
     assert impl._validate_forecast_type("forward_1yr") == "forward_1yr"
-    assert impl._effective_forecast_type("ensemble", "forward_1yr") == "rolling"
+    assert impl._effective_forecast_type("ensemble", "forward_1yr") == "forward_1yr"
+
+
+def test_monthly_clause_for_current_year_rolling_uses_rolling_and_roy():
+    current_year = datetime.date.today().year
+    clause = impl._monthly_forecast_type_condition(
+        forecast_type="rolling",
+        rolling_next_year=False,
+        selected_year=current_year,
+    )
+    assert clause == "forecast_type IN ('rolling', 'roy')"
+
+
+def test_monthly_clause_for_explicit_future_year_uses_forward_1yr_only():
+    future_year = datetime.date.today().year + 1
+    clause = impl._monthly_forecast_type_condition(
+        forecast_type="rolling",
+        rolling_next_year=False,
+        selected_year=future_year,
+    )
+    assert clause == "forecast_type = 'forward_1yr'"
+
+
+def test_ytd_rolling_uses_disjoint_forecast_types_for_next_year_window(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_ytd(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="rolling",
+            model="ensemble",
+            year=None,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = next(sql for sql in captured_sql if "SUM(COALESCE(CAST(" in sql and "likely" in sql)
+    assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in forecast_sql
+
+
+def test_ytd_future_year_rolling_uses_forward_1yr_only(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_ytd(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="rolling",
+            model="ensemble",
+            year=datetime.date.today().year + 1,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = next(sql for sql in captured_sql if "SUM(COALESCE(CAST(" in sql and "likely" in sql)
+    assert "forecast_type = 'forward_1yr'" in forecast_sql

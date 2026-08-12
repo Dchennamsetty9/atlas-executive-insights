@@ -252,17 +252,31 @@ def _latest_run():
 
 
 def _effective_forecast_type(model: str, forecast_type: str) -> str:
-    # forward_1yr is a frontend semantic mode. Legacy arr_forecast_v2 tables only
-    # store rolling/roy/actuals, so keep existing endpoints functional by
-    # projecting forward_1yr to rolling unless a dedicated endpoint is used.
-    if forecast_type == "forward_1yr":
-        forecast_type = "rolling"
-
     source = _model_source(model)
     if source["has_forecast_type"]:
         return forecast_type
     # Backward-compat fallback if a model source does not expose forecast_type.
     return "actuals" if forecast_type == "actuals" else "rolling"
+
+
+def _monthly_forecast_type_condition(
+    forecast_type: str,
+    rolling_next_year: bool,
+    selected_year: int,
+) -> str:
+    # Monthly forecast spans can cross notebook publication boundaries where
+    # adjacent months are split between rolling and roy. In rolling next-year
+    # mode, include forward_1yr as well so early next-year months are not lost.
+    if forecast_type == "rolling":
+        current_year = datetime.date.today().year
+        if selected_year > current_year:
+            return "forecast_type = 'forward_1yr'"
+        types = ["rolling", "roy"]
+        if rolling_next_year:
+            types.append("forward_1yr")
+        in_list = ", ".join(f"'{t}'" for t in types)
+        return f"forecast_type IN ({in_list})"
+    return f"forecast_type = '{forecast_type}'"
 
 
 def _normalized_forecast_sql(
@@ -1154,6 +1168,11 @@ async def get_monthly(
     yf = _year_filter(selected_year)
     qf = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
+    forecast_type_condition = _monthly_forecast_type_condition(
+        eff_forecast_type,
+        rolling_next_year,
+        selected_year,
+    )
 
     # Closed quarter → actuals only. Current/future quarter → BOTH: actuals for
     # closed weeks + forecast for open weeks (spliced after the last actual, so
@@ -1205,7 +1224,7 @@ async def get_monthly(
                     + SQRT(SUM(POWER(GREATEST(COALESCE(CAST({upper_col} AS DOUBLE), 0)
                         - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
             FROM {FC_TABLE}
-            WHERE forecast_type = '{eff_forecast_type}'
+                        WHERE {forecast_type_condition}
               AND {_latest_run()}
                             -- Monthly table should show full forecast months (not only the
                             -- remaining open weeks after latest actuals splice).
@@ -1301,12 +1320,17 @@ async def get_ytd(
     upper_col = source["upper_col"]
 
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
-    year = year if year else datetime.date.today().year
+    selected_year = year if year else datetime.date.today().year
     pf   = _product_filter(product, product_line)
     gf   = _geo_filter(sales_market)
-    yf   = _year_filter(year)
-    qf   = _quarter_filter(quarter, year) if quarter else ""
+    yf   = _year_filter(selected_year)
+    qf   = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
+    forecast_type_condition = _monthly_forecast_type_condition(
+        eff_forecast_type,
+        rolling_next_year,
+        selected_year,
+    )
 
     # Closed quarter → actuals only. Current/future quarter → keep BOTH so the
     # running total shows realized-to-date (amber) plus the forecast path. The
@@ -1316,7 +1340,7 @@ async def get_ytd(
     if quarter is not None:
         today = datetime.date.today()
         current_quarter = ((today.month - 1) // 3) + 1
-        is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
+        is_past_quarter = (selected_year < today.year) or (selected_year == today.year and quarter < current_quarter)
         if is_past_quarter:
             include_forecasts = False  # closed quarter: actuals only
 
@@ -1340,7 +1364,7 @@ async def get_ytd(
                  SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
                  SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
             FROM {FC_TABLE}
-             WHERE forecast_type = '{eff_forecast_type}'
+               WHERE {forecast_type_condition}
               {date_filter}
               AND {_latest_run()}
               AND {_forecast_after_actuals_pred(pf, gf)}
@@ -1357,9 +1381,9 @@ async def get_ytd(
         # the sibling coroutine if one raises — no leaked never-awaited coroutine.
         pending = []
         if act_sql:
-            pending.append(("act", _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter)))
+            pending.append(("act", _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=selected_year, quarter=quarter)))
         if fc_sql:
-            pending.append(("fc", _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter)))
+            pending.append(("fc", _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=selected_year, quarter=quarter)))
         results = await asyncio.gather(*(c for _, c in pending))
         res_map = {k: r for (k, _), r in zip(pending, results)}
         act_rows = res_map.get("act", [])
@@ -1382,12 +1406,12 @@ async def get_ytd(
         range_end = datetime.date(range_end_seed.year, range_end_seed.month, 1) - datetime.timedelta(days=1)
     elif quarter is not None:
         qsm = (quarter - 1) * 3 + 1
-        range_start = dt.date(year, qsm, 1)
-        period_end = dt.date(year, 12, 31) if qsm + 2 >= 12 else (dt.date(year, qsm + 3, 1) - dt.timedelta(days=1))
+        range_start = dt.date(selected_year, qsm, 1)
+        period_end = dt.date(selected_year, 12, 31) if qsm + 2 >= 12 else (dt.date(selected_year, qsm + 3, 1) - dt.timedelta(days=1))
         range_end = period_end
     else:
-        range_start = dt.date(year, 1, 1)
-        range_end = dt.date(year, 12, 31)
+        range_start = dt.date(selected_year, 1, 1)
+        range_end = dt.date(selected_year, 12, 31)
 
     _data_dates = [d for d in list(act_map.keys()) + list(fc_map.keys()) if d]
     if _data_dates:
