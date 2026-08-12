@@ -1551,8 +1551,6 @@ const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
-const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Full Year' }];
-
 const _toIsoDate = (d) => {
   const dt = new Date(d);
   const y = dt.getUTCFullYear();
@@ -1685,7 +1683,6 @@ const _buildDemoLeaderboard = () => [
 const ForecastingPanel = () => {
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
-  const [fcType,      setFcType]      = useState('rolling');
   const [prodLine,    setProdLine]    = useState('All');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedQuarter, setSelectedQuarter] = useState(null);
@@ -1751,12 +1748,10 @@ const ForecastingPanel = () => {
     const current = new Date().getFullYear();
     return [current + 1, current, current - 1, current - 2];
   }, []);
-  const useRollingWindow = fcType === 'rolling' && selectedQuarter == null;
-  const apiYear = useRollingWindow ? null : selectedYear;
+  const isQuarterView = selectedQuarter != null;
+  const fcType = isQuarterView ? 'rolling' : 'roy';
+  const apiYear = selectedYear;
   const apiQuarter = selectedQuarter;
-  const periodLabel = useRollingWindow
-    ? 'Next 12 Months (Rolling)'
-    : (selectedQuarter != null ? `Q${selectedQuarter} ${selectedYear}` : `${selectedYear} Full Year`);
 
   const fetchOverviewData = useCallback(async () => {
     const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy] = await Promise.allSettled([
@@ -2089,9 +2084,6 @@ const ForecastingPanel = () => {
         <div>
           <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-            {FC_TYPES.map(f => (
-              <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>
-            ))}
             <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}
               className="select-dark"
               style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
@@ -2108,17 +2100,6 @@ const ForecastingPanel = () => {
               <option value="3">Q3 (Jul–Sep)</option>
               <option value="4">Q4 (Oct–Dec)</option>
             </select>
-            <span style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: useRollingWindow ? '#10b981' : '#94a3b8',
-              background: useRollingWindow ? 'rgba(16,185,129,0.12)' : 'rgba(148,163,184,0.12)',
-              border: useRollingWindow ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(148,163,184,0.2)',
-              padding: '3px 8px',
-              borderRadius: 999,
-            }}>
-              {periodLabel}
-            </span>
           </div>
         </div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
@@ -2211,10 +2192,6 @@ const ForecastingPanel = () => {
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd' }}>
           {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `Full Year ${selectedYear}`}
-        </span>
-        <span style={{ color: '#334155' }}>·</span>
-        <span style={{ fontSize: 12, color: '#94a3b8' }}>
-          {FC_TYPES.find(f => f.key === fcType)?.label}
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, color: '#94a3b8' }}>{activeModelDisplay} model</span>
@@ -2572,8 +2549,8 @@ const ForecastingPanel = () => {
           {tab === 'Monthly' && (
             <CardWrap explainKey="monthly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
               <SectionTitle>
-                {useRollingWindow
-                  ? 'Monthly Actuals vs Forecast Scenarios (Next 12 Months)'
+                {isQuarterView
+                  ? 'Monthly Actuals vs Forecast Scenarios (Selected Quarter)'
                   : 'Monthly Actuals vs Forecast Scenarios'}
               </SectionTitle>
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
