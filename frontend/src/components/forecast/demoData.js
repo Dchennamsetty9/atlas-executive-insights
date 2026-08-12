@@ -53,18 +53,20 @@ export const buildDemoYtd = (weeklyRows) => {
 };
 
 export const buildDemoMonthly = () => {
+  const currentYear = new Date().getFullYear();
   const months = [
-    { year: 2026, quarter: 2, month: 6, month_name: 'June' },
-    { year: 2026, quarter: 3, month: 7, month_name: 'July' },
-    { year: 2026, quarter: 3, month: 8, month_name: 'August' },
-    { year: 2026, quarter: 3, month: 9, month_name: 'September' },
+    { year: currentYear, quarter: 2, month: 6, month_name: 'June' },
+    { year: currentYear, quarter: 3, month: 7, month_name: 'July' },
+    { year: currentYear, quarter: 3, month: 8, month_name: 'August' },
+    { year: currentYear, quarter: 3, month: 9, month_name: 'September' },
   ];
   return months.map((m, idx) => ({ ...m, arr_actual: idx === 0 ? 44200000 : null, arr_worst: 40500000 + idx * 1050000, arr_likely: 43100000 + idx * 1180000, arr_best: 46000000 + idx * 1260000 }));
 };
 
 export const buildDemoHistorical = () => {
   const rows = [];
-  const years = [2024, 2025, 2026];
+  const currentYear = new Date().getFullYear();
+  const years = [currentYear - 2, currentYear - 1, currentYear];
   years.forEach((y, yi) => {
     for (let w = 1; w <= 52; w += 1) {
       const seasonal = Math.sin((w / 52) * Math.PI * 2) * 1400000;

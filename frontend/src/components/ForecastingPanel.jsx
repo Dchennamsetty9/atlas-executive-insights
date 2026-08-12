@@ -2094,7 +2094,7 @@ const ForecastingPanel = () => {
               className="select-dark"
               style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
                        color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-              <option value="">Full Year</option>
+              <option value="">Year</option>
               <option value="1">Q1 (Jan–Mar)</option>
               <option value="2">Q2 (Apr–Jun)</option>
               <option value="3">Q3 (Jul–Sep)</option>
@@ -2191,7 +2191,7 @@ const ForecastingPanel = () => {
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd' }}>
-          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `Full Year ${selectedYear}`}
+          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `${selectedYear} Year`}
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, color: '#94a3b8' }}>{activeModelDisplay} model</span>
@@ -2276,7 +2276,7 @@ const ForecastingPanel = () => {
                                           display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                               <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>
                                 Forecast range not available — all {selectedQuarter ? `Q${selectedQuarter}` : 'selected'} weeks are closed actuals.
-                                Select a future quarter or <b style={{color:'#f59e0b'}}>Full Year</b> to see scenario bands.
+                                Select a future quarter to see scenario bands.
                               </div>
                             </div>
                           </div>

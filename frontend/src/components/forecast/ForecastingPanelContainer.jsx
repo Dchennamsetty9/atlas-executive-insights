@@ -2,7 +2,7 @@ import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, use
 import { apiService } from '../../services/api';
 import { FC_TYPES, MODELS, MODEL_LB_KEY, MODEL_KEY_META, PROD_LINES, TABS } from './constants';
 import { buildDemoByProduct, buildDemoHistorical, buildDemoLeaderboard, buildDemoMonthly, buildDemoWeekly, buildDemoYtd } from './demoData';
-import { Skeleton, formatModelLabel, fmtDate, fmtM, mapeColor, calculateStaleness } from './common';
+import { Skeleton, formatModelLabel, fmtDate, fmtM, mapeColor, calculateStaleness, FORECAST_YEAR_OPTIONS } from './common';
 
 const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
 const MultiYearTab = lazy(() => import('./tabs/MultiYearTab'));
@@ -37,6 +37,12 @@ const ForecastingPanelContainer = () => {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedQuarter, setSelectedQuarter] = useState(null);
   const [multiYearView, setMultiYearView] = useState('overlay');
+
+  useEffect(() => {
+    if (!FORECAST_YEAR_OPTIONS.includes(selectedYear)) {
+      setSelectedYear(FORECAST_YEAR_OPTIONS[FORECAST_YEAR_OPTIONS.length - 1]);
+    }
+  }, [selectedYear]);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [salesMarket, setSalesMarket] = useState('All');
 
@@ -401,7 +407,7 @@ const ForecastingPanelContainer = () => {
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>REGION</div><select value={salesMarket} onChange={(e) => setSalesMarket(e.target.value)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="All">All Regions</option><option value="NA">NA</option><option value="EMEA">EMEA</option><option value="APAC">APAC</option><option value="LATAM">LATAM</option></select></div>
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
-        <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div><div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>{FC_TYPES.map((f) => <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>)}<select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>{[2026, 2025, 2024, 2023].map((yr) => <option key={yr} value={yr}>{yr}</option>)}</select><select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="">Full Year</option><option value="1">Q1 (Jan–Mar)</option><option value="2">Q2 (Apr–Jun)</option><option value="3">Q3 (Jul–Sep)</option><option value="4">Q4 (Oct–Dec)</option></select></div></div>
+        <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>TIME PERIOD</div><div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>{FC_TYPES.map((f) => <button key={f.key} onClick={() => setFcType(f.key)} style={pill(fcType === f.key, '#3b82f6')}>{f.label}</button>)}<select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>{FORECAST_YEAR_OPTIONS.map((yr) => <option key={yr} value={yr}>{yr}</option>)}</select><select value={selectedQuarter || ''} onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)} style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}><option value="">Full Year</option><option value="1">Q1 (Jan–Mar)</option><option value="2">Q2 (Apr–Jun)</option><option value="3">Q3 (Jul–Sep)</option><option value="4">Q4 (Oct–Dec)</option></select></div></div>
       </div>
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
         {TABS.map((t, i) => <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} tabIndex={tab === t ? 0 : -1} onKeyDown={(e) => {
