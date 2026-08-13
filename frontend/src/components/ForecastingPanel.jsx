@@ -1052,23 +1052,39 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
+  const [facts,     setFacts]     = useState(null); // deterministic, computed insights
+
+  const activePl  = prodLine && prodLine !== 'All' ? prodLine : null;
+  const activeGeo = salesMarket && salesMarket !== 'All' ? salesMarket : null;
 
   const loadAi = useCallback(async () => {
     setAiLoading(true); setAiError(null);
-    try {
-      // Unified insights are precomputed per product (UCC/ITSG/ALL) — pass the
-      // active product so the tab reflects the current selection. Region gets a
-      // scope note from the backend (insights are product-level).
-      const res = await apiService.getForecastV2Intelligence(prodLine, salesMarket);
-      // Support both wrapped {source, data:{...}} and legacy flat shape
+    // Headline facts are computed from reliable numeric endpoints; the LLM
+    // narrative is best-effort and demoted to a collapsible section. Fetch all
+    // in parallel so a failure in one never blanks the tab.
+    const [intel, aqtr, bt, rd] = await Promise.allSettled([
+      apiService.getForecastV2Intelligence(prodLine, salesMarket),
+      apiService.getForecastV2AccuracyByQuarter(activePl),
+      apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
+      apiService.getForecastV2RunDelta(activePl, activeGeo),
+    ]);
+
+    if (intel.status === 'fulfilled') {
+      const res = intel.value;
       const d = (res?.data && typeof res.data === 'object') ? res.data : res;
-      setAiData({ ...d, _source: res?.source ?? d?.source });
-    } catch (e) {
-      setAiError(e.message || 'Failed to load AI insights');
-    } finally {
-      setAiLoading(false);
+      setAiData({ ...(d || {}), _source: res?.source ?? d?.source });
+    } else {
+      setAiData(null);
+      setAiError(intel.reason?.message || 'AI narrative unavailable');
     }
-  }, [prodLine, salesMarket]); // refetch when the product/region selection changes
+
+    setFacts({
+      acc:      aqtr.status === 'fulfilled' ? _historicalAccuracy(aqtr.value) : null,
+      trust:    bt.status   === 'fulfilled' ? bt.value : null,
+      runDelta: rd.status   === 'fulfilled' ? rd.value : null,
+    });
+    setAiLoading(false);
+  }, [model, prodLine, salesMarket, activePl, activeGeo]); // refetch on selection change
 
   useEffect(() => { loadAi(); }, [loadAi]);
 
@@ -1100,28 +1116,48 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
     </div>
   );
 
-  if (aiError) return (
-    <div style={{ padding: '24px', background: 'rgba(239,68,68,0.06)', borderRadius: 10, color: '#ef4444', textAlign: 'center' }}>
-      <p style={{ margin: 0 }}>{aiError}</p>
-      <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
-                                        background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: 12 }}>Retry</button>
-    </div>
-  );
+  // ── Three practical, computed insights — Brian's actual questions ────────────
+  const FACT_CARDS = [];
+  if (facts?.acc && !facts.acc.isDemo) {
+    const a = facts.acc;
+    FACT_CARDS.push({
+      icon: '🎯',
+      color: a.avgSmape < 15 ? '#10b981' : a.avgSmape < 25 ? '#f59e0b' : '#ef4444',
+      title: 'Historical accuracy',
+      text: `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarter${a.nQuarters > 1 ? 's' : ''}.`,
+    });
+  }
+  {
+    const s = facts?.trust?.source === 'live' ? facts.trust.summary : null;
+    if (s && (s.mape_pct != null || s.coverage_pct != null)) {
+      const bits = [];
+      if (s.mape_pct != null) bits.push(`within ~${s.mape_pct}% of the actual four weeks out`);
+      if (s.coverage_pct != null && s.weeks_scored) bits.push(`the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
+      FACT_CARDS.push({
+        icon: '⏱️', color: '#3b82f6', title: 'How close, this far out',
+        text: `Recently, forecasts have landed ${bits.join('; ')}.`,
+      });
+    }
+  }
+  {
+    const rd = facts?.runDelta;
+    if (rd?.available && rd?.total) {
+      const d = rd.total.delta ?? 0;
+      const pct = rd.total.delta_pct;
+      const flat = pct != null && Math.abs(pct) < 0.1;
+      const move = flat ? 'was essentially unchanged'
+        : `moved ${d >= 0 ? '+' : '−'}${fmtM(Math.abs(d))}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct}%)` : ''}`;
+      const drivers = (rd.drivers || []).slice(0, 2).map(dr =>
+        `${dr.product}${dr.sales_market && dr.sales_market !== 'Total' ? '/' + dr.sales_market : ''} ${dr.delta >= 0 ? '+' : '−'}${fmtM(Math.abs(dr.delta))}`);
+      FACT_CARDS.push({
+        icon: '🔀', color: d >= 0 ? '#10b981' : '#ef4444', title: 'What changed since last run',
+        text: `The outlook ${move}${rd.previous_run && rd.latest_run ? `, ${fmtDate(rd.previous_run)} → ${fmtDate(rd.latest_run)}` : ''}.` +
+              `${drivers.length ? ` Biggest movers: ${drivers.join(', ')}.` : ''}`,
+      });
+    }
+  }
 
-  // Show actionable empty state when backend returns an error object (table not yet populated)
-  if (aiData?.error && !aiData?.key_drivers?.length) return (
-    <div style={{ padding: '24px', background: 'rgba(245,158,11,0.06)', borderRadius: 10, color: '#f59e0b', textAlign: 'center' }}>
-      <div style={{ fontSize: 24, marginBottom: 8 }}>💭</div>
-      <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{aiData.narrative || aiData.error}</p>
-      <p style={{ margin: '8px 0 0', fontSize: 12, color: '#64748b' }}>
-        Run Cell 10 (Step 7) of the Panel Writer notebook to populate the AI Insights Delta table.
-      </p>
-      <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
-                                        background: 'transparent', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)', fontSize: 12 }}>
-        ↻ Retry
-      </button>
-    </div>
-  );
+  const llmUnavailable = !!aiError || (aiData?.error && !aiData?.key_drivers?.length);
 
   const SECTIONS = [
     { key: 'key_drivers',         title: 'Key Drivers',          icon: '✅', color: '#10b981' },
@@ -1132,6 +1168,46 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Practical insights — lead with the three questions leadership asks */}
+      {FACT_CARDS.length > 0 ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+          {FACT_CARDS.map((c, i) => (
+            <div key={i} style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${c.color}33`,
+                                  borderRadius: 12, padding: '14px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 15 }}>{c.icon}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{c.title}</span>
+              </div>
+              <div style={{ fontSize: 13.5, color: '#cbd5e1', lineHeight: 1.55 }}>{c.text}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding: '16px 18px', borderRadius: 10, fontSize: 13, color: '#94a3b8',
+                      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+          Accuracy and change-driver insights build up automatically as forecast runs accumulate week over week.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+        <button onClick={loadAi} disabled={aiLoading}
+          style={{ padding: '4px 12px', borderRadius: 6, cursor: aiLoading ? 'default' : 'pointer',
+                   background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                   color: '#64748b', fontSize: 11 }}>
+          {aiLoading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
+
+      <details style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 12 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748b', userSelect: 'none' }}>
+          Full AI analysis{llmUnavailable ? ' (narrative pending data)' : ''}
+        </summary>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 14 }}>
+      {llmUnavailable && (
+        <div style={{ padding: '14px', background: 'rgba(245,158,11,0.06)', borderRadius: 10, color: '#f59e0b', fontSize: 12, lineHeight: 1.5 }}>
+          {aiData?.narrative || aiData?.error || aiError || 'AI narrative not yet available.'} Populate the insights Delta table (Panel Writer, Step 7) to enable the written analysis.
+        </div>
+      )}
       {isDemo && (
         <div style={{ padding: '8px 14px', borderRadius: 8, fontSize: 12, color: '#f59e0b',
                       background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
@@ -1240,6 +1316,8 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
           {aiLoading ? 'Refreshing…' : '↻ Refresh'}
         </button>
       </div>
+        </div>
+      </details>
     </div>
   );
 };
@@ -1680,6 +1758,219 @@ const _buildDemoLeaderboard = () => [
   { product: 'ITSG',  sales_market: 'Total', Ensemble: 31.9, ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 31.9, best_model: 'Ensemble' },
 ];
 
+// ── Executive Summary — deterministic, computed straight from the numbers ─────
+// Answers leadership's three questions with zero LLM text:
+//   1) what is the expected finish   2) how accurate is it   3) next quarter.
+// Every figure traces to an endpoint already rendered elsewhere on the page, so
+// there is nothing here that can "go off the rails."
+
+// Per-quarter landing for a given year, replicating QuarterlyBarChart exactly
+// (actuals + open-week forecast; bands combined in quadrature, not summed).
+const _quarterLandings = (yearRows, year) => {
+  if (!yearRows || yearRows.length === 0) return null;
+  const today   = new Date();
+  const curQtr  = Math.floor(today.getMonth() / 3) + 1;
+  const curYear = today.getFullYear();
+  const qtrs = [1, 2, 3, 4].map(q => {
+    const rows = yearRows.filter(r => {
+      const d = new Date(r.date);
+      return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
+    });
+    const actual   = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
+    const forecast = rows.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
+    const loSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, lk - (r.arr_worst ?? lk)) ** 2 : s;
+    }, 0);
+    const upSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, (r.arr_best ?? lk) - lk) ** 2 : s;
+    }, 0);
+    const isPast    = year < curYear || (year === curYear && q < curQtr);
+    const isCurrent = year === curYear && q === curQtr;
+    const landing   = actual + forecast;
+    return {
+      q, actual, forecast, landing,
+      worst: !isPast && landing > 0 ? Math.max(0, landing - Math.sqrt(loSq)) : null,
+      best:  !isPast && landing > 0 ? landing + Math.sqrt(upSq) : null,
+      isPast, isCurrent, isFuture: !isPast && !isCurrent, weeks: rows.length,
+    };
+  });
+  const fyLanding = qtrs.reduce((s, q) => s + (q.landing ?? 0), 0);
+  const fyActual  = qtrs.reduce((s, q) => s + (q.actual  ?? 0), 0);
+  return { qtrs, fyLanding, fyActual, curQtr, curYear };
+};
+
+// Mean sMAPE for the Ensemble across the closed quarters in the accuracy matrix.
+const _historicalAccuracy = (accuracyByQtr) => {
+  if (!accuracyByQtr || !Array.isArray(accuracyByQtr.models)) return null;
+  const ens = accuracyByQtr.models.find(m => /ensemble/i.test(m.model)) || accuracyByQtr.models[0];
+  if (!ens || !Array.isArray(ens.values)) return null;
+  const vals = ens.values.filter(v => v != null && !Number.isNaN(Number(v))).map(Number);
+  if (!vals.length) return null;
+  const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return { avgSmape: avg, nQuarters: vals.length, isDemo: accuracyByQtr.source === 'demo' };
+};
+
+const ExecutiveSummary = ({ loading, yearRows, allModels, runDelta,
+                            trust, accuracyByQtr, selectedYear, prodLine }) => {
+  const prodLabel = prodLine === 'All' ? 'All products' : prodLine;
+
+  if (loading) {
+    return (
+      <div style={{ background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.22)',
+                    borderRadius: 14, padding: '18px 20px' }}>
+        <Skeleton height={18} /><div style={{ height: 10 }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+          {[0,1,2].map(i => <Skeleton key={i} height={78} />)}
+        </div>
+      </div>
+    );
+  }
+
+  const ql = _quarterLandings(yearRows, selectedYear);
+  if (!ql) return null; // no year data → fall back to existing cards silently
+
+  const acc       = _historicalAccuracy(accuracyByQtr);
+  const trustLive = trust?.source === 'live';
+  const cov       = trustLive ? trust.summary?.coverage_pct : null;
+  const covWeeks  = trustLive ? trust.summary?.weeks_scored : null;
+  const btMape    = trustLive ? trust.summary?.mape_pct : null;
+
+  // Focus quarter = the in-progress quarter when we're viewing the current year;
+  // otherwise summarize the whole selected year.
+  const cur   = ql.qtrs.find(q => q.isCurrent) || null;
+  const next  = cur ? (ql.qtrs.find(q => q.q === cur.q + 1) || null) : null;
+  const finish   = cur || null;                // "expected finish" subject
+  const finishQ  = finish ? `Q${finish.q} ${selectedYear}` : `FY ${selectedYear}`;
+  const finishVal = finish ? finish.landing : ql.fyLanding;
+  const finishActual = finish ? finish.actual : ql.fyActual;
+  const finishWorst = finish ? finish.worst : null;
+  const finishBest  = finish ? finish.best  : null;
+  const pctBooked = finishVal > 0 ? Math.round((finishActual / finishVal) * 100) : null;
+
+  // Next-quarter tile: the following quarter if it exists in this year, else the
+  // full-year total (so the tile is never blank when we're already in Q4).
+  const nextLabel = next ? `Q${next.q} ${selectedYear}` : `FY ${selectedYear}`;
+  const nextVal   = next ? next.landing : ql.fyLanding;
+  const nextWorst = next ? next.worst : null;
+  const nextBest  = next ? next.best  : null;
+
+  // Plain-language one-liner.
+  const parts = [];
+  parts.push(`${finishQ} ${prodLabel} is tracking to finish around ${fmtM(finishVal)}` +
+             (finishWorst != null && finishBest != null ? ` (range ${fmtM(finishWorst)}–${fmtM(finishBest)})` : '') + '.');
+  if (finishActual > 0 && pctBooked != null && finish) {
+    parts.push(`${fmtM(finishActual)} is already booked — about ${pctBooked}% of the way there.`);
+  }
+  if (finish) parts.push(`That puts the full year near ${fmtM(ql.fyLanding)}.`);
+  if (acc && !acc.isDemo) {
+    parts.push(`Forecasts have averaged about ±${acc.avgSmape.toFixed(0)}% error over the last ${acc.nQuarters} closed quarter${acc.nQuarters > 1 ? 's' : ''}.`);
+  } else if (cov != null) {
+    parts.push(`The 80% range has captured the actual in ${cov}% of recent weeks.`);
+  }
+  if (runDelta?.available && runDelta?.total && runDelta.total.delta != null) {
+    const dd = runDelta.total.delta;
+    const dpct = runDelta.total.delta_pct;
+    if (dpct != null && Math.abs(dpct) >= 0.1) {
+      parts.push(`Since the last run the outlook is ${dd >= 0 ? 'up' : 'down'} ${fmtM(Math.abs(dd))}.`);
+    }
+  }
+  const narrative = parts.join(' ');
+
+  const tileWrap = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+                     borderRadius: 12, padding: '14px 16px' };
+  const tileLabel = { fontSize: 9, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6, fontWeight: 700 };
+  const tileSub   = { fontSize: 10.5, color: '#64748b', marginTop: 6, lineHeight: 1.45 };
+
+  // Accuracy tile content
+  const accColor = acc && !acc.isDemo
+    ? (acc.avgSmape < 15 ? '#10b981' : acc.avgSmape < 25 ? '#f59e0b' : '#ef4444')
+    : '#94a3b8';
+
+  return (
+    <div style={{ background: 'linear-gradient(180deg, rgba(59,130,246,0.07), rgba(59,130,246,0.02))',
+                  border: '1px solid rgba(59,130,246,0.25)', borderRadius: 14, padding: '18px 20px',
+                  display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0', letterSpacing: 0.2 }}>
+          Executive Summary
+          <span style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginLeft: 8 }}>· {prodLabel} · {selectedYear}</span>
+        </div>
+        <span style={{ fontSize: 9.5, color: '#64748b', padding: '3px 9px', borderRadius: 20,
+                       background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          Computed from the latest forecast run
+        </span>
+      </div>
+
+      <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.65 }}>{narrative}</div>
+
+      {/* Three answers, in Brian's order */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        {/* 1 — Expected finish */}
+        <div style={tileWrap}>
+          <div style={tileLabel}>Expected finish · {finishQ}</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: '#f1f5f9', letterSpacing: -0.6, lineHeight: 1 }}>{fmtM(finishVal)}</div>
+          <div style={tileSub}>
+            {finish && finishActual > 0
+              ? <>{fmtM(finishActual)} booked + {fmtM(finish.forecast)} forecast{pctBooked != null ? ` · ${pctBooked}% there` : ''}</>
+              : 'Full-year most-likely outlook'}
+            {finishWorst != null && finishBest != null && <><br/>Range {fmtM(finishWorst)} – {fmtM(finishBest)}</>}
+          </div>
+        </div>
+
+        {/* 2 — How accurate */}
+        <div style={tileWrap}>
+          <div style={tileLabel}>How accurate</div>
+          {acc && !acc.isDemo ? (
+            <>
+              <div style={{ fontSize: 26, fontWeight: 900, color: accColor, letterSpacing: -0.6, lineHeight: 1 }}>±{acc.avgSmape.toFixed(0)}%</div>
+              <div style={tileSub}>
+                Avg error over {acc.nQuarters} closed quarter{acc.nQuarters > 1 ? 's' : ''}
+                {btMape != null && <><br/>~{btMape}% off at 4 weeks out</>}
+                {cov != null && covWeeks ? <><br/>Range caught {cov}% of last {covWeeks} wks (target ~80%)</> : null}
+              </div>
+            </>
+          ) : cov != null && covWeeks ? (
+            <>
+              <div style={{ fontSize: 26, fontWeight: 900, color: '#f1f5f9', letterSpacing: -0.6, lineHeight: 1 }}>{cov}%</div>
+              <div style={tileSub}>of last {covWeeks} weeks landed inside the 80% range (target ~80%){btMape != null && <><br/>~{btMape}% off at 4 weeks out</>}</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#94a3b8', lineHeight: 1.1 }}>Building history</div>
+              <div style={tileSub}>Accuracy fills in as forecast vintages accumulate week over week.</div>
+            </>
+          )}
+        </div>
+
+        {/* 3 — Next quarter */}
+        <div style={tileWrap}>
+          <div style={tileLabel}>{next ? `Next quarter · ${nextLabel}` : `Full year · ${selectedYear}`}</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: '#60a5fa', letterSpacing: -0.6, lineHeight: 1 }}>{fmtM(nextVal)}</div>
+          <div style={tileSub}>
+            {next ? 'Most-likely outlook' : 'Full-year most-likely outlook'}
+            {nextWorst != null && nextBest != null && <><br/>Range {fmtM(nextWorst)} – {fmtM(nextBest)}</>}
+          </div>
+        </div>
+      </div>
+
+      {/* Brian's ask: one cumulative graph showing where every model lands. */}
+      {allModels && allModels.length > 0 && (
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em', marginBottom: 2 }}>
+            All models — cumulative outlook
+          </div>
+          <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
+            Where each model lands vs actuals. Tight clustering = models agree.
+          </div>
+          <MultiModelCumulativeChart rows={allModels} />
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ForecastingPanel = () => {
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
@@ -1754,7 +2045,7 @@ const ForecastingPanel = () => {
   const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy, bt, aqtr] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
@@ -1767,6 +2058,10 @@ const ForecastingPanel = () => {
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
+      // Accuracy inputs for the top Executive Summary (so the "how accurate"
+      // answer is available on first load, not only after visiting Accuracy tab).
+      apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
+      apiService.getForecastV2AccuracyByQuarter(activePl),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1788,6 +2083,10 @@ const ForecastingPanel = () => {
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
       setYearRows(base.length || roy.length ? [...base, ...roy] : null);
     }
+    // Feed the Executive Summary's accuracy answer. These also populate the
+    // Accuracy tab's state so it renders instantly when opened.
+    if (bt.status === 'fulfilled' && bt.value) setTrust(bt.value);
+    if (aqtr.status === 'fulfilled' && aqtr.value) setAccuracyByQtr(aqtr.value);
 
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
@@ -2231,6 +2530,20 @@ const ForecastingPanel = () => {
 
           {tab === 'Overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Executive Summary — the point, first: expected finish, accuracy,
+                  next quarter, and where every model lands. Everything below is
+                  the drill-down. */}
+              <ExecutiveSummary
+                loading={loading}
+                yearRows={yearRows}
+                allModels={allModels}
+                runDelta={runDelta}
+                trust={trust}
+                accuracyByQtr={accuracyByQtr}
+                selectedYear={selectedYear}
+                prodLine={prodLine}
+              />
+
               {/* Hero KPI cards */}
               {loading
                 ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
@@ -2411,21 +2724,8 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
-              {/* Multi-model cumulative — only show if data exists */}
-              {allModels && allModels.length > 0 && (
-                <CardWrap downloadName="multi_model_cumulative"
-                          explainKey="multi_model" explainProductLine={prodLine}
-                          explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                  <SectionTitle>
-                    All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
-                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
-                  </SectionTitle>
-                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 4 }}>
-                    Cumulative running total per model — shows where each forecast lands relative to actuals.
-                  </div>
-                  {loading ? <Skeleton height={260} /> : <MultiModelCumulativeChart rows={allModels} />}
-                </CardWrap>
-              )}
+              {/* All-models cumulative now lives in the Executive Summary hero
+                  at the top of this tab. */}
             </div>
           )}
 
