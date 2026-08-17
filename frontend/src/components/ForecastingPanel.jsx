@@ -328,7 +328,7 @@ const WeeklyChart = ({ rows }) => {
         <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
         {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
         {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.best)}</b></div>}
+        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-10 upside: <b>{fmtM(d.best)}</b></div>}
         {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
         {d.innerLo != null && d.innerHi != null && (
           <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>

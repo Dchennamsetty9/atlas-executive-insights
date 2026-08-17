@@ -440,7 +440,11 @@ print(f"Rows incl. actuals: {combined.count()}")
 total = (combined
     .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
-         F.sum("p10").alias("p10"), F.sum("p50").alias("p50"), F.sum("p90").alias("p90"),
+         F.sum("p50").alias("p50"),
+         # Quadrature band aggregation: σ_total = sqrt(Σσᵢ²) so UCC+ITSG uncertainty
+         # doesn't compound additively (which assumes perfect correlation and overstates risk).
+         (F.sum("p50") - F.sqrt(F.sum(F.pow(F.col("p50") - F.col("p10"), 2)))).alias("p10"),
+         (F.sum("p50") + F.sqrt(F.sum(F.pow(F.col("p90") - F.col("p50"), 2)))).alias("p90"),
          F.sum("most_likely").alias("most_likely"),
          F.max("recommended_for_exec").alias("recommended_for_exec"))
     .withColumn("product", F.lit("Total"))
@@ -465,10 +469,19 @@ def _latest(table, ts_col):
 
 acc_parts = []
 try:
-    u = _latest(UCC_BASELINE, "run_date_utc").select(
-        F.lit("UCC").alias("product"), F.col("model"),
-        F.col("holdout_wape_baseline").alias("model_wape"),
-        F.lit(None).cast("double").alias("model_mape"))
+    u = _latest(UCC_BASELINE, "run_date_utc")
+    if "metric_scope" in u.columns:
+        tot = u.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
+        u = tot if tot.count() > 0 else u
+    u = (u.select(
+            F.lit("UCC").alias("product"),
+            F.col("model"),
+            F.col("holdout_wape_baseline").cast("double").alias("model_wape"),
+            F.lit(None).cast("double").alias("model_mape"))
+         # Deterministic collapse for duplicate baseline rows
+         .groupBy("product", "model")
+         .agg(F.min("model_wape").alias("model_wape"),
+              F.min("model_mape").alias("model_mape")))
     acc_parts.append(u)
 except Exception as exc:
     print(f"  WARN UCC baseline skipped: {exc}")
@@ -477,9 +490,13 @@ try:
     if "metric_scope" in i.columns:
         tot = i.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
         i = tot if tot.count() > 0 else i
-    i = i.select(F.lit("ITSG").alias("product"), F.col("model"),
-                 F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).alias("model_wape"),
-                 F.col("mape").alias("model_mape"))
+    i = (i.select(F.lit("ITSG").alias("product"), F.col("model"),
+                  F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).cast("double").alias("model_wape"),
+                  F.col("mape").cast("double").alias("model_mape"))
+         # Deterministic collapse for duplicate baseline rows
+         .groupBy("product", "model")
+         .agg(F.min("model_wape").alias("model_wape"),
+              F.min("model_mape").alias("model_mape")))
     acc_parts.append(i)
 except Exception as exc:
     print(f"  WARN ITSG baseline skipped: {exc}")
@@ -488,7 +505,6 @@ if acc_parts:
     acc = acc_parts[0]
     for a in acc_parts[1:]:
         acc = acc.unionByName(a)
-    acc = acc.dropDuplicates(["product", "model"])
     results = results_base.join(acc, ["product", "model"], "left")
 else:
     results = (results_base
