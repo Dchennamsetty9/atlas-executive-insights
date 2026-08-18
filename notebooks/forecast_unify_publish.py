@@ -216,7 +216,37 @@ assert ucc is not None or itsg is not None, "No source forecast tables available
 
 from pyspark.sql import functions as F
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EXACT-VALUE PHILOSOPHY
+# ══════════════════════════════════════════════════════════════════════════════
+# This notebook publishes EXACT values from the upstream forecast pipelines.
+#
+# Source of p10 / p50 / p90:
+#   - UCC: Monte Carlo simulation quantiles from ucc_forecast_v5
+#   - ITSG: Holdout-residual-based quantiles from itsg_forecast_v5
+#   These are the EXACT quantiles written by the per-product forecasting
+#   notebooks. No reconstruction, no band-math, no sqrt(sum-of-squares).
+#
+# Source of most_likely:
+#   - Always equals p50 (the median point estimate). Never an inferred or
+#     approximate value.
+#
+# Source of actuals:
+#   - CBE tables (ucc_forecast_cbe, itsg_forecast_cbe) for 2026+ weeks: TRUE
+#     Growth ARR from SFDC, closed weekly.
+#   - arr_forecast_v2 for 2022-2025 historical (UCC only; ITSG there is inflated).
+#
+# The app MUST consume these exact published values. It should NOT reconstruct
+# Most Likely / Stretch Case / Risk Floor from approximate band math.
+# ══════════════════════════════════════════════════════════════════════════════
+
 def normalize_forecast(df, product):
+    """Normalize a V5 forecast table into the canonical schema.
+
+    All numeric values (p10, p50, p90, most_likely) are passed through EXACTLY
+    as they appear in the source table. No transformation, no approximation.
+    recommended_for_exec is preserved from the upstream pipeline.
+    """
     if df is None:
         return None
     cols = set(df.columns)
@@ -225,13 +255,15 @@ def normalize_forecast(df, product):
         .withColumn("run_date", F.current_date())
         .withColumn("published_at_utc", F.current_timestamp())
         .withColumn("ds", F.to_date(F.col("ds")))                 # unify DATE type
-        .withColumn("most_likely", F.col("p50"))
-        .withColumn("actual", F.lit(None).cast("double"))
+        .withColumn("most_likely", F.col("p50"))                   # EXACT: most_likely := p50
+        .withColumn("actual", F.lit(None).cast("double"))          # forecast rows have no actual
         .withColumn("forecast_type", F.lit(None).cast("string"))  # set in Cell 4
         .withColumn("forecast_view", F.lit("adaptive"))            # default; BOQ rows added in Cell 4b
         .withColumn("source_run_ts",
                     F.col("run_timestamp_utc") if "run_timestamp_utc" in cols
                     else F.lit(None).cast("timestamp")))
+    # recommended_for_exec is preserved from the source V5 table (bigint).
+    # If not present in source, it defaults to NULL (filled by the loop below).
     for c in BASE:
         if c not in out.columns:
             out = out.withColumn(c, F.lit(None))
@@ -437,14 +469,34 @@ print(f"Rows incl. actuals: {combined.count()}")
 # COMMAND ----------
 
 # DBTITLE 1,Cell 6 — Total rollup (UCC + ITSG)
-total = (combined
+# ══════════════════════════════════════════════════════════════════════════════
+# TOTAL ROLLUP — EXACT SUM, NOT VARIANCE RECONSTRUCTION
+# ══════════════════════════════════════════════════════════════════════════════
+# The "Total" product = UCC + ITSG summed per (ds, market, model, forecast_type, view).
+#
+# Why simple SUM is correct and preferred:
+#   actual:     SUM of actuals = total actual (exact).
+#   p50:        SUM of per-product p50 = total point estimate (exact for expectations).
+#   most_likely: same as p50 (exact).
+#   p10 / p90:  SUM of per-product quantiles. This is conservative for p10 and
+#               aggressive for p90 (exact only under perfect correlation). But it is
+#               the PUBLISHED truth — the app reads these values directly. No sqrt,
+#               no variance math, no band reconstruction.
+#
+# Guard: strip any pre-existing "Total" rows from upstream sources before
+# computing the rollup, preventing accidental double-counting.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Safety guard: remove any "Total" product rows that leaked from upstream sources
+# (e.g. arr_forecast_v2 had a 'Total' product that includes non-Growth revenue).
+per_product = combined.where(F.upper(F.col("product")) != "TOTAL")
+
+total = (per_product
     .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
+         F.sum("p10").alias("p10"),
          F.sum("p50").alias("p50"),
-         # Quadrature band aggregation: σ_total = sqrt(Σσᵢ²) so UCC+ITSG uncertainty
-         # doesn't compound additively (which assumes perfect correlation and overstates risk).
-         (F.sum("p50") - F.sqrt(F.sum(F.pow(F.col("p50") - F.col("p10"), 2)))).alias("p10"),
-         (F.sum("p50") + F.sqrt(F.sum(F.pow(F.col("p90") - F.col("p50"), 2)))).alias("p90"),
+         F.sum("p90").alias("p90"),
          F.sum("most_likely").alias("most_likely"),
          F.max("recommended_for_exec").alias("recommended_for_exec"))
     .withColumn("product", F.lit("Total"))
@@ -452,8 +504,10 @@ total = (combined
     .withColumn("published_at_utc", F.current_timestamp())
     .select(*BASE))
 
-results_base = combined.unionByName(total)
+# Final results_base = per-product rows (UCC, ITSG) + computed Total
+results_base = per_product.unionByName(total)
 print(f"Rows incl. Total rollup: {results_base.count()}")
+print(f"  Per-product rows: {per_product.count()}, Total rollup rows: {total.count()}")
 
 # COMMAND ----------
 
@@ -469,19 +523,10 @@ def _latest(table, ts_col):
 
 acc_parts = []
 try:
-    u = _latest(UCC_BASELINE, "run_date_utc")
-    if "metric_scope" in u.columns:
-        tot = u.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
-        u = tot if tot.count() > 0 else u
-    u = (u.select(
-            F.lit("UCC").alias("product"),
-            F.col("model"),
-            F.col("holdout_wape_baseline").cast("double").alias("model_wape"),
-            F.lit(None).cast("double").alias("model_mape"))
-         # Deterministic collapse for duplicate baseline rows
-         .groupBy("product", "model")
-         .agg(F.min("model_wape").alias("model_wape"),
-              F.min("model_mape").alias("model_mape")))
+    u = _latest(UCC_BASELINE, "run_date_utc").select(
+        F.lit("UCC").alias("product"), F.col("model"),
+        F.col("holdout_wape_baseline").alias("model_wape"),
+        F.lit(None).cast("double").alias("model_mape"))
     acc_parts.append(u)
 except Exception as exc:
     print(f"  WARN UCC baseline skipped: {exc}")
@@ -490,13 +535,9 @@ try:
     if "metric_scope" in i.columns:
         tot = i.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
         i = tot if tot.count() > 0 else i
-    i = (i.select(F.lit("ITSG").alias("product"), F.col("model"),
-                  F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).cast("double").alias("model_wape"),
-                  F.col("mape").cast("double").alias("model_mape"))
-         # Deterministic collapse for duplicate baseline rows
-         .groupBy("product", "model")
-         .agg(F.min("model_wape").alias("model_wape"),
-              F.min("model_mape").alias("model_mape")))
+    i = i.select(F.lit("ITSG").alias("product"), F.col("model"),
+                 F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).alias("model_wape"),
+                 F.col("mape").alias("model_mape"))
     acc_parts.append(i)
 except Exception as exc:
     print(f"  WARN ITSG baseline skipped: {exc}")
@@ -505,6 +546,7 @@ if acc_parts:
     acc = acc_parts[0]
     for a in acc_parts[1:]:
         acc = acc.unionByName(a)
+    acc = acc.dropDuplicates(["product", "model"])
     results = results_base.join(acc, ["product", "model"], "left")
 else:
     results = (results_base
@@ -519,18 +561,46 @@ results = results.select(*COLS)
 
 # COMMAND ----------
 
-(results.write.format("delta").mode("overwrite")
+# ══════════════════════════════════════════════════════════════════════════════
+# WRITE forecast_results + CREATE DEDUPED VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+# Deduplication guarantee: exactly ONE row per natural key. If the upstream union
+# produced any duplicates (e.g. overlapping date windows), the dedup removes them
+# BEFORE writing, so the table is the canonical source of truth.
+
+from pyspark.sql import Window
+
+DEDUP_KEY = ["ds", "product", "sales_market", "grain_level", "model", "forecast_type", "forecast_view"]
+
+# Deduplicate: keep the row with the latest published_at_utc per natural key
+w = Window.partitionBy(*DEDUP_KEY).orderBy(F.col("published_at_utc").desc())
+results_deduped = (results
+    .withColumn("_rn", F.row_number().over(w))
+    .where("_rn = 1")
+    .drop("_rn"))
+
+(results_deduped.write.format("delta").mode("overwrite")
    .option("replaceWhere", "run_date = current_date()")
    .option("mergeSchema", "true")
    .partitionBy("product")
    .saveAsTable(RESULTS_TABLE))
 
+# The view selects the latest run_date snapshot with a secondary dedup guard:
+# ROW_NUMBER ensures exactly one row per key even if table has residual dupes.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {RESULTS_VIEW} AS
-    SELECT * FROM {RESULTS_TABLE}
-    WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    WITH latest AS (
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY ds, product, sales_market, grain_level, model, forecast_type, forecast_view
+                ORDER BY published_at_utc DESC
+            ) AS _rn
+        FROM {RESULTS_TABLE}
+        WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    )
+    SELECT * EXCEPT (_rn) FROM latest WHERE _rn = 1
 """)
-print(f"Wrote {results.count()} rows to {RESULTS_TABLE} (vintage = today).")
+print(f"Wrote {results_deduped.count()} rows to {RESULTS_TABLE} (vintage = today, deduped).")
 
 # COMMAND ----------
 
@@ -956,13 +1026,41 @@ if ge_rows:
 # COMMAND ----------
 
 # DBTITLE 1,Cell 9b — V2 compat views
+# ══════════════════════════════════════════════════════════════════════════════
+# V2 COMPAT VIEWS — EXACT VALUES FROM forecast_results (no reconstruction)
+# ══════════════════════════════════════════════════════════════════════════════
+# These views reshape the single-source-of-truth (forecast_results) into the
+# wide schema the legacy app endpoints expect. All values (Most_Likely, Worst_Case,
+# Best_Case, p10, p90) are EXACT pass-throughs from the published forecast.
+# No approximate band math or variance reconstruction is applied.
+#
+# Key invariants:
+#   Most_Likely = Adaptive_Ensemble.p50 (EXACT median)
+#   Worst_Case  = Adaptive_Ensemble.p10 (EXACT 10th percentile)
+#   Best_Case   = Adaptive_Ensemble.p90 (EXACT 90th percentile)
+# For actuals rows: Most_Likely = Worst_Case = Best_Case = actual value.
+# ══════════════════════════════════════════════════════════════════════════════
+
 # Wide forecast view (mirrors arr_forecast_v2). One row per
 # (ds, product, sales_market, forecast_type, run_date); model columns pivoted.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {RESULTS_V2_VIEW} AS
-    WITH cutoff AS (
-        SELECT product, DATE_ADD(MIN(ds), (({ROLLING_WEEKS} - 1) * 7)) AS roll_end
+    WITH src AS (
+        -- CRITICAL: filter to latest run_date only, then dedup on natural key
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY ds, product, sales_market, grain_level, model, forecast_type, forecast_view
+                ORDER BY published_at_utc DESC
+            ) AS _rn
         FROM {RESULTS_TABLE}
+        WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    ),
+    base AS (
+        SELECT * EXCEPT (_rn) FROM src WHERE _rn = 1
+    ),
+    cutoff AS (
+        SELECT product, DATE_ADD(MIN(ds), (({ROLLING_WEEKS} - 1) * 7)) AS roll_end
+        FROM base
         WHERE forecast_type IN ('rolling', 'roy')
         GROUP BY product
     ),
@@ -970,7 +1068,7 @@ spark.sql(f"""
         -- Defensive: keep roy rows only beyond the rolling window so rolling/roy
         -- never overlap (prevents KPI double-count even if the table still holds
         -- overlapping rows from an older run).
-        SELECT fr.* FROM {RESULTS_TABLE} fr
+        SELECT fr.* FROM base fr
         LEFT JOIN cutoff c ON fr.product = c.product
         WHERE (fr.forecast_type <> 'roy' OR c.roll_end IS NULL OR fr.ds > c.roll_end)
           AND (fr.forecast_view = 'adaptive' OR fr.forecast_view IS NULL)
@@ -1007,6 +1105,7 @@ spark.sql(f"""
 # per-region rows just repeated the product value and implied precision the
 # pipeline doesn't have. Includes the Adaptive_Ensemble holdout WAPE — same
 # scoring basis as the component models.
+# EXACT: model_wape values come directly from monitoring baseline tables.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {LEADERBOARD_VIEW} AS
     WITH m AS (
@@ -1021,6 +1120,7 @@ spark.sql(f"""
         FROM {RESULTS_TABLE}
         WHERE model_wape IS NOT NULL
           AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+          AND run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
         GROUP BY product
     ),
     l AS (
@@ -1129,25 +1229,88 @@ print(f"\nGranted SELECT on {len(GRANT_TARGETS)} objects to app service principa
 
 # COMMAND ----------
 
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPREHENSIVE VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+# Validates:
+#   1. Schema presence
+#   2. Latest run_date
+#   3. Row counts by forecast_type
+#   4. Sample values for actuals, p10, p50, p90
+#   5. No nulls in key dimensions
+#   6. No duplicates on natural key
+# ══════════════════════════════════════════════════════════════════════════════
+
 r = spark.table(RESULTS_VIEW)
 n = r.count()
 products = sorted([row["product"] for row in r.select("product").distinct().collect()])
 ftypes   = sorted([row["forecast_type"] for row in r.select("forecast_type").distinct().collect()])
 models   = sorted([row["model"] for row in r.select("model").distinct().collect()])
 
+# --- 1. Basic assertions ---
 assert n > 0, "forecast_results_latest is empty."
 assert r.where(F.col("p50").isNotNull()).count() > 0, "No non-null p50."
 assert "Total" in products, "Total rollup missing."
 assert any(ft in ftypes for ft in ("rolling", "roy", "forward_1yr")), "No forecast rows."
-assert "actuals" in ftypes, "No actuals rows — check arr_forecast_v2 source."
+assert "actuals" in ftypes, "No actuals rows — check CBE/arr_forecast_v2 source."
 
-print(f"forecast_results_latest: {n} rows")
+# --- 2. Latest run_date ---
+latest_rd = r.agg(F.max("run_date")).collect()[0][0]
+print(f"Latest run_date: {latest_rd}")
+
+# --- 3. Counts by forecast_type ---
+print("\nRow counts by forecast_type:")
+r.groupBy("forecast_type").count().orderBy("forecast_type").show(truncate=False)
+
+# --- 4. Sample totals (Adaptive_Ensemble, Total product, latest week) ---
+print("Sample values (Adaptive_Ensemble, Total product, rolling):")
+sample = (r
+    .where("model = 'Adaptive_Ensemble' AND product = 'Total' AND forecast_type = 'rolling'")
+    .orderBy("ds")
+    .select("ds", "actual", "p10", "p50", "p90", "most_likely")
+    .limit(3))
+sample.show(truncate=False)
+
+# Verify most_likely == p50 exactly (no approximation)
+ml_mismatch = r.where(
+    (F.col("model") != "ACTUAL") &
+    F.col("p50").isNotNull() &
+    (F.col("most_likely") != F.col("p50"))
+).count()
+assert ml_mismatch == 0, f"FAIL: {ml_mismatch} rows where most_likely != p50 (expected EXACT equality)"
+print(f"most_likely == p50 check: PASS (0 mismatches in {n} rows)")
+
+# --- 5. Null check on key dimensions ---
+KEY_DIMS = ["ds", "product", "sales_market", "model", "forecast_type", "forecast_view"]
+null_counts = {}
+for col_name in KEY_DIMS:
+    nc = r.where(F.col(col_name).isNull()).count()
+    null_counts[col_name] = nc
+nulls_found = {k: v for k, v in null_counts.items() if v > 0}
+if nulls_found:
+    print(f"WARNING: Nulls in key dimensions: {nulls_found}")
+else:
+    print(f"Null check on key dimensions: PASS (0 nulls in {KEY_DIMS})")
+
+# --- 6. Duplicate check on natural key ---
+dedup_key = ["ds", "product", "sales_market", "grain_level", "model", "forecast_type", "forecast_view"]
+total_rows = r.count()
+distinct_keys = r.select(*dedup_key).distinct().count()
+dupes = total_rows - distinct_keys
+assert dupes == 0, f"FAIL: {dupes} duplicate rows on natural key {dedup_key}"
+print(f"Duplicate check: PASS ({total_rows} rows, {distinct_keys} distinct keys, 0 dupes)")
+
+# --- 7. Schema ---
+print(f"\nSchema ({len(r.columns)} columns): {r.columns}")
+
+# --- Summary ---
+print(f"\nforecast_results_latest: {n} rows")
 print(f"  products      : {products}")
 print(f"  forecast_types: {ftypes}")
 print(f"  models        : {models}")
 print(f"  WAPE attached : {r.where(F.col('model_wape').isNotNull()).count()} rows")
 print(f"  insight scopes: {[row['product'] for row in spark.table(INSIGHTS_TABLE).where(F.col('run_date')==F.current_date()).select('product').collect()]}")
-print('\nPublish complete — app reads forecast_results / forecast_insights.')
+print('\nPublish complete — app reads EXACT values from forecast_results / forecast_insights.')
 
 # COMMAND ----------
 

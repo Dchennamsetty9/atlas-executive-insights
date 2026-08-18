@@ -1,19 +1,20 @@
 """
 Forecast v2 — rich endpoints for the ForecastingPanel UI.
 
-Reads from:  datagroup_mdl.mdl_sales_analytics.arr_forecast_v2
+Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_results_v2compat
+  (unified compat view over forecast_results, published by forecast_unify_publish).
   columns: ds, product (Total/UCC/ITSG), sales_market (Total/NA/EMEA/APAC/LATAM),
            Actuals, Most_Likely, Worst_Case, Best_Case,
            arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima,
            mape_ets, mape_prophet, mape_lightgbm, mape_mstl_v2, mape_dhr_arima,
-           forecast_type (actuals|rolling|roy), run_date
-  NOTE: arr_chronos / mape_chronos are NOT in the model suite.
-        The notebook writes mape_chronos=NULL explicitly so live rows never
-        surface stale demo Chronos values.
+           forecast_type (actuals|rolling|roy|forward_1yr), run_date
+  NOTE: All values (Most_Likely, Worst_Case, Best_Case, p10, p90) are EXACT
+        pass-throughs from the published forecast. No band math, no sqrt
+        reconstruction, no * 0.90/1.10 approximations.
 
-Leaderboard: datagroup_mdl.mdl_sales_analytics.arr_forecast_v2_leaderboard
+Leaderboard: datagroup_mdl.mdl_sales_analytics.forecast_leaderboard_v2compat
 
-All values are constrained to the Growth-bookings-aligned v2 tables.
+All values are constrained to the Growth-bookings-aligned unified forecast tables.
 """
 
 import asyncio, os, datetime, logging, json, time
@@ -32,10 +33,11 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
-# Default to the legacy tables for production safety. Environments that have the
-# new unified compat views can opt in via env vars without code changes.
-FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
-LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "arr_forecast_v2_leaderboard")
+# Default to the unified compat views (source of truth from forecast_unify_publish).
+# These views expose exact p10/p50/p90 values from the per-product V5 pipelines.
+# To revert to legacy tables, set env vars to arr_forecast_v2 / arr_forecast_v2_leaderboard.
+FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "forecast_results_v2compat")
+LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "forecast_leaderboard_v2compat")
 # Default = the unified insights (compat view over forecast_insights, written by
 # forecast_unify_publish daily) so the AI tab matches the rest of the panel.
 # Env-overridable back to arr_forecast_insights if needed.
@@ -252,31 +254,17 @@ def _latest_run():
 
 
 def _effective_forecast_type(model: str, forecast_type: str) -> str:
+    # forward_1yr is a frontend semantic mode. Legacy arr_forecast_v2 tables only
+    # store rolling/roy/actuals, so keep existing endpoints functional by
+    # projecting forward_1yr to rolling unless a dedicated endpoint is used.
+    if forecast_type == "forward_1yr":
+        forecast_type = "rolling"
+
     source = _model_source(model)
     if source["has_forecast_type"]:
         return forecast_type
     # Backward-compat fallback if a model source does not expose forecast_type.
     return "actuals" if forecast_type == "actuals" else "rolling"
-
-
-def _monthly_forecast_type_condition(
-    forecast_type: str,
-    rolling_next_year: bool,
-    selected_year: int,
-) -> str:
-    # Monthly forecast spans can cross notebook publication boundaries where
-    # adjacent months are split between rolling and roy. In rolling next-year
-    # mode, include forward_1yr as well so early next-year months are not lost.
-    if forecast_type == "rolling":
-        current_year = datetime.date.today().year
-        if selected_year > current_year:
-            return "forecast_type = 'forward_1yr'"
-        types = ["rolling", "roy"]
-        if rolling_next_year:
-            types.append("forward_1yr")
-        in_list = ", ".join(f"'{t}'" for t in types)
-        return f"forecast_type IN ({in_list})"
-    return f"forecast_type = '{forecast_type}'"
 
 
 def _normalized_forecast_sql(
@@ -458,23 +446,22 @@ def _fill_monthly_gaps(months: list[Dict[str, Any]], year: int, include_actuals:
 def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
     """Compute KPI card totals from the kpi_sql result rows.
 
+    EXACT SUM approach: the notebook publishes exact p10/p50/p90 per week.
+    The app sums them directly for quarter totals — no variance reconstruction.
+
     The Panel Writer sets Most_Likely/Worst_Case/Best_Case = Actuals for closed
     (actuals) rows, so we sum ML/BC/WC from ALL rows regardless of forecast_type.
     For open (rolling/roy) rows the model forecast is already in those columns.
     This makes closed-quarter and mixed-quarter selections both correct.
-    """
-    import math
 
+    NOTE: The previous implementation used sqrt(sum of squares) to combine weekly
+    half-widths in quadrature. This produced artificially tight quarter bands that
+    understated risk. The correct approach is simple SUM because the published
+    weekly quantiles ARE the source of truth — the app should not reconstruct them.
+    """
     most_likely = 0.0
-    # Quarter band via VARIANCE aggregation, not summed weekly quantiles.
-    # Summing each week's P10/P90 assumes every week simultaneously hits its
-    # worst (or best) case — which never happens; weekly noise partly cancels.
-    # The correct quarter spread combines the weekly half-widths in quadrature
-    # (spread grows with sqrt(weeks), not weeks), giving a tight, realistic band.
-    # Upper/lower kept separate to preserve asymmetric intervals. Closed weeks
-    # (actuals) have Worst=Best=ML, so they contribute 0 variance automatically.
-    sum_up_sq = 0.0   # Σ (P90 − P50)²
-    sum_lo_sq = 0.0   # Σ (P50 − P10)²
+    worst_case = 0.0
+    best_case = 0.0
     ytd_actuals = 0.0
 
     for row in rows:
@@ -486,21 +473,18 @@ def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
 
         if ml > 0 or ftype in ("rolling", "roy"):
             most_likely += ml
-            sum_up_sq += max(0.0, bc - ml) ** 2
-            sum_lo_sq += max(0.0, ml - wc) ** 2
+            worst_case += wc
+            best_case += bc
 
         # YTD actuals: sum all actuals rows in the result set (already date-filtered
         # by the caller's kpi_sql — year/quarter filter applied before this function).
         if ftype == "actuals" and act > 0:
             ytd_actuals += act
 
-    quarter_up = math.sqrt(sum_up_sq)
-    quarter_lo = math.sqrt(sum_lo_sq)
-
     return {
         "most_likely": round(most_likely, 0),
-        "worst_case": round(max(0.0, most_likely - quarter_lo), 0),  # floored at 0
-        "best_case": round(most_likely + quarter_up, 0),
+        "worst_case": round(max(0.0, worst_case), 0),
+        "best_case": round(best_case, 0),
         "ytd_actuals": round(ytd_actuals, 0),
     }
 
@@ -596,9 +580,9 @@ def _v5_forward_sql(table: str, has_pg: bool, product: str, market: str, grain: 
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
-            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
@@ -632,9 +616,9 @@ def _v5_monthly_sql(table: str, has_pg: bool, product: str, market: str, grain: 
             QUARTER(ds) AS qtr,
             MONTH(ds) AS mth,
             DATE_FORMAT(ds, 'MMMM') AS month_name,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
-            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
@@ -1163,16 +1147,20 @@ async def get_monthly(
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     selected_year = year if year else datetime.date.today().year
 
+    # Include ALL disjoint forecast periods so the monthly view shows complete
+    # months (rolling covers first 13 wks, roy the rest of FY, forward_1yr 2027+).
+    if rolling_next_year:
+        fc_type_clause = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+    elif selected_year > datetime.date.today().year:
+        fc_type_clause = "forecast_type = 'forward_1yr'"
+    else:
+        fc_type_clause = "forecast_type IN ('rolling', 'roy')"
+
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
     yf = _year_filter(selected_year)
     qf = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
-    forecast_type_condition = _monthly_forecast_type_condition(
-        eff_forecast_type,
-        rolling_next_year,
-        selected_year,
-    )
 
     # Closed quarter → actuals only. Current/future quarter → BOTH: actuals for
     # closed weeks + forecast for open weeks (spliced after the last actual, so
@@ -1224,10 +1212,8 @@ async def get_monthly(
                     + SQRT(SUM(POWER(GREATEST(COALESCE(CAST({upper_col} AS DOUBLE), 0)
                         - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
             FROM {FC_TABLE}
-                        WHERE {forecast_type_condition}
+            WHERE {fc_type_clause}
               AND {_latest_run()}
-                            -- Monthly table should show full forecast months (not only the
-                            -- remaining open weeks after latest actuals splice).
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
@@ -1320,17 +1306,12 @@ async def get_ytd(
     upper_col = source["upper_col"]
 
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
-    selected_year = year if year else datetime.date.today().year
+    year = year if year else datetime.date.today().year
     pf   = _product_filter(product, product_line)
     gf   = _geo_filter(sales_market)
-    yf   = _year_filter(selected_year)
-    qf   = _quarter_filter(quarter, selected_year) if quarter else ""
+    yf   = _year_filter(year)
+    qf   = _quarter_filter(quarter, year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
-    forecast_type_condition = _monthly_forecast_type_condition(
-        eff_forecast_type,
-        rolling_next_year,
-        selected_year,
-    )
 
     # Closed quarter → actuals only. Current/future quarter → keep BOTH so the
     # running total shows realized-to-date (amber) plus the forecast path. The
@@ -1340,7 +1321,7 @@ async def get_ytd(
     if quarter is not None:
         today = datetime.date.today()
         current_quarter = ((today.month - 1) // 3) + 1
-        is_past_quarter = (selected_year < today.year) or (selected_year == today.year and quarter < current_quarter)
+        is_past_quarter = (year < today.year) or (year == today.year and quarter < current_quarter)
         if is_past_quarter:
             include_forecasts = False  # closed quarter: actuals only
 
@@ -1364,7 +1345,7 @@ async def get_ytd(
                  SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
                  SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
             FROM {FC_TABLE}
-               WHERE {forecast_type_condition}
+             WHERE forecast_type = '{eff_forecast_type}'
               {date_filter}
               AND {_latest_run()}
               AND {_forecast_after_actuals_pred(pf, gf)}
@@ -1381,9 +1362,9 @@ async def get_ytd(
         # the sibling coroutine if one raises — no leaked never-awaited coroutine.
         pending = []
         if act_sql:
-            pending.append(("act", _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=selected_year, quarter=quarter)))
+            pending.append(("act", _cached_query(act_sql, endpoint="/ytd", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter)))
         if fc_sql:
-            pending.append(("fc", _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=selected_year, quarter=quarter)))
+            pending.append(("fc", _cached_query(fc_sql, endpoint="/ytd", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter)))
         results = await asyncio.gather(*(c for _, c in pending))
         res_map = {k: r for (k, _), r in zip(pending, results)}
         act_rows = res_map.get("act", [])
@@ -1406,12 +1387,12 @@ async def get_ytd(
         range_end = datetime.date(range_end_seed.year, range_end_seed.month, 1) - datetime.timedelta(days=1)
     elif quarter is not None:
         qsm = (quarter - 1) * 3 + 1
-        range_start = dt.date(selected_year, qsm, 1)
-        period_end = dt.date(selected_year, 12, 31) if qsm + 2 >= 12 else (dt.date(selected_year, qsm + 3, 1) - dt.timedelta(days=1))
+        range_start = dt.date(year, qsm, 1)
+        period_end = dt.date(year, 12, 31) if qsm + 2 >= 12 else (dt.date(year, qsm + 3, 1) - dt.timedelta(days=1))
         range_end = period_end
     else:
-        range_start = dt.date(selected_year, 1, 1)
-        range_end = dt.date(selected_year, 12, 31)
+        range_start = dt.date(year, 1, 1)
+        range_end = dt.date(year, 12, 31)
 
     _data_dates = [d for d in list(act_map.keys()) + list(fc_map.keys()) if d]
     if _data_dates:
