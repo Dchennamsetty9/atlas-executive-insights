@@ -1201,16 +1201,11 @@ async def get_monthly(
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                -- Variance-aggregated month bands (same method as Overview):
-                -- summing weekly P10/P90 assumes every week hits its extreme at
-                -- once and overstates the band ~sqrt(weeks)x.
-                GREATEST(SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST({value_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({lower_col} AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                -- EXACT SUM of weekly bands (no sqrt variance compression).
+                -- The published weekly p10/p50/p90 ARE the source of truth.
+                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
                 SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST({upper_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
+                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
             FROM {FC_TABLE}
             WHERE {fc_type_clause}
               AND {_latest_run()}
@@ -1524,12 +1519,12 @@ async def get_by_product(
               AND {_forecast_after_actuals_pred()} {extra_where}
         )"""
 
-    # Variance-aggregated period bands (same method as the Overview KPI):
-    # worst = likely − sqrt(Σ(likely−worst_w)²), best = likely + sqrt(Σ(best_w−likely)²).
+    # EXACT SUM of weekly bands — no sqrt variance compression.
+    # The published weekly p10/p50/p90 ARE the source of truth.
     _band_select = """
             SUM(likely) AS arr_likely,
-            GREATEST(SUM(likely) - SQRT(SUM(POWER(GREATEST(likely - worst, 0), 2))), 0) AS arr_worst,
-            SUM(likely) + SQRT(SUM(POWER(GREATEST(best - likely, 0), 2))) AS arr_best
+            SUM(worst) AS arr_worst,
+            SUM(best) AS arr_best
     """
 
     prod_sql = f"""
@@ -1866,9 +1861,14 @@ async def get_backtest(
                        CAST(p10 AS DOUBLE) AS worst,
                        CAST(p90 AS DOUBLE) AS best,
                        CAST(actual AS DOUBLE) AS actual,
+                       -- Pick the TOTAL-level row: the accuracy-history table
+                       -- contains mixed grain (market + total rows, no grain
+                       -- column), so we use p50 DESC as tiebreaker — the total
+                       -- is always the largest forecast value.
                        ROW_NUMBER() OVER (
                            PARTITION BY CAST(ds AS DATE)
-                           ORDER BY CAST(run_date_utc AS DATE) DESC
+                           ORDER BY CAST(run_date_utc AS DATE) DESC,
+                                    CAST(p50 AS DOUBLE) DESC
                        ) AS rn
                 FROM {UCC_ACCURACY_TABLE}
                 WHERE model = '{acc_model}' AND actual IS NOT NULL
@@ -2632,9 +2632,11 @@ async def get_accuracy_by_quarter(
     live_mode: bool = Depends(_live_mode_dependency),
 ):
     """Quarterly MAPE matrix: rows = models, columns = past quarters.
-    Uses arr_forecast_v2 (append-only across runs) so historical forecast
-    vintages survive — the compat view only shows the latest run which has
-    no forecast rows for already-closed weeks."""
+    Uses arr_forecast_v2 for UCC-only (Growth ARR) forecast vintages.
+    IMPORTANT: arr_forecast_v2 Total/ITSG Most_Likely values are INFLATED
+    (include non-Growth revenue) so we restrict to product='UCC' to avoid
+    the ~179% sMAPE artifact from comparing inflated forecasts to Growth actuals.
+    The compat view only shows the latest run which has no vintage data."""
     if not live_mode:
         # Demo: return a plausible matrix for display
         return {"quarters": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026", "Q2 2026"],
@@ -2656,6 +2658,9 @@ async def get_accuracy_by_quarter(
     # Use arr_forecast_v2 directly — it is append-only so past runs' forecast
     # rows (rolling/roy) for now-historical weeks still exist there.
     # The compat view only shows max(run_date) so those historical vintages are gone.
+    # CRITICAL: restrict to product='UCC' only. The ITSG and Total rows in
+    # arr_forecast_v2 contain ALL revenue (not Growth-only), while actuals from
+    # the CBE pipeline are Growth-only. Comparing them produces 100-200% sMAPE.
     ARR_V2 = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_v2`"
 
     def _smape_expr(col: str) -> str:
@@ -2676,6 +2681,7 @@ async def get_accuracy_by_quarter(
             FROM {ARR_V2}
             WHERE forecast_type = 'actuals'
               AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+              AND product = 'UCC'
               {pf_inner}
               AND {_normalized_market_expr('sales_market')} = 'Total'
             GROUP BY ds, product
@@ -2690,6 +2696,7 @@ async def get_accuracy_by_quarter(
             WHERE f.forecast_type IN ('rolling', 'roy')
               AND CAST(f.ds AS DATE) < CURRENT_DATE()
               AND COALESCE(CAST(f.Most_Likely AS DOUBLE), 0) > 0
+              AND f.product = 'UCC'
               {pf_outer}
               AND {_normalized_market_expr('f.sales_market')} = 'Total'
         )
@@ -2739,6 +2746,35 @@ async def get_accuracy_by_quarter(
         return _demo_matrix(str(exc))
 
     if not rows_raw:
+        # No quarterly vintage data available (typical for the new unified pipeline
+        # which only retains 1 run_date). Return a fallback using the monitoring
+        # baseline WAPE so the accuracy card shows the model's true holdout accuracy.
+        try:
+            lb_rows = await _cached_query(
+                f"SELECT best_mape FROM {LB_TABLE} WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE}) LIMIT 1",
+                endpoint="/accuracy-by-quarter", model="ensemble", forecast_type="actuals",
+                product="Total", geo="Total", year=None, quarter=None, metric="lb_fallback"
+            )
+            if lb_rows and lb_rows[0].get("best_mape") is not None:
+                wape = round(float(lb_rows[0]["best_mape"]), 1)
+                _today = datetime.date.today()
+                _cur_q = ((_today.month - 1) // 3) + 1
+                return {
+                    "source": "live",
+                    "basis": "holdout WAPE from monitoring baseline (no quarterly vintage data yet)",
+                    "quarters": [f"Q{_cur_q} {_today.year} (holdout)"],
+                    "n_weeks": [13],
+                    "models": [
+                        {"model": "Ensemble", "values": [wape]},
+                        {"model": "Prophet", "values": [None]},
+                        {"model": "ETS", "values": [None]},
+                        {"model": "LightGBM", "values": [None]},
+                        {"model": "MSTL", "values": [None]},
+                        {"model": "DHR-ARIMA", "values": [None]},
+                    ],
+                }
+        except Exception:
+            pass
         return _demo_matrix()
 
     _today = datetime.date.today()
