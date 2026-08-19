@@ -1124,7 +1124,9 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
       icon: '🎯',
       color: a.avgSmape < 15 ? '#10b981' : a.avgSmape < 25 ? '#f59e0b' : '#ef4444',
       title: 'Historical accuracy',
-      text: `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarter${a.nQuarters > 1 ? 's' : ''}.`,
+      text: a.nQuarters === 1
+        ? `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error over the most recent closed quarter.`
+        : `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarters.`,
     });
   }
   {
@@ -1132,7 +1134,9 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
     if (s && (s.mape_pct != null || s.coverage_pct != null)) {
       const bits = [];
       if (s.mape_pct != null) bits.push(`within ~${s.mape_pct}% of the actual four weeks out`);
-      if (s.coverage_pct != null && s.weeks_scored) bits.push(`the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
+      if (s.coverage_pct != null && s.weeks_scored) bits.push(s.weeks_scored === 1
+          ? `the 80% range caught the actual ${s.coverage_pct}% of the time over the most recent scored week (target ~80%)`
+          : `the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
       FACT_CARDS.push({
         icon: '⏱️', color: '#3b82f6', title: 'How close, this far out',
         text: `Recently, forecasts have landed ${bits.join('; ')}.`,
@@ -1865,7 +1869,9 @@ const ExecutiveSummary = ({ loading, yearRows, allModels, runDelta,
   }
   if (finish) parts.push(`That puts the full year near ${fmtM(ql.fyLanding)}.`);
   if (acc && !acc.isDemo) {
-    parts.push(`Forecasts have averaged about ±${acc.avgSmape.toFixed(0)}% error over the last ${acc.nQuarters} closed quarter${acc.nQuarters > 1 ? 's' : ''}.`);
+    parts.push(acc.nQuarters === 1
+      ? `Forecasts have averaged about ±${acc.avgSmape.toFixed(0)}% error over the most recent closed quarter.`
+      : `Forecasts have averaged about ±${acc.avgSmape.toFixed(0)}% error over the last ${acc.nQuarters} closed quarters.`);
   } else if (cov != null) {
     parts.push(`The 80% range has captured the actual in ${cov}% of recent weeks.`);
   }
@@ -3080,7 +3086,7 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Driver Bridge (Plan vs Actual)
-                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
+                  
                 </SectionTitle>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>

@@ -3047,8 +3047,8 @@ async def get_confidence(
             SELECT AVG(CAST(best_mape AS DOUBLE)) AS best_mape
             FROM {LB_TABLE}
             WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
-              AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """, endpoint="/confidence", model=model, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter, metric="best_mape")
+              AND {_normalized_market_expr('sales_market')} = 'Total'
+        """, endpoint="/confidence", model=model, forecast_type="rolling", product="all", geo="Total", year=selected_year, quarter=quarter, metric="best_mape")
         best_mape = _f((lb_rows[0] if lb_rows else {}).get("best_mape"), 25.0)
 
         spread_rows = await _cached_query(f"""
@@ -3090,20 +3090,26 @@ async def get_confidence(
 @router.get("/driver-bridge")
 async def get_driver_bridge(
     model: Optional[str] = Query("ensemble"),
+    product: Optional[str] = Query(None),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
     live_mode: bool = Depends(_live_mode_dependency),
 ):
-    """Plan-vs-actual variance bridge for executive storytelling."""
+    """Plan-vs-actual variance bridge for executive storytelling.
+
+    Decomposes the overall variance into per-market (or per-product) drivers
+    using real data from the forecast table. Each driver shows how much that
+    segment's actuals exceeded or fell short of its forecast (plan).
+    """
     if not live_mode:
         return {
             "source": "demo",
             "components": [
-                {"name": "Volume", "value": 1400000},
-                {"name": "Price", "value": 500000},
-                {"name": "Mix", "value": -350000},
-                {"name": "Geography", "value": -220000},
-                {"name": "Slippage", "value": -480000},
+                {"driver": "NA", "name": "NA", "value": 1400000},
+                {"driver": "EMEA", "name": "EMEA", "value": 500000},
+                {"driver": "APAC", "name": "APAC", "value": -350000},
+                {"driver": "LATAM", "name": "LATAM", "value": -220000},
+                {"driver": "Unknown", "name": "Unknown", "value": -480000},
             ],
         }
 
@@ -3113,32 +3119,66 @@ async def get_driver_bridge(
     source = _model_source(model_key)
     value_col = source["most_likely_col"]
     today_str = datetime.date.today().isoformat()
+
+    # Determine the breakdown dimension: if a specific product is selected,
+    # decompose by market; if All products, decompose by product.
+    prod_filter = _product_filter(product) if product else "product = 'Total'"
+    is_product_bridge = (not product or product.lower() in ('all', 'total'))
+
     try:
-        rows = await _cached_query(f"""
-            SELECT
-                SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_total,
-                SUM(CASE WHEN forecast_type IN ('rolling','roy') AND CAST(ds AS DATE) > CAST('{today_str}' AS DATE) THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_total
-            FROM {FC_TABLE}
-            WHERE {_latest_run()} AND {date_filter}
-              AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """, endpoint="/driver-bridge", model=model_key, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter)
-        actual_total = _f((rows[0] if rows else {}).get("actual_total"), 0.0)
-        plan_total = _f((rows[0] if rows else {}).get("plan_total"), 0.0)
+        if is_product_bridge:
+            # Decompose by product (UCC vs ITSG)
+            driver_rows = await _cached_query(f"""
+                SELECT
+                    product AS driver,
+                    SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_amt,
+                    SUM(CASE WHEN forecast_type IN ('rolling','roy') AND CAST(ds AS DATE) > CAST('{today_str}' AS DATE)
+                        THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_amt
+                FROM {FC_TABLE}
+                WHERE {_latest_run()} AND {date_filter}
+                  AND product != 'Total'
+                  AND {_normalized_market_expr('sales_market')} = 'Total'
+                GROUP BY product
+                ORDER BY actual_amt DESC
+            """, endpoint="/driver-bridge", model=model_key, forecast_type="rolling", product="by-product", geo="Total", year=selected_year, quarter=quarter)
+        else:
+            # Decompose by market for the selected product
+            driver_rows = await _cached_query(f"""
+                SELECT
+                    {_normalized_market_expr('sales_market')} AS driver,
+                    SUM(CASE WHEN forecast_type='actuals' THEN COALESCE(CAST(Actuals AS DOUBLE),0) ELSE 0 END) AS actual_amt,
+                    SUM(CASE WHEN forecast_type IN ('rolling','roy') AND CAST(ds AS DATE) > CAST('{today_str}' AS DATE)
+                        THEN COALESCE(CAST({value_col} AS DOUBLE),0) ELSE 0 END) AS plan_amt
+                FROM {FC_TABLE}
+                WHERE {_latest_run()} AND {date_filter}
+                  AND {prod_filter}
+                  AND {_normalized_market_expr('sales_market')} != 'Total'
+                GROUP BY {_normalized_market_expr('sales_market')}
+                ORDER BY actual_amt DESC
+            """, endpoint="/driver-bridge", model=model_key, forecast_type="rolling", product=product or "Total", geo="by-market", year=selected_year, quarter=quarter)
+
+        # Compute totals and per-driver variance
+        actual_total = sum(_f(r.get("actual_amt"), 0.0) for r in driver_rows)
+        plan_total = sum(_f(r.get("plan_amt"), 0.0) for r in driver_rows)
         variance = actual_total - plan_total
 
-        components = [
-            {"name": "Volume", "value": round(variance * 0.34, 0)},
-            {"name": "Price", "value": round(variance * 0.22, 0)},
-            {"name": "Mix", "value": round(variance * 0.16, 0)},
-            {"name": "Geography", "value": round(variance * 0.11, 0)},
-            {"name": "Slippage", "value": round(variance * 0.17, 0)},
-        ]
+        # Build components sorted by absolute variance (largest contributor first)
+        components = []
+        for r in driver_rows:
+            drv = r.get("driver", "Other")
+            act = _f(r.get("actual_amt"), 0.0)
+            pln = _f(r.get("plan_amt"), 0.0)
+            v = act - pln
+            if abs(v) > 0:
+                components.append({"driver": drv, "name": drv, "value": round(v, 0)})
+        components.sort(key=lambda x: abs(x["value"]), reverse=True)
+
         return {
             "source": "live",
             "actual_total": round(actual_total, 0),
             "plan_total": round(plan_total, 0),
             "variance": round(variance, 0),
-            "components": components,
+            "components": components[:8],
         }
     except Exception as exc:
         logger.warning("[forecast/driver-bridge] query failed: %s", exc)
@@ -3224,7 +3264,7 @@ async def get_meeting_mode(
     try:
         live_mode = _live_mode_dependency()
         confidence = await get_confidence(model=model, year=year, quarter=quarter, live_mode=live_mode)
-        bridge = await get_driver_bridge(model=model, year=year, quarter=quarter, live_mode=live_mode)
+        bridge = await get_driver_bridge(model=model, product=None, year=year, quarter=quarter, live_mode=live_mode)
         # Explicitly pass forecast_type to avoid FastAPI Query default objects when
         # this endpoint calls get_risk_radar as a plain Python function.
         radar = await get_risk_radar(forecast_type="rolling", model=model, year=year, quarter=quarter, live_mode=live_mode)
