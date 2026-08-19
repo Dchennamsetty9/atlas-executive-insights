@@ -613,6 +613,7 @@ print(f"Wrote {results_deduped.count()} rows to {RESULTS_TABLE} (vintage = today
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 9 — Build & write forecast_insights
 import json
 
 res = spark.table(RESULTS_VIEW).toPandas()
@@ -698,14 +699,19 @@ def _stats(df, region="Total", period="quarter"):
         print(f"  WARN insight stats failed: {_e}")
         return None
 
-def _render(s, label):
+def _render(s, label, product_stats=None):
+    """Render executive-quality insight payload.
+    product_stats: dict of per-product stats (UCC/ITSG) for the aggregate view."""
     _pl = s.get("period_label", _Q_LABEL)
     risk = "LOW RISK" if s["confidence"] >= 80 else "MODERATE RISK" if s["confidence"] >= 60 else "HIGH RISK"
     yoy = s.get("yoy")
     yoy_txt = (f" — {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year"
                if yoy is not None else "")
-    rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {s['n_fwd']} open week(s)"
-              if s.get("run_rate") else "n/a")
+    n_weeks = s.get("n_fwd", 0)
+    rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {n_weeks} open weeks"
+              if s.get("run_rate") and n_weeks else "n/a")
+
+    # Key Drivers — include product split for aggregate view
     drivers = [
         f"{label} {_pl} landing {_fmt_m(s['most_likely'])} = {_fmt_m(s['qtd'])} realized "
         f"+ {_fmt_m(s['most_likely'] - s['qtd'])} forecast.",
@@ -713,27 +719,75 @@ def _render(s, label):
     ]
     if yoy is not None:
         drivers.append(f"Tracking {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year ({_pl.replace(str(_Q_YEAR), str(_Q_YEAR - 1))}).")
+    if product_stats:
+        parts = [f"{k}: {_fmt_m(v['most_likely'])}" for k, v in sorted(product_stats.items())]
+        drivers.append(f"Product mix: {', '.join(parts)}.")
+
+    # Downside Risks — quantified and specific
+    spread_pct = s.get("spread_pct", 0)
+    risk_items = [
+        f"Downside case {_fmt_m(s['worst'])} — {_fmt_m(s['downside'])} ({s['downside']/(s['most_likely'])*100:.0f}%) below the central path." if s['most_likely'] else f"Downside case {_fmt_m(s['worst'])}.",
+    ]
+    if s["momentum"] == "DECELERATING":
+        risk_items.append("Momentum decelerating — recent weeks trending below the quarterly run-rate.")
+    elif s["momentum"] == "VOLATILE":
+        risk_items.append(f"Week-to-week coefficient of variation elevated; band spread is {spread_pct:.0f}% of the central path.")
+    else:
+        risk_items.append("Primary risk is execution slip against the paced weekly target.")
+    if product_stats:
+        weakest = min(product_stats.items(), key=lambda x: x[1].get("confidence", 100))
+        if weakest[1].get("momentum") in ("VOLATILE", "DECELERATING"):
+            risk_items.append(f"{weakest[0]} showing {weakest[1]['momentum'].lower()} momentum — monitor closely.")
+
+    # Upside Opportunities — specific triggers
+    opp_items = [
+        f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} ({s['upside']/(s['most_likely'])*100:.0f}%) above the central path." if s['most_likely'] else f"Stretch case {_fmt_m(s['best'])}.",
+    ]
+    if product_stats:
+        strongest = max(product_stats.items(), key=lambda x: x[1].get("confidence", 0))
+        if strongest[1].get("momentum") == "ACCELERATING":
+            opp_items.append(f"{strongest[0]} accelerating — could outperform if trend persists.")
+    if yoy is not None and yoy > 0:
+        opp_items.append(f"Already tracking +{yoy:.0f}% above prior-year pace.")
+
+    # Executive Actions — specific and quantified
+    actions = []
+    if n_weeks > 0 and s.get("run_rate"):
+        actions.append(f"Maintain {_fmt_m(s['run_rate'])}/wk run-rate over the remaining {n_weeks} weeks to land {_fmt_m(s['most_likely'])} for {_pl}.")
+    else:
+        actions.append(f"Hold current weekly pace to land the {_pl} outlook.")
+    if product_stats and len(product_stats) > 1:
+        largest = max(product_stats.items(), key=lambda x: x[1].get("most_likely", 0))
+        pct = largest[1]["most_likely"] / s["most_likely"] * 100 if s["most_likely"] else 0
+        actions.append(f"Prioritize {largest[0]} execution ({pct:.0f}% of total) — largest lever on the combined number.")
+    if s["momentum"] == "VOLATILE":
+        actions.append("Review pipeline coverage and deal slippage risk for the next 4 weeks.")
+    elif s["momentum"] == "DECELERATING":
+        actions.append("Escalate deal pull-forward and pipeline acceleration actions this week.")
+    else:
+        actions.append("Maintain current cadence; next model refresh will update the outlook.")
+
+    # Narrative — concise executive summary
+    momentum_desc = {"VOLATILE": "with elevated weekly variability",
+                     "ACCELERATING": "on an accelerating trajectory",
+                     "DECELERATING": "on a decelerating trajectory",
+                     "STABLE": "on a stable trajectory"}
+    narrative = (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
+                 f"({_fmt_m(s['qtd'])} realized + forecast), "
+                 f"ranging {_fmt_m(s['worst'])} to {_fmt_m(s['best'])}{yoy_txt}. "
+                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.")
+
     return {
         "product": label, "run_date": str(latest_run), "period": _pl,
         "momentum": s["momentum"], "risk_level": risk,
         "model_confidence": s["confidence"], "best_model": REC_MODEL,
         "mape": round(s["wape"], 1) if s["wape"] is not None else None,
-        "narrative": (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
-                      f"({_fmt_m(s['qtd'])} realized + forecast), ranging {_fmt_m(s['worst'])} to "
-                      f"{_fmt_m(s['best'])}{yoy_txt}. Momentum {s['momentum'].lower()}."),
+        "narrative": narrative,
         "upside": round(s["upside"], 0), "downside": round(s["downside"], 0),
         "key_drivers": drivers,
-        "downside_risks": [
-            f"Downside case {_fmt_m(s['worst'])} — {_fmt_m(s['downside'])} below the most-likely path.",
-            "Momentum decelerating — watch weekly pacing." if s["momentum"] == "DECELERATING"
-                else "Elevated week-to-week volatility." if s["momentum"] == "VOLATILE"
-                else "Primary risk is execution against the central path.",
-        ],
-        "upside_opportunities": [f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} above the most-likely path."],
-        "executive_actions": [
-            f"Hold ~{rr_txt} to land the most-likely {_pl} outlook.",
-            "Focus on the largest at-risk product/region slices; revisit after the next run.",
-        ],
+        "downside_risks": risk_items,
+        "upside_opportunities": opp_items,
+        "executive_actions": actions,
         "source": "unified",
     }
 
@@ -750,19 +804,25 @@ for product in sorted(res["product"].dropna().unique()):
                  s["confidence"], s["momentum"], payload["risk_level"]))
 
 if stats:
-    _sum = lambda k: sum((v.get(k) or 0) for v in stats.values())
-    agg = dict(most_likely=_sum("most_likely"), worst=_sum("worst"), best=_sum("best"),
-               qtd=_sum("qtd"), prior=_sum("prior"),
-               n_fwd=max((v.get("n_fwd") or 0) for v in stats.values()), wape=None)
-    agg["upside"]   = max(0.0, agg["best"] - agg["most_likely"])
-    agg["downside"] = max(0.0, agg["most_likely"] - agg["worst"])
-    agg["spread_pct"] = ((agg["best"] - agg["worst"]) / agg["most_likely"] * 100) if agg["most_likely"] else 0.0
-    agg["yoy"] = ((agg["most_likely"] - agg["prior"]) / agg["prior"] * 100) if agg["prior"] else None
-    agg["run_rate"] = ((agg["most_likely"] - agg["qtd"]) / agg["n_fwd"]) if agg["n_fwd"] else None
+    # Compute aggregate from the TOTAL product directly (correct splice logic)
+    total_stats = _stats(res[res["product"] == "Total"])
+    if total_stats:
+        agg = total_stats
+    else:
+        _sum = lambda k: sum((v.get(k) or 0) for v in stats.values())
+        agg = dict(most_likely=_sum("most_likely"), worst=_sum("worst"), best=_sum("best"),
+                   qtd=_sum("qtd"), prior=_sum("prior"),
+                   n_fwd=min((v.get("n_fwd") or 0) for v in stats.values()), wape=None)
+        agg["upside"]   = max(0.0, agg["best"] - agg["most_likely"])
+        agg["downside"] = max(0.0, agg["most_likely"] - agg["worst"])
+        agg["spread_pct"] = ((agg["best"] - agg["worst"]) / agg["most_likely"] * 100) if agg["most_likely"] else 0.0
+        agg["yoy"] = ((agg["most_likely"] - agg["prior"]) / agg["prior"] * 100) if agg["prior"] else None
+        agg["run_rate"] = ((agg["most_likely"] - agg["qtd"]) / agg["n_fwd"]) if agg["n_fwd"] else None
     order = {"STABLE": 0, "ACCELERATING": 1, "DECELERATING": 2, "VOLATILE": 3}
-    agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order[m])
+    agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order.get(m, 0))
     agg["confidence"] = round(sum(v["confidence"] for v in stats.values()) / len(stats), 0)
-    payload = _render(agg, "Total portfolio")
+    agg["period_label"] = _Q_LABEL
+    payload = _render(agg, "Total portfolio", product_stats=stats)
     rows.append((latest_run, "ALL", "ai_insights", json.dumps(payload),
                  agg["confidence"], agg["momentum"], payload["risk_level"]))
 
