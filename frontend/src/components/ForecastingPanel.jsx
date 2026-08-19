@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Component } from 're
 import {
   ComposedChart, BarChart, LineChart,
   Area, Bar, Line, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine,
+  ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
 import { apiService } from '../services/api';
 import { exportCardPng } from '../utils/chartExport';
@@ -281,11 +281,10 @@ const SectionTitle = ({ children }) => (
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
-  // Find the split date where actuals end and forecast begins
   const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
 
-  // Quarter boundary dates for reference lines (GoTo fiscal = calendar year)
+  // Quarter boundary dates for reference lines
   const qBoundaries = combined.reduce((acc, r) => {
     const d = new Date(r.date);
     const qtr = Math.floor(d.getMonth() / 3) + 1;
@@ -295,49 +294,33 @@ const WeeklyChart = ({ rows }) => {
   }, {});
   const qBoundaryDates = Object.entries(qBoundaries).filter(([k]) => k !== 'Q1').map(([k, v]) => ({ label: k, date: v }));
 
-  // Build unified dataset — bands use stacking trick: floor (transparent) + range (colored).
-  // Stored Worst_Case/Best_Case are the model's P10/P90 → an 80% prediction interval.
-  // The inner ~50% band (≈P25–P75) is derived by z-score scaling of the P10/P90 spread
-  // around Most Likely (z25/z10 = 0.6745/1.2816 ≈ 0.526) assuming symmetric-ish residuals.
-  const INNER_Z_RATIO = 0.6745 / 1.2816;
+  // Simple data: actuals + forecast line + single uncertainty band
   const data = combined.map(r => {
     const likely = r.arr_likely ?? null;
     const worst  = r.arr_worst  ?? null;
     const best   = r.arr_best   ?? null;
-    const hasBand = likely != null && worst != null && best != null;
-    const innerLo = hasBand ? likely - (likely - worst) * INNER_Z_RATIO : null;
-    const innerHi = hasBand ? likely + (best - likely) * INNER_Z_RATIO : null;
     return {
       date: r.date,
       actual: r.arr_actual ?? null,
-      likely, worst, best,
-      innerLo, innerHi,
+      likely,
+      // Single band: floor + range for stacked area
       bandFloor: worst,
       bandRange: (best != null && worst != null) ? Math.max(0, best - worst) : null,
-      innerFloor: innerLo,
-      innerRange: (innerHi != null && innerLo != null) ? Math.max(0, innerHi - innerLo) : null,
     };
   });
 
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) return null;
     const d = payload[0]?.payload || {};
     return (
       <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
-                    padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
-        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
-        {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
-        {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-10 upside: <b>{fmtM(d.best)}</b></div>}
-        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
-        {d.innerLo != null && d.innerHi != null && (
-          <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-            ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
-          </div>
-        )}
-        {d.worst != null && d.best != null && (
-          <div style={{ color: '#60a5fa', marginTop: 2 }}>
-            ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
+                    padding: '12px 16px', fontSize: 12, minWidth: 160 }}>
+        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{d.date}</div>
+        {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 4 }}>● Actual: <b>{fmtM(d.actual)}</b></div>}
+        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 4 }}>● Forecast: <b>{fmtM(d.likely)}</b></div>}
+        {d.bandFloor != null && d.bandRange != null && (
+          <div style={{ color: '#60a5fa', fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            Range: {fmtM(d.bandFloor)} – {fmtM(d.bandFloor + d.bandRange)}
           </div>
         )}
       </div>
@@ -345,20 +328,16 @@ const WeeklyChart = ({ rows }) => {
   };
 
   return (
-    <ResponsiveContainer width="100%" height={360}>
+    <ResponsiveContainer width="100%" height={320}>
       <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
           <linearGradient id="bandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.18} />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.03} />
-          </linearGradient>
-          <linearGradient id="innerBandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.30} />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.08} />
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -366,42 +345,30 @@ const WeeklyChart = ({ rows }) => {
                tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false}
                interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<CustomTooltip />} />
         {splitDate && (
-          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4"
-            label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />
-        )}
-        {splitDate && (
-          <ReferenceLine x={splitDate} stroke="none"
-            label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
+          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.5)" strokeDasharray="4 4"
+            label={{ value: 'Today', position: 'top', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
         )}
         {/* Quarter boundary reference lines */}
         {qBoundaryDates.map(qb => (
-          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.25)" strokeDasharray="3 3"
+          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3"
             label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
         ))}
-        {/* Outer 80% band (P10–P90): transparent floor stacked under colored band */}
-        <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
+        {/* Single uncertainty band (P10–P90) */}
+        <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent"
               legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Inner ~50% band (≈P25–P75, z-scaled from P10/P90) drawn on top for nested effect */}
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent"
-              legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Actuals — gradient fill area */}
+        <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)"
+              name="Forecast Range" connectNulls dot={false} />
+        {/* Actuals — solid orange area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
-        {/* Forecast lines */}
-        <Line type="monotone" dataKey="worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
-        <Line type="monotone" dataKey="likely" name="Most Likely"  stroke="#e2e8f0"
-              strokeWidth={3} dot={false} connectNulls />
-        <Line type="monotone" dataKey="best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
+        {/* Forecast — single solid white line */}
+        <Line type="monotone" dataKey="likely" name="Forecast"  stroke="#e2e8f0"
+              strokeWidth={2.5} dot={false} connectNulls />
+        <Legend wrapperStyle={{ paddingTop: 12, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -409,12 +376,16 @@ const WeeklyChart = ({ rows }) => {
 
 const RunningTotalsChart = ({ rows }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  // Find year-end target (last ytd_likely value)
+  const lastRow = data[data.length - 1];
+  const yearEndTarget = lastRow?.ytd_likely ?? null;
+
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={data} margin={{ top: 16, right: 20, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={220}>
+      <ComposedChart data={data} margin={{ top: 16, right: 80, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="ytdActualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
         </defs>
@@ -422,17 +393,26 @@ const RunningTotalsChart = ({ rows }) => {
         <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
                axisLine={false} tickLine={false} interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Cumulative Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<DarkTip />} />
+        {/* Year-end forecast target reference line */}
+        {yearEndTarget && (
+          <ReferenceLine y={yearEndTarget} stroke="rgba(99,102,241,0.5)" strokeDasharray="6 3"
+            label={{ value: `Year-End: ${fmtM(yearEndTarget)}`, position: 'right', fill: '#818cf8', fontSize: 10, fontWeight: 600 }} />
+        )}
+        {/* Actuals cumulative — solid orange area */}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_likely" name="Most Likely"  stroke="#e2e8f0"
+        {/* Forecast cumulative — solid white line (actuals + forecast stacked) */}
+        <Line type="monotone" dataKey="ytd_likely" name="Projected YTD" stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {/* Worst/best as thin dashed bounds */}
+        <Line type="monotone" dataKey="ytd_worst" name="Downside" stroke="#ef4444"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Line type="monotone" dataKey="ytd_best" name="Upside" stroke="#10b981"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Legend wrapperStyle={{ paddingTop: 8, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -2712,11 +2692,8 @@ const ForecastingPanel = () => {
                 </div>
                 <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                   <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-                  <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
-                  <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-                  <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
-                  <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
-                  <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
+                  <span><span style={{ color: '#e2e8f0' }}>─</span> Forecast</span>
+                  <span style={{ color: '#3b82f6' }}>▒ Forecast Range (P10–P90)</span>
                 </div>
                 {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
               </CardWrap>
