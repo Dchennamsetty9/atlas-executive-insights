@@ -37,7 +37,7 @@ const WeeklyChartTooltip = ({ active, payload, label }) => {
   );
 };
 
-const WeeklyChart = ({ rows }) => {
+const WeeklyChart = ({ rows, simplified = false }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   const lastActual = [...combined].reverse().find((r) => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
@@ -107,12 +107,12 @@ const WeeklyChart = ({ rows }) => {
         {splitDate && <ReferenceLine x={splitDate} stroke="none" label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />}
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
         <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />
+        {!simplified && <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />}
+        {!simplified && <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)" legendType="none" connectNulls dot={false} isAnimationActive animationDuration={300} animationEasing="ease-out" />}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5} fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Line type="monotone" dataKey="worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
+        {!simplified && <Line type="monotone" dataKey="worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />}
         <Line type="monotone" dataKey="likely" name="Most Likely" stroke="#e2e8f0" strokeWidth={3} dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
-        <Line type="monotone" dataKey="best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
+        {!simplified && <Line type="monotone" dataKey="best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />}
       </ComposedChart>
     </ResponsiveContainer>
   );

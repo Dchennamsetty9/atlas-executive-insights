@@ -86,19 +86,16 @@ const OverviewTab = ({
         <GraphInsight summary={graphInsights.weekly} chartType="weekly_forecast" metricName="Weekly Growth ARR — actuals vs forecast scenarios" dataPoints={weeklyView} />
         <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-          <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
-          <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-          <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
-          <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
-          <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
+          <span><span style={{ color: '#ffffff' }}>─</span> Expected</span>
+          <span style={{ color: '#3b82f6' }}>▒ Expected range</span>
         </div>
-        {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
+        {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} simplified /> : <EmptyState />}
       </CardWrap>
 
       <CardWrap downloadName="ytd_cumulative">
         <SectionTitle>Running Totals — YTD Cumulative {runDate && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>— as of {runDate}</span>}</SectionTitle>
         <GraphInsight summary={graphInsights.ytd} chartType="ytd_cumulative" metricName="YTD cumulative Growth ARR — actual vs forecast path" dataPoints={ytdView} />
-        {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+        {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} simplified /> : <EmptyState />}
       </CardWrap>
     </div>
   );
