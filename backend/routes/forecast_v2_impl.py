@@ -1496,12 +1496,23 @@ async def get_by_product(
 
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
+    # 2027+ data lives under forecast_type='forward_1yr' in the unified view.
+    _is_future_year = (year > datetime.date.today().year)
     if quarter:
         period_filter = _quarter_filter(quarter, year)
     elif rolling_next_year:
         period_filter = _rolling_next_year_filter()
     else:
         period_filter = f"YEAR(ds) = {year}"
+
+    # Determine the correct forecast_type filter for the landing union.
+    # A full-year or quarter view needs BOTH rolling + roy to capture all weeks;
+    # using only 'rolling' misses the rest-of-year chunk beyond the 13-week window.
+    # Future years (2027+) use 'forward_1yr' exclusively.
+    if _is_future_year:
+        _fc_type_pred = "forecast_type = 'forward_1yr'"
+    else:
+        _fc_type_pred = "forecast_type IN ('rolling', 'roy')"
 
     # Totals are the period LANDING: actuals for closed weeks + forecast spliced
     # after the last actual (matches the Overview KPI and the AI insight). A
@@ -1561,7 +1572,7 @@ async def get_by_product(
                    COALESCE(CAST({lower_col} AS DOUBLE), 0),
                    COALESCE(CAST({upper_col} AS DOUBLE), 0)
             FROM {table}
-                        WHERE forecast_type = '{eff_forecast_type}' AND {_latest_run()} AND {period_filter}
+                        WHERE {_fc_type_pred} AND {_latest_run()} AND {period_filter}
               AND {_forecast_after_actuals_pred()} {extra_where}
         )"""
 
