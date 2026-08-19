@@ -1238,15 +1238,13 @@ async def get_monthly(
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                GREATEST(SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(most_likely AS DOUBLE), 0)
-                        - COALESCE(CAST(worst_case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(best_case AS DOUBLE), 0)
-                        - COALESCE(CAST(most_likely AS DOUBLE), 0), 0), 2))) AS arr_best
-                        FROM {FORECAST_PROPHET_TABLE}
-                            {prophet_pf} {prophet_gf}
+                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
+                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('actuals', 'rolling', 'roy')
+              AND {_latest_run()}
+              {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
             ORDER BY yr, mth

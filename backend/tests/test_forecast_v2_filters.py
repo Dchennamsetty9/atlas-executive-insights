@@ -65,15 +65,9 @@ def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch
 
     forecast_sql = next(sql for sql in captured_sql if "arr_likely" in sql)
 
-    assert "forecast_prophet" in forecast_sql
-    assert "forecast_results_v2compat" not in forecast_sql
-    assert "CAST(most_likely AS DOUBLE)" in forecast_sql
-    assert "product = 'Total'" not in forecast_sql
-    assert "sales_market" not in forecast_sql
-
-    # forecast_prophet contains the full monthly prediction span, including
-    # closed months, so the compat-view forecast_type predicate is unnecessary.
-    assert "forecast_type" not in forecast_sql
+    assert "forecast_results_v2compat" in forecast_sql
+    assert "forecast_prophet" not in forecast_sql
+    assert "forecast_type IN ('actuals', 'rolling', 'roy')" in forecast_sql
 
     # Rolling full-year mode should use the quarter-anchored next-12-month window.
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in forecast_sql
