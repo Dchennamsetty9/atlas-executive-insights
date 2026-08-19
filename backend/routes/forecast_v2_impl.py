@@ -3043,6 +3043,38 @@ async def get_confidence(
     date_filter = _quarter_filter(quarter, selected_year) if quarter else _year_filter(selected_year)
 
     try:
+        # Primary path: read pre-computed confidence from forecast_insights
+        # (computed at quarterly level with correct variance aggregation)
+        INSIGHTS_TABLE = f"{FC_TABLE.rsplit('.', 1)[0]}.forecast_insights"
+        insight_rows = await _cached_query(f"""
+            SELECT model_confidence, risk_level, insights_json
+            FROM {INSIGHTS_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {INSIGHTS_TABLE})
+              AND product = 'ALL'
+        """, endpoint="/confidence", model=model, forecast_type="rolling", product="ALL", geo="Total", year=selected_year, quarter=quarter, metric="insight_conf")
+
+        if insight_rows and insight_rows[0].get("model_confidence") is not None:
+            score = int(insight_rows[0]["model_confidence"])
+            label = "High" if score >= 85 else "Medium" if score >= 65 else "Low"
+            # Extract reasons from insights JSON
+            import json as _json
+            payload = _json.loads(insight_rows[0].get("insights_json", "{}")) if insight_rows[0].get("insights_json") else {}
+            reasons = [
+                f"Model confidence: {score}% based on forecast band spread and validation error.",
+                f"Momentum: {payload.get('momentum', 'unknown')} — {payload.get('risk_level', 'unknown')}.",
+            ]
+            narrative = payload.get("narrative", "")
+            if narrative:
+                reasons.append(narrative)
+            return {
+                "source": "live",
+                "confidence_score": score,
+                "confidence_label": label,
+                "model": model,
+                "reasons": reasons,
+            }
+
+        # Fallback: compute from leaderboard MAPE + freshness
         lb_rows = await _cached_query(f"""
             SELECT AVG(CAST(best_mape AS DOUBLE)) AS best_mape
             FROM {LB_TABLE}
@@ -3051,29 +3083,17 @@ async def get_confidence(
         """, endpoint="/confidence", model=model, forecast_type="rolling", product="all", geo="Total", year=selected_year, quarter=quarter, metric="best_mape")
         best_mape = _f((lb_rows[0] if lb_rows else {}).get("best_mape"), 25.0)
 
-        spread_rows = await _cached_query(f"""
-            SELECT
-              AVG(COALESCE(CAST(Best_Case AS DOUBLE),0) - COALESCE(CAST(Worst_Case AS DOUBLE),0)) AS spread,
-              AVG(NULLIF(COALESCE(CAST(Most_Likely AS DOUBLE),0), 0)) AS likely
-            FROM {FC_TABLE}
-            WHERE {_latest_run()} AND forecast_type IN ('rolling','roy') AND {date_filter}
-              AND product = 'Total' AND {_normalized_market_expr('sales_market')} = 'Total'
-        """, endpoint="/confidence", model=model, forecast_type="rolling", product="Total", geo="Total", year=selected_year, quarter=quarter, metric="spread")
-        spread = _f((spread_rows[0] if spread_rows else {}).get("spread"), 0.0)
-        likely = _f((spread_rows[0] if spread_rows else {}).get("likely"), 1.0)
-        spread_pct = _pct(spread, likely)
-
         freshness = await get_freshness(live_mode=live_mode)
         stale_penalty = 0 if (freshness.get("days_stale") is None or freshness.get("days_stale") <= 7) else min(20, freshness.get("days_stale", 8) - 7)
 
-        raw_score = 100 - (best_mape * 1.3) - (spread_pct * 0.8) - stale_penalty
+        # Use the notebook's formula (spread_pct * 0.4 at quarterly level)
+        raw_score = 100 - (best_mape * 1.3) - stale_penalty
         score = int(max(15, min(98, round(raw_score))))
         label = "High" if score >= 85 else "Medium" if score >= 65 else "Low"
 
         reasons = [
-            f"Validation error benchmark: {best_mape:.1f}% MAPE on total slice.",
-            f"Scenario spread is {spread_pct:.1f}% of most-likely values for the selected window.",
-            f"Data freshness is {freshness.get('days_stale', 'unknown')} day(s) stale with SLA {freshness.get('sla_status', 'unknown')}.",
+            f"Validation error benchmark: {best_mape:.1f}% MAPE (avg across products).",
+            f"Data freshness: {freshness.get('days_stale', 'unknown')} day(s) stale, SLA {freshness.get('sla_status', 'unknown')}.",
         ]
         return {
             "source": "live",
