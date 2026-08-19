@@ -154,3 +154,30 @@ def test_ytd_future_year_rolling_uses_forward_1yr_only(monkeypatch):
     assert result["source"] == "live"
     forecast_sql = next(sql for sql in captured_sql if "SUM(COALESCE(CAST(" in sql and "likely" in sql)
     assert "forecast_type = 'forward_1yr'" in forecast_sql
+
+
+def test_by_product_rolling_uses_all_future_periods(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_by_product(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            model="ensemble",
+            forecast_type="rolling",
+            year=None,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    landing_sql = next(sql for sql in captured_sql if "UNION ALL" in sql and "forecast_type" in sql)
+    assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in landing_sql

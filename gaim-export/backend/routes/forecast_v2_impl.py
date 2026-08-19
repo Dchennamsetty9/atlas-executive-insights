@@ -1449,13 +1449,19 @@ async def get_by_product(
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
-    year = year if year else datetime.date.today().year
+    selected_year = year if year else datetime.date.today().year
+    year = selected_year
     if quarter:
         period_filter = _quarter_filter(quarter, year)
     elif rolling_next_year:
         period_filter = _rolling_next_year_filter()
     else:
         period_filter = f"YEAR(ds) = {year}"
+    forecast_type_condition = _monthly_forecast_type_condition(
+        eff_forecast_type,
+        rolling_next_year,
+        selected_year,
+    )
 
     # Totals are the period LANDING: actuals for closed weeks + forecast spliced
     # after the last actual (matches the Overview KPI and the AI insight). A
@@ -1515,7 +1521,7 @@ async def get_by_product(
                    COALESCE(CAST({lower_col} AS DOUBLE), 0),
                    COALESCE(CAST({upper_col} AS DOUBLE), 0)
             FROM {table}
-                        WHERE forecast_type = '{eff_forecast_type}' AND {_latest_run()} AND {period_filter}
+                        WHERE {forecast_type_condition} AND {_latest_run()} AND {period_filter}
               AND {_forecast_after_actuals_pred()} {extra_where}
         )"""
 
