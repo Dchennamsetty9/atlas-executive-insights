@@ -68,6 +68,8 @@ def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch
     assert "forecast_prophet" in forecast_sql
     assert "forecast_results_v2compat" not in forecast_sql
     assert "CAST(most_likely AS DOUBLE)" in forecast_sql
+    assert "product = 'Total'" not in forecast_sql
+    assert "sales_market" not in forecast_sql
 
     # forecast_prophet contains the full monthly prediction span, including
     # closed months, so the compat-view forecast_type predicate is unnecessary.

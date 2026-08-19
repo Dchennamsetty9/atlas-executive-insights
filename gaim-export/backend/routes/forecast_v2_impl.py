@@ -1152,6 +1152,8 @@ async def get_monthly(
 
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
+    prophet_pf = "" if _selected_product(product, product_line) == "Total" else pf
+    prophet_gf = "" if _normalize_market_value(sales_market) == "Total" else gf
     yf = _year_filter(selected_year)
     qf = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
@@ -1181,7 +1183,7 @@ async def get_monthly(
             FROM {FC_TABLE}
             WHERE forecast_type = 'actuals'
               AND {_latest_run()}
-              {pf} {gf}
+              {prophet_pf} {prophet_gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
             ORDER BY yr, mth
