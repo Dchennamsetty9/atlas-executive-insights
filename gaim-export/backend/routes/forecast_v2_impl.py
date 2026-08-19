@@ -32,6 +32,7 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
+FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
 # Default to the legacy tables for production safety. Environments that have the
 # new unified compat views can opt in via env vars without code changes.
 FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
@@ -1197,16 +1198,14 @@ async def get_monthly(
                 -- Variance-aggregated month bands (same method as Overview):
                 -- summing weekly P10/P90 assumes every week hits its extreme at
                 -- once and overstates the band ~sqrt(weeks)x.
-                GREATEST(SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST({value_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({lower_col} AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST({upper_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
-            FROM {FC_TABLE}
-            WHERE forecast_type = '{eff_forecast_type}'
-              AND {_latest_run()}
+                GREATEST(SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
+                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(most_likely AS DOUBLE), 0)
+                        - COALESCE(CAST(worst_case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
+                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(best_case AS DOUBLE), 0)
+                        - COALESCE(CAST(most_likely AS DOUBLE), 0), 0), 2))) AS arr_best
+            FROM {FORECAST_PROPHET_TABLE}
                             -- Monthly table should show full forecast months (not only the
                             -- remaining open weeks after latest actuals splice).
               {pf} {gf}
@@ -1402,6 +1401,7 @@ async def get_ytd(
 
     # Compute cumulative totals, filling gaps with previous values
     cum_a = cum_w = cum_l = cum_b = 0.0
+    last_actual_date = max(act_map) if act_map else None
     rows = []
     for d in all_dates:
         if d in act_map:
@@ -1414,10 +1414,10 @@ async def get_ytd(
         
         rows.append({
             "date":       d,
-            "ytd_actual": round(cum_a, 0) if include_actuals else None,
-            "ytd_worst":  round(cum_w, 0) if include_forecasts else None,
-            "ytd_likely": round(cum_l, 0) if include_forecasts else None,
-            "ytd_best":   round(cum_b, 0) if include_forecasts else None,
+            "ytd_actual": round(cum_a, 0) if include_actuals and (last_actual_date is None or d <= last_actual_date) else None,
+            "ytd_worst":  round(cum_a + cum_w, 0) if include_forecasts and d in fc_map else None,
+            "ytd_likely": round(cum_a + cum_l, 0) if include_forecasts and d in fc_map else None,
+            "ytd_best":   round(cum_a + cum_b, 0) if include_forecasts and d in fc_map else None,
         })
 
     return {

@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
+FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
 # Default to the unified compat views (source of truth from forecast_unify_publish).
 # These views expose exact p10/p50/p90 values from the per-product V5 pipelines.
 # To revert to legacy tables, set env vars to arr_forecast_v2 / arr_forecast_v2_leaderboard.
@@ -1235,14 +1236,14 @@ async def get_monthly(
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                -- EXACT SUM of weekly bands (no sqrt variance compression).
-                -- The published weekly p10/p50/p90 ARE the source of truth.
-                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
-                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
-            FROM {FC_TABLE}
-            WHERE {fc_type_clause}
-              AND {_latest_run()}
+                GREATEST(SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
+                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(most_likely AS DOUBLE), 0)
+                        - COALESCE(CAST(worst_case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
+                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(best_case AS DOUBLE), 0)
+                        - COALESCE(CAST(most_likely AS DOUBLE), 0), 0), 2))) AS arr_best
+            FROM {FORECAST_PROPHET_TABLE}
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
@@ -1448,6 +1449,7 @@ async def get_ytd(
 
     # Compute cumulative totals, filling gaps with previous values
     cum_a = cum_w = cum_l = cum_b = 0.0
+    last_actual_date = max(act_map) if act_map else None
     rows = []
     for d in all_dates:
         if d in act_map:
@@ -1460,10 +1462,10 @@ async def get_ytd(
         
         rows.append({
             "date":       d,
-            "ytd_actual": round(cum_a, 0) if include_actuals else None,
-            "ytd_worst":  round(cum_w, 0) if include_forecasts else None,
-            "ytd_likely": round(cum_l, 0) if include_forecasts else None,
-            "ytd_best":   round(cum_b, 0) if include_forecasts else None,
+            "ytd_actual": round(cum_a, 0) if include_actuals and (last_actual_date is None or d <= last_actual_date) else None,
+            "ytd_worst":  round(cum_a + cum_w, 0) if include_forecasts and d in fc_map else None,
+            "ytd_likely": round(cum_a + cum_l, 0) if include_forecasts and d in fc_map else None,
+            "ytd_best":   round(cum_a + cum_b, 0) if include_forecasts and d in fc_map else None,
         })
 
     return {
