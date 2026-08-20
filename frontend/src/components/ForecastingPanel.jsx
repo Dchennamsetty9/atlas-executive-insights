@@ -1826,7 +1826,7 @@ const ForecastingPanel = () => {
         await fetchOverviewData();
       } else if (targetTab === 'Multi-Year') {
         const [hs] = await Promise.allSettled([
-          apiService.getForecastV2Historical(null, activePl, activeGeo),
+          apiService.getForecastV2Historical(null, activePl, activeGeo, null, model),
         ]);
         if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
       } else if (targetTab === 'By Product') {

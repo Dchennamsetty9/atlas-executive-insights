@@ -126,8 +126,8 @@ export const apiService = {
     if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/ytd', { params });
   },
-  getForecastV2Historical: (product = null, productLine = null, salesMarket = null, year = null) => {
-    const params = {};
+  getForecastV2Historical: (product = null, productLine = null, salesMarket = null, year = null, model = 'ensemble') => {
+    const params = { model };
     if (product && product !== 'All') params.product = product;
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
