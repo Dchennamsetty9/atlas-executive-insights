@@ -103,6 +103,8 @@ def test_prophet_source_uses_forecast_all_models_without_run_date():
     assert "forecast_p50" in forecast_sql
     assert "forecast_p05" in forecast_sql
     assert "forecast_p95" in forecast_sql
+    assert "SUM(COALESCE(CAST(forecast_p50 AS DOUBLE), 0)) AS value" in forecast_sql
+    assert "GROUP BY ds, forecast_type" in forecast_sql
     assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in forecast_sql
     assert "model_name = 'Prophet'" in forecast_sql
     assert "is_current = TRUE" in forecast_sql

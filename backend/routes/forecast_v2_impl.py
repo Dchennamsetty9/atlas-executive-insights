@@ -356,16 +356,17 @@ def _normalized_forecast_sql(
                 CAST(ds AS STRING) AS ds,
                 '{model}' AS model,
                 CAST(forecast_type AS STRING) AS forecast_type,
-                COALESCE(CAST({value_col} AS DOUBLE), 0) AS value,
-                COALESCE(CAST({lower_col} AS DOUBLE), 0) AS lower,
-                COALESCE(CAST({upper_col} AS DOUBLE), 0) AS upper,
-                COALESCE(CAST({actuals_col} AS DOUBLE), 0) AS actual
+                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS value,
+                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS lower,
+                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS upper,
+                SUM(COALESCE(CAST({actuals_col} AS DOUBLE), 0)) AS actual
             FROM {table}
             WHERE 1=1
               {base_filter}
               {pf} {gf}
               {date_filter}
               {row_filter}
+            GROUP BY ds, forecast_type
             ORDER BY ds
         """
     
