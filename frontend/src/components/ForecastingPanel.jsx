@@ -376,6 +376,19 @@ const WeeklyChart = ({ rows }) => {
 
 const RunningTotalsChart = ({ rows }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  const monthTicks = [];
+  const seenMonths = new Set();
+  for (const row of data) {
+    const monthKey = row.date?.slice(0, 7);
+    if (monthKey && !seenMonths.has(monthKey)) {
+      seenMonths.add(monthKey);
+      monthTicks.push(row.date);
+    }
+  }
+  const monthLabel = (date) => {
+    const parsed = new Date(`${date}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? date?.slice(5, 7) : parsed.toLocaleString('en-US', { month: 'short' });
+  };
   // Find year-end target (last ytd_likely value)
   const lastRow = data[data.length - 1];
   const yearEndTarget = lastRow?.ytd_likely ?? null;
@@ -390,26 +403,26 @@ const RunningTotalsChart = ({ rows }) => {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-        <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} interval="preserveStartEnd" />
+        <XAxis dataKey="date" ticks={monthTicks} tickFormatter={monthLabel} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} interval={0} />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
                axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<DarkTip />} />
         {/* Year-end forecast target reference line */}
         {yearEndTarget && (
           <ReferenceLine y={yearEndTarget} stroke="rgba(99,102,241,0.5)" strokeDasharray="6 3"
-            label={{ value: `Year-End: ${fmtM(yearEndTarget)}`, position: 'right', fill: '#818cf8', fontSize: 10, fontWeight: 600 }} />
+            label={{ value: `Plan ${fmtM(yearEndTarget)}`, position: 'right', fill: '#818cf8', fontSize: 10, fontWeight: 600 }} />
         )}
         {/* Actuals cumulative — solid orange area */}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
         {/* Forecast cumulative — solid white line (actuals + forecast stacked) */}
-        <Line type="monotone" dataKey="ytd_likely" name="Projected YTD" stroke="#e2e8f0"
+          <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
         {/* Worst/best as thin dashed bounds */}
-        <Line type="monotone" dataKey="ytd_worst" name="Downside" stroke="#ef4444"
+          <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444"
               strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
-        <Line type="monotone" dataKey="ytd_best" name="Upside" stroke="#10b981"
+          <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981"
               strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
         <Legend wrapperStyle={{ paddingTop: 8, fontSize: 11 }}
                formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
@@ -1973,7 +1986,6 @@ const ForecastingPanel = () => {
       { model: 'DHR-ARIMA', values: [26.8, 23.2, 29.1, 21.7, 25.6, 27.9] },
     ],
   });
-  const [allModels,   setAllModels]   = useState(null);
   const [yearRows,    setYearRows]    = useState(null);   // full-year rolling+roy for quarterly bars
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
@@ -2018,23 +2030,18 @@ const ForecastingPanel = () => {
   const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy, bt, aqtr] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
-      apiService.getForecastV2WeeklyAllModels(activePl, apiYear, apiQuarter),
       // Full-year rows for the Quarterly Summary bars: rolling covers only the
       // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-      // Accuracy inputs for the top Executive Summary (so the "how accurate"
-      // answer is available on first load, not only after visiting Accuracy tab).
-      apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-      apiService.getForecastV2AccuracyByQuarter(activePl),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -2050,17 +2057,11 @@ const ForecastingPanel = () => {
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-    if (am.status === 'fulfilled') setAllModels(am.value?.rows ?? null);
     {
       const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
       setYearRows(base.length || roy.length ? [...base, ...roy] : null);
     }
-    // Feed the Executive Summary's accuracy answer. These also populate the
-    // Accuracy tab's state so it renders instantly when opened.
-    if (bt.status === 'fulfilled' && bt.value) setTrust(bt.value);
-    if (aqtr.status === 'fulfilled' && aqtr.value) setAccuracyByQtr(aqtr.value);
-
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
       setSource('demo');
@@ -2503,19 +2504,20 @@ const ForecastingPanel = () => {
 
           {tab === 'Overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Executive Summary — the point, first: expected finish, accuracy,
-                  next quarter, and where every model lands. Everything below is
-                  the drill-down. */}
-              <ExecutiveSummary
-                loading={loading}
-                yearRows={yearRows}
-                allModels={allModels}
-                runDelta={runDelta}
-                trust={trust}
-                accuracyByQtr={accuracyByQtr}
-                selectedYear={selectedYear}
-                prodLine={prodLine}
-              />
+              {!loading && weeklyKpis && (() => {
+                const ml = weeklyKpis.most_likely ?? 0;
+                const wc = weeklyKpis.worst_case ?? 0;
+                const bc = weeklyKpis.best_case ?? 0;
+                const ytdActual = weeklyKpis.ytd_actuals ?? 0;
+                const pctBooked = ml > 0 ? Math.round((ytdActual / ml) * 100) : 0;
+                const periodLabel = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY${selectedYear}`;
+                return (
+                  <div style={{ fontSize: 14, color: '#94a3b8', lineHeight: 1.6, padding: '2px 2px 0' }}>
+                    <b style={{ color: '#f1f5f9' }}>{periodLabel} tracking to {fmtM(ml)}</b>
+                    {' '}(range {fmtM(wc)}–{fmtM(bc)}). {fmtM(ytdActual)} booked = {pctBooked}% to plan.
+                  </div>
+                );
+              })()}
 
               {/* Hero KPI cards */}
               {loading
@@ -2655,35 +2657,6 @@ const ForecastingPanel = () => {
                   <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
                 </CardWrap>
               )}
-
-              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
-                  {(() => {
-                    // Interval trust badge — empirical band coverage from /backtest @4wk horizon
-                    const cov = trust?.summary?.coverage_pct;
-                    const n   = trust?.summary?.weeks_scored;
-                    if (cov == null || !n) return null;
-                    const covColor = cov >= 70 && cov <= 92 ? '#10b981' : cov >= 50 ? '#f59e0b' : '#ef4444';
-                    return (
-                      <span title={`Over the last ${n} closed weeks, the actual landed inside the 80% band ${cov}% of the time (forecasts made 4 weeks ahead). Calibrated bands should be near ~80% — much higher means the bands are too wide, much lower means too narrow.`}
-                        style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 20, marginBottom: 10,
-                                 color: covColor, background: `${covColor}14`, border: `1px solid ${covColor}40`,
-                                 cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        🛡 Bands caught {cov}% of last {n} actuals
-                        <span style={{ fontWeight: 400, opacity: 0.75 }}>· target ~80%</span>
-                        {trust?.source === 'demo' && <span style={{ fontWeight: 400, opacity: 0.6 }}>· demo</span>}
-                      </span>
-                    );
-                  })()}
-                </div>
-                <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                  <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-                  <span><span style={{ color: '#e2e8f0' }}>─</span> Forecast</span>
-                  <span style={{ color: '#3b82f6' }}>▒ Forecast Range (P10–P90)</span>
-                </div>
-                {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
-              </CardWrap>
 
               <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>

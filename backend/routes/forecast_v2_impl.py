@@ -1376,11 +1376,12 @@ async def get_ytd(
         # For future years (2027+), skip _forecast_after_actuals_pred — all rows
         # are inherently beyond any closed actual week.
         _after_pred = "" if _is_future_year else f"AND {_forecast_after_actuals_pred(pf, gf)}"
-        fc_type_clause = (
-            "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
-            if rolling_next_year
-            else f"forecast_type = '{eff_forecast_type}'"
-        )
+        if rolling_next_year:
+            fc_type_clause = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+        elif quarter is None and not _is_future_year:
+            fc_type_clause = "forecast_type IN ('rolling', 'roy')"
+        else:
+            fc_type_clause = f"forecast_type = '{eff_forecast_type}'"
         fc_sql = f"""
             SELECT CAST(ds AS STRING) AS d,
                  SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,

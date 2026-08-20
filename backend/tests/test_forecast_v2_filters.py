@@ -156,6 +156,34 @@ def test_ytd_future_year_rolling_uses_forward_1yr_only(monkeypatch):
     assert "forecast_type = 'forward_1yr'" in forecast_sql
 
 
+def test_ytd_full_year_includes_rolling_and_roy(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_ytd(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="roy",
+            model="ensemble",
+            year=datetime.date.today().year,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = next(sql for sql in captured_sql if "SUM(COALESCE(CAST(" in sql and "likely" in sql)
+    assert "forecast_type IN ('rolling', 'roy')" in forecast_sql
+    assert "forecast_type = 'roy'" not in forecast_sql
+
+
 def test_by_product_rolling_uses_all_future_periods(monkeypatch):
     captured_sql = []
 

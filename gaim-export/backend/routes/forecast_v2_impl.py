@@ -1335,13 +1335,14 @@ async def get_ytd(
 
     fc_sql = None
     if include_forecasts:
+        fc_type_clause = "forecast_type IN ('rolling', 'roy')" if quarter is None else f"forecast_type = '{eff_forecast_type}'"
         fc_sql = f"""
             SELECT CAST(ds AS STRING) AS d,
                  SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,
                  SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
                  SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
             FROM {FC_TABLE}
-             WHERE forecast_type = '{eff_forecast_type}'
+               WHERE {fc_type_clause}
               {date_filter}
               AND {_latest_run()}
               AND {_forecast_after_actuals_pred(pf, gf)}
