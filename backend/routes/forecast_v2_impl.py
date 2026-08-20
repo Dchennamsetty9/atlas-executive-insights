@@ -262,6 +262,13 @@ def _source_base_filter(source: Dict[str, Any]) -> str:
     return "".join(f"AND {clause} " for clause in clauses)
 
 
+def _source_forecast_type_filter(source: Dict[str, Any], actuals: bool = False, col: str = "forecast_type") -> str:
+    if source.get("no_run_date"):
+        expr = f"LOWER(TRIM(CAST({col} AS STRING)))"
+        return f"{expr} = 'actuals'" if actuals else f"{expr} <> 'actuals'"
+    return f"{col} = 'actuals'" if actuals else f"{col} IN ('rolling', 'roy')"
+
+
 def _normalize_market_value(value: Optional[str]) -> str:
     raw = (value or "").strip()
     if not raw or raw.lower() == "all":
@@ -337,10 +344,10 @@ def _normalized_forecast_sql(
         date_filter = f"AND {qf}" if qf else (f"AND {rolling_filter}" if rolling_filter else f"AND {yf}")
         row_type = "actuals" if forecast_type == "actuals" else "forecast"
         if row_type == "actuals":
-            row_filter = f"AND forecast_type = 'actuals' AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0"
+            row_filter = f"AND {_source_forecast_type_filter(source, actuals=True)} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0"
         else:
             row_filter = (
-                "AND forecast_type = 'forecast' "
+                f"AND {_source_forecast_type_filter(source)} "
                 f"AND CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {table} "
                 f"WHERE {_source_base_filter(source).replace('AND ', '', 1) if _source_base_filter(source) else '1=1'} "
                 f"AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01') "
@@ -1093,8 +1100,8 @@ async def get_weekly(
                                     AND is_current = TRUE
                   {_pf} {_gf}
                   AND (
-                                                (forecast_type = 'actuals' AND COALESCE(CAST({_actual_col} AS DOUBLE), 0) > 0)
-                                                OR (forecast_type = 'forecast' AND {_after_actual} AND COALESCE(CAST({_value_col} AS DOUBLE), 0) > 0)
+                                                ({_source_forecast_type_filter(_kpi_src, actuals=True)} AND COALESCE(CAST({_actual_col} AS DOUBLE), 0) > 0)
+                                                OR ({_source_forecast_type_filter(_kpi_src)} AND {_after_actual} AND COALESCE(CAST({_value_col} AS DOUBLE), 0) > 0)
                       )
                 ORDER BY ds
             """
@@ -1308,7 +1315,7 @@ async def get_monthly(
                     date_format(ds, 'MMMM')      AS month_name,
                     SUM(CAST({actuals_col} AS DOUBLE)) AS arr_actual
                 FROM {table}
-                                WHERE forecast_type = 'actuals'
+                                WHERE {_source_forecast_type_filter(source, actuals=True)}
                                     AND {_source_base_filter(source).replace('AND ', '', 1)}
                                     AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
                   {pf} {gf}
@@ -1341,7 +1348,7 @@ async def get_monthly(
             after_actual = (
                 f"CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {table} "
                 f"WHERE {_source_base_filter(source).replace('AND ', '', 1)} "
-                f"AND forecast_type = 'actuals' AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01')"
+                f"AND {_source_forecast_type_filter(source, actuals=True)} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01')"
             )
             fc_sql = f"""
                 SELECT
@@ -1353,7 +1360,7 @@ async def get_monthly(
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
                     SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
                 FROM {table}
-                                WHERE forecast_type = 'forecast'
+                                WHERE {_source_forecast_type_filter(source)}
                                     AND {_source_base_filter(source).replace('AND ', '', 1)}
                                     AND {after_actual}
                   AND COALESCE(CAST({value_col} AS DOUBLE), 0) > 0
@@ -1490,7 +1497,7 @@ async def get_ytd(
             act_sql = f"""
                 SELECT CAST(ds AS STRING) AS d, SUM(CAST({actuals_col} AS DOUBLE)) AS arr
                 FROM {table}
-                WHERE forecast_type = 'actuals'
+                                WHERE {_source_forecast_type_filter(source, actuals=True)}
                   AND {_source_base_filter(source).replace('AND ', '', 1)}
                   AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
                   {date_filter}
@@ -1527,7 +1534,7 @@ async def get_ytd(
             after_actual = (
                 f"CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {table} "
                 f"WHERE {_source_base_filter(source).replace('AND ', '', 1)} "
-                f"AND forecast_type = 'actuals' AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01')"
+                f"AND {_source_forecast_type_filter(source, actuals=True)} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01')"
             )
             fc_sql = f"""
                 SELECT CAST(ds AS STRING) AS d,
@@ -1535,7 +1542,7 @@ async def get_ytd(
                      SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
                      SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
                 FROM {table}
-                                WHERE forecast_type = 'forecast'
+                                WHERE {_source_forecast_type_filter(source)}
                                     AND {_source_base_filter(source).replace('AND ', '', 1)}
                                     AND {after_actual}
                   AND COALESCE(CAST({value_col} AS DOUBLE), 0) > 0
@@ -1895,7 +1902,7 @@ async def get_historical(
                 quarter(ds)                 AS quarter,
                 SUM(CAST({actuals_col} AS DOUBLE)) AS arr
                         FROM {source["table"]}
-                        WHERE forecast_type = 'actuals'
+                        WHERE {_source_forecast_type_filter(source, actuals=True)}
                             AND {_source_base_filter(source).replace('AND ', '', 1)}
                             AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
               {date_clause}
@@ -1997,7 +2004,7 @@ async def get_confidence_bands(
                 SUM(COALESCE(CAST({p10_col} AS DOUBLE), 0)) AS worst_case,
                 SUM(COALESCE(CAST({p90_col} AS DOUBLE), 0)) AS best_case
                         FROM {table}
-                        WHERE forecast_type = 'forecast'
+                        WHERE {_source_forecast_type_filter(source)}
                             AND {_source_base_filter(source).replace('AND ', '', 1)}
               {pf} {gf}
               {date_filter}

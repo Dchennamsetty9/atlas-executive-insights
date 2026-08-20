@@ -103,7 +103,7 @@ def test_prophet_source_uses_forecast_all_models_without_run_date():
     assert "forecast_p50" in forecast_sql
     assert "forecast_p05" in forecast_sql
     assert "forecast_p95" in forecast_sql
-    assert "forecast_type = 'forecast'" in forecast_sql
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in forecast_sql
     assert "model_name = 'Prophet'" in forecast_sql
     assert "is_current = TRUE" in forecast_sql
     assert "run_date" not in forecast_sql
@@ -140,7 +140,7 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
     assert "model_name = 'Prophet'" in kpi_sql
     assert "is_current = TRUE" in kpi_sql
     assert "run_date" not in kpi_sql
-    assert "forecast_type = 'forecast'" in kpi_sql
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in kpi_sql
 
 
 def test_prophet_weekly_all_regions_does_not_require_total_market(monkeypatch):
@@ -200,8 +200,8 @@ def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):
     assert all("model_name = 'Prophet'" in sql for sql in captured_sql)
     assert all("is_current = TRUE" in sql for sql in captured_sql)
     assert all("run_date" not in sql for sql in captured_sql)
-    assert "forecast_type = 'actuals'" in captured_sql[0]
-    assert "forecast_type = 'forecast'" in captured_sql[1]
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) = 'actuals'" in captured_sql[0]
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in captured_sql[1]
 
 
 def test_prophet_confidence_bands_use_native_interval_columns(monkeypatch):
@@ -235,7 +235,7 @@ def test_prophet_confidence_bands_use_native_interval_columns(monkeypatch):
     assert "model_name = 'Prophet'" in sql
     assert "is_current = TRUE" in sql
     assert "run_date" not in sql
-    assert "forecast_type = 'forecast'" in sql
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in sql
 
 
 def test_prophet_historical_uses_forecast_prophet_actuals(monkeypatch):
@@ -265,7 +265,7 @@ def test_prophet_historical_uses_forecast_prophet_actuals(monkeypatch):
     assert "model_name = 'Prophet'" in sql
     assert "is_current = TRUE" in sql
     assert "run_date" not in sql
-    assert "forecast_type = 'actuals'" in sql
+    assert "LOWER(TRIM(CAST(forecast_type AS STRING))) = 'actuals'" in sql
 
 
 def test_monthly_clause_for_current_year_rolling_uses_rolling_and_roy():
