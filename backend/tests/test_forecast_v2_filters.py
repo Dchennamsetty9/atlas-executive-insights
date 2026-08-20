@@ -143,6 +143,35 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
     assert "forecast_type = 'forecast'" in kpi_sql
 
 
+def test_prophet_weekly_all_regions_does_not_require_total_market(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_weekly(
+            product=None,
+            product_line="UCC",
+            sales_market=None,
+            forecast_type="rolling",
+            model="prophet",
+            year=datetime.date.today().year,
+            quarter=3,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    assert len(captured_sql) == 3
+    assert all("forecast_all_models" in sql for sql in captured_sql)
+    assert all("product = 'UCC'" in sql for sql in captured_sql)
+    assert all("sales_market" not in sql for sql in captured_sql)
+
+
 def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):
     captured_sql = []
 

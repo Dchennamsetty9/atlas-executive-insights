@@ -245,6 +245,14 @@ def _source_product_filter(source: Dict[str, Any], product, product_line=None, c
     return _product_filter(product, product_line, col)
 
 
+def _source_geo_filter(source: Dict[str, Any], geo, col="sales_market"):
+    # forecast_all_models may not carry sales_market='Total' for every model/date;
+    # aggregate regional rows for the All Regions view instead of filtering to 0.
+    if source.get("no_run_date") and _normalize_market_value(geo) == "Total":
+        return ""
+    return _geo_filter(geo, col)
+
+
 def _source_base_filter(source: Dict[str, Any]) -> str:
     clauses = []
     if source.get("model_filter"):
@@ -319,7 +327,7 @@ def _normalized_forecast_sql(
     upper_col = source["upper_col"]
     actuals_col = source.get("actuals_col", "Actuals")
     pf = _source_product_filter(source, product, product_line)
-    gf = _geo_filter(sales_market)
+    gf = _source_geo_filter(source, sales_market)
     base_filter = _source_base_filter(source)
     yf = _year_filter(year)
     qf = _quarter_filter(quarter, year) if quarter else ""
@@ -1066,8 +1074,8 @@ async def get_weekly(
             _value_col = _kpi_src["most_likely_col"]
             _lower_col = _kpi_src["lower_col"]
             _upper_col = _kpi_src["upper_col"]
-            _pf = _product_filter(product, product_line)
-            _gf = _geo_filter(sales_market)
+            _pf = _source_product_filter(_kpi_src, product, product_line)
+            _gf = _source_geo_filter(_kpi_src, sales_market)
             _after_actual = (
                 f"CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {_table} "
                 f"WHERE COALESCE(CAST({_actual_col} AS DOUBLE), 0) > 0 {_pf} {_gf}), DATE'1900-01-01')"
@@ -1252,8 +1260,8 @@ async def get_monthly(
         selected_year=selected_year,
     )
 
-    pf = _product_filter(product, product_line)
-    gf = _geo_filter(sales_market)
+    pf = _source_product_filter(source, product, product_line)
+    gf = _source_geo_filter(source, sales_market)
     prophet_pf = "" if _selected_product(product, product_line) == "Total" else pf
     prophet_gf = "" if _normalize_market_value(sales_market) == "Total" else gf
     yf = _year_filter(selected_year)
@@ -1448,8 +1456,8 @@ async def get_ytd(
     _is_future_year = (year > datetime.date.today().year)
     if _is_future_year:
         eff_forecast_type = "forward_1yr"
-    pf   = _product_filter(product, product_line)
-    gf   = _geo_filter(sales_market)
+    pf   = _source_product_filter(source, product, product_line)
+    gf   = _source_geo_filter(source, sales_market)
     yf   = _year_filter(year)
     qf   = _quarter_filter(quarter, year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
@@ -1851,8 +1859,8 @@ async def get_historical(
 
     model = _validate_model(model)
     source = _model_source(model)
-    pf = _product_filter(product, product_line)
-    gf = _geo_filter(sales_market)
+    pf = _source_product_filter(source, product, product_line)
+    gf = _source_geo_filter(source, sales_market)
 
     if year:
         date_clause = f"AND {_year_filter(year)}"
@@ -1941,8 +1949,8 @@ async def get_confidence_bands(
     model = _validate_model(model)
     source = _model_source(model)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
-    pf = _product_filter(product, product_line)
-    gf = _geo_filter(sales_market)
+    pf = _source_product_filter(source, product, product_line)
+    gf = _source_geo_filter(source, sales_market)
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
     selected_year = year if year else datetime.date.today().year
     date_filter = (
