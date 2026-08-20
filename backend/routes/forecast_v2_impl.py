@@ -1464,9 +1464,9 @@ async def get_ytd(
         rows.append({
             "date":       d,
             "ytd_actual": round(cum_a, 0) if include_actuals and (last_actual_date is None or d <= last_actual_date) else None,
-            "ytd_worst":  round(cum_a + cum_w, 0) if include_forecasts and d in fc_map else None,
-            "ytd_likely": round(cum_a + cum_l, 0) if include_forecasts and d in fc_map else None,
-            "ytd_best":   round(cum_a + cum_b, 0) if include_forecasts and d in fc_map else None,
+            "ytd_worst":  round(cum_a + cum_w, 0) if include_forecasts and (d in fc_map or d == last_actual_date) else None,
+            "ytd_likely": round(cum_a + cum_l, 0) if include_forecasts and (d in fc_map or d == last_actual_date) else None,
+            "ytd_best":   round(cum_a + cum_b, 0) if include_forecasts and (d in fc_map or d == last_actual_date) else None,
         })
 
     return {

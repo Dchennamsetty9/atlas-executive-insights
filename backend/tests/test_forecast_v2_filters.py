@@ -184,6 +184,39 @@ def test_ytd_full_year_includes_rolling_and_roy(monkeypatch):
     assert "forecast_type = 'roy'" not in forecast_sql
 
 
+def test_ytd_forecast_path_starts_at_last_actual(monkeypatch):
+    async def fake_cached_query(_sql, **kwargs):
+        if kwargs.get("forecast_type") == "actuals":
+            return [
+                {"d": "2026-01-05", "arr": 100.0},
+                {"d": "2026-01-12", "arr": 200.0},
+            ]
+        return [
+            {"d": "2026-01-26", "worst": 40.0, "likely": 50.0, "best": 60.0},
+        ]
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_ytd(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="roy",
+            model="ensemble",
+            year=2026,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    rows = {row["date"]: row for row in result["rows"]}
+    assert rows["2026-01-12"]["ytd_actual"] == 300
+    assert rows["2026-01-12"]["ytd_likely"] == 300
+    assert rows["2026-01-19"]["ytd_likely"] is None
+    assert rows["2026-01-26"]["ytd_likely"] == 350
+
+
 def test_confidence_bands_full_year_includes_rolling_and_roy(monkeypatch):
     captured_sql = []
 
