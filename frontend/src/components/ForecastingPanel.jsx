@@ -417,12 +417,12 @@ const RunningTotalsChart = ({ rows }) => {
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
         {/* Forecast cumulative — solid white line (actuals + forecast stacked) */}
-          <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
+        <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
         {/* Worst/best as thin dashed bounds */}
-          <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444"
+        <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444"
               strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
-          <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981"
+        <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981"
               strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
         <Legend wrapperStyle={{ paddingTop: 8, fontSize: 11 }}
                formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
@@ -2256,10 +2256,13 @@ const ForecastingPanel = () => {
                 const ytdActual = weeklyKpis.ytd_actuals ?? 0;
                 const pctBooked = ml > 0 ? Math.round((ytdActual / ml) * 100) : 0;
                 const periodLabel = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY${selectedYear}`;
+                if (ml === 0) return null;
                 return (
-                  <div style={{ fontSize: 14, color: '#94a3b8', lineHeight: 1.6, padding: '2px 2px 0' }}>
-                    <b style={{ color: '#f1f5f9' }}>{periodLabel} tracking to {fmtM(ml)}</b>
-                    {' '}(range {fmtM(wc)}–{fmtM(bc)}). {fmtM(ytdActual)} booked = {pctBooked}% to plan.
+                  <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 6, lineHeight: 1.6, padding: '2px 2px 0' }}>
+                    <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{periodLabel} tracking to {fmtM(ml)}</span>
+                    {' '}(range {fmtM(wc)}–{fmtM(bc)}).{' '}
+                    <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtM(ytdActual)} booked</span>
+                    {' '}= {pctBooked}% realized.
                   </div>
                 );
               })()}
@@ -2412,8 +2415,6 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
-              {/* All-models cumulative now lives in the Executive Summary hero
-                  at the top of this tab. */}
             </div>
           )}
 
