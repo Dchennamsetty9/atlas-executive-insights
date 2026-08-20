@@ -143,7 +143,7 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
     assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in kpi_sql
 
 
-def test_prophet_weekly_all_regions_does_not_require_total_market(monkeypatch):
+def test_prophet_weekly_all_regions_uses_total_market_rollup(monkeypatch):
     captured_sql = []
 
     async def fake_cached_query(sql, **_kwargs):
@@ -169,7 +169,8 @@ def test_prophet_weekly_all_regions_does_not_require_total_market(monkeypatch):
     assert len(captured_sql) == 3
     assert all("forecast_all_models" in sql for sql in captured_sql)
     assert all("product = 'UCC'" in sql for sql in captured_sql)
-    assert all("sales_market" not in sql for sql in captured_sql)
+    assert all("sales_market" in sql for sql in captured_sql)
+    assert all("= 'Total'" in sql for sql in captured_sql)
 
 
 def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):

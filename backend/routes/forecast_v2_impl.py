@@ -246,10 +246,8 @@ def _source_product_filter(source: Dict[str, Any], product, product_line=None, c
 
 
 def _source_geo_filter(source: Dict[str, Any], geo, col="sales_market"):
-    # forecast_all_models may not carry sales_market='Total' for every model/date;
-    # aggregate regional rows for the All Regions view instead of filtering to 0.
-    if source.get("no_run_date") and _normalize_market_value(geo) == "Total":
-        return ""
+    # forecast_all_models publishes a sales_market='Total' rollup row. Use it
+    # for All Regions so we do not sum Total plus individual markets.
     return _geo_filter(geo, col)
 
 
