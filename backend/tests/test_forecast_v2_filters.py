@@ -184,6 +184,89 @@ def test_ytd_full_year_includes_rolling_and_roy(monkeypatch):
     assert "forecast_type = 'roy'" not in forecast_sql
 
 
+def test_confidence_bands_full_year_includes_rolling_and_roy(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_confidence_bands(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="roy",
+            model="ensemble",
+            year=datetime.date.today().year,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = captured_sql[0]
+    assert "forecast_type IN ('rolling', 'roy')" in forecast_sql
+    assert "forecast_type = 'roy'" not in forecast_sql
+
+
+def test_confidence_bands_future_year_uses_forward_1yr_only(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_confidence_bands(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="rolling",
+            model="ensemble",
+            year=datetime.date.today().year + 1,
+            quarter=None,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = captured_sql[0]
+    assert "forecast_type = 'forward_1yr'" in forecast_sql
+
+
+def test_confidence_bands_quarter_uses_effective_forecast_type(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl.get_confidence_bands(
+            product=None,
+            product_line=None,
+            sales_market=None,
+            forecast_type="rolling",
+            model="ensemble",
+            year=datetime.date.today().year,
+            quarter=4,
+            live_mode=True,
+        )
+    )
+
+    assert result["source"] == "live"
+    forecast_sql = captured_sql[0]
+    assert "forecast_type = 'rolling'" in forecast_sql
+    assert "forecast_type IN ('rolling', 'roy')" not in forecast_sql
+
+
 def test_by_product_rolling_uses_all_future_periods(monkeypatch):
     captured_sql = []
 

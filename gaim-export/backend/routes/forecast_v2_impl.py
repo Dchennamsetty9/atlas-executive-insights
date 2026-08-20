@@ -1743,6 +1743,15 @@ async def get_confidence_bands(
     p90_col = source["upper_col"]
     p50_col = source["most_likely_col"]
 
+    if quarter is not None:
+        cb_fc_pred = f"forecast_type = '{eff_forecast_type}'"
+    elif rolling_next_year:
+        cb_fc_pred = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+    elif selected_year > datetime.date.today().year:
+        cb_fc_pred = "forecast_type = 'forward_1yr'"
+    else:
+        cb_fc_pred = "forecast_type IN ('rolling', 'roy')"
+
     sql = f"""
         SELECT
             SUM(COALESCE(CAST({p10_col}    AS DOUBLE), 0)) AS p10,
@@ -1752,7 +1761,7 @@ async def get_confidence_bands(
             SUM(COALESCE(CAST(Best_Case    AS DOUBLE), 0)) AS best_case
         FROM {FC_TABLE}
         WHERE {_latest_run()}
-                    AND forecast_type = '{eff_forecast_type}'
+                    AND {cb_fc_pred}
           {pf} {gf}
           {date_filter}
     """
