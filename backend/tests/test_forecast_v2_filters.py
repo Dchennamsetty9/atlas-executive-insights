@@ -82,11 +82,13 @@ def test_forward_1yr_is_not_aliased_for_forecast_type_sources():
     assert impl._effective_forecast_type("ensemble", "forward_1yr") == "forward_1yr"
 
 
-def test_prophet_source_uses_forecast_prophet_without_forecast_type_or_run_date():
+def test_prophet_source_uses_forecast_all_models_without_run_date():
     source = impl._model_source("prophet")
     assert source["table"] == impl.PROPHET_TABLE
-    assert source["most_likely_col"] == "Forecast_Median"
-    assert source["has_forecast_type"] is False
+    assert source["most_likely_col"] == "forecast_p50"
+    assert source["has_forecast_type"] is True
+    assert source["no_run_date"] is True
+    assert source["model_filter"] == "model_name = 'Prophet'"
 
     forecast_sql = impl._normalized_forecast_sql(
         model="prophet",
@@ -97,11 +99,13 @@ def test_prophet_source_uses_forecast_prophet_without_forecast_type_or_run_date(
         year=datetime.date.today().year,
     )
 
-    assert "forecast_prophet" in forecast_sql
-    assert "Forecast_Median" in forecast_sql
-    assert "Forecast_P05" in forecast_sql
-    assert "Forecast_P95" in forecast_sql
-    assert "forecast_type =" not in forecast_sql
+    assert "forecast_all_models" in forecast_sql
+    assert "forecast_p50" in forecast_sql
+    assert "forecast_p05" in forecast_sql
+    assert "forecast_p95" in forecast_sql
+    assert "forecast_type = 'forecast'" in forecast_sql
+    assert "model_name = 'Prophet'" in forecast_sql
+    assert "is_current = TRUE" in forecast_sql
     assert "run_date" not in forecast_sql
     assert "product = 'UCC'" in forecast_sql
     assert "sales_market" in forecast_sql
@@ -131,10 +135,12 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
 
     assert result["source"] == "live"
     kpi_sql = captured_sql[2]
-    assert "forecast_prophet" in kpi_sql
-    assert "Forecast_Median" in kpi_sql
+    assert "forecast_all_models" in kpi_sql
+    assert "forecast_p50" in kpi_sql
+    assert "model_name = 'Prophet'" in kpi_sql
+    assert "is_current = TRUE" in kpi_sql
     assert "run_date" not in kpi_sql
-    assert "forecast_type IN" not in kpi_sql
+    assert "forecast_type = 'forecast'" in kpi_sql
 
 
 def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):
@@ -161,9 +167,12 @@ def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):
 
     assert result["source"] == "live"
     assert len(captured_sql) == 2
-    assert all("forecast_prophet" in sql for sql in captured_sql)
+    assert all("forecast_all_models" in sql for sql in captured_sql)
+    assert all("model_name = 'Prophet'" in sql for sql in captured_sql)
+    assert all("is_current = TRUE" in sql for sql in captured_sql)
     assert all("run_date" not in sql for sql in captured_sql)
-    assert all("forecast_type" not in sql for sql in captured_sql)
+    assert "forecast_type = 'actuals'" in captured_sql[0]
+    assert "forecast_type = 'forecast'" in captured_sql[1]
 
 
 def test_prophet_confidence_bands_use_native_interval_columns(monkeypatch):
@@ -190,12 +199,14 @@ def test_prophet_confidence_bands_use_native_interval_columns(monkeypatch):
 
     assert result["source"] == "live"
     sql = captured_sql[0]
-    assert "forecast_prophet" in sql
-    assert "Forecast_P05" in sql
-    assert "Forecast_Median" in sql
-    assert "Forecast_P95" in sql
+    assert "forecast_all_models" in sql
+    assert "forecast_p05" in sql
+    assert "forecast_p50" in sql
+    assert "forecast_p95" in sql
+    assert "model_name = 'Prophet'" in sql
+    assert "is_current = TRUE" in sql
     assert "run_date" not in sql
-    assert "forecast_type" not in sql
+    assert "forecast_type = 'forecast'" in sql
 
 
 def test_prophet_historical_uses_forecast_prophet_actuals(monkeypatch):
@@ -220,10 +231,12 @@ def test_prophet_historical_uses_forecast_prophet_actuals(monkeypatch):
 
     assert result["source"] == "live"
     sql = captured_sql[0]
-    assert "forecast_prophet" in sql
-    assert "Actuals" in sql
+    assert "forecast_all_models" in sql
+    assert "actuals" in sql
+    assert "model_name = 'Prophet'" in sql
+    assert "is_current = TRUE" in sql
     assert "run_date" not in sql
-    assert "forecast_type" not in sql
+    assert "forecast_type = 'actuals'" in sql
 
 
 def test_monthly_clause_for_current_year_rolling_uses_rolling_and_roy():
