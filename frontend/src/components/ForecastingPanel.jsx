@@ -517,7 +517,25 @@ const ByProductChart = ({ byProduct, byLine }) => {
 };
 
 // ── Quarterly Bar Chart (actuals for closed qtrs, forecast for open qtrs) ──────
-const QuarterlyBarChart = ({ weeklyRows, year }) => {
+const QuarterlyBarChart = ({ weeklyRows, quarterlyData, year }) => {
+  if (quarterlyData?.quarters?.length) {
+    const today = new Date();
+    const curQtr = Math.floor(today.getMonth() / 3) + 1;
+    const curYear = today.getFullYear();
+    return <QuarterlyBarChartView qtrs={quarterlyData.quarters.map(q => ({
+      q: q.q,
+      name: `Q${q.q}`,
+      actual: q.actual > 0 ? q.actual : null,
+      forecast: q.forecast > 0 ? q.forecast : null,
+      landing: q.landing,
+      worst: q.worst,
+      best: q.best,
+      isPast: q.status === 'closed',
+      isCurrent: q.status === 'in_progress',
+      isFuture: q.status === 'future',
+      weeks: q.weeks,
+    }))} year={year} curQtr={curQtr} curYear={curYear} />;
+  }
   if (!weeklyRows || weeklyRows.length === 0) return null;
   const today = new Date();
   const curQtr = Math.floor(today.getMonth() / 3) + 1;
@@ -561,6 +579,10 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     };
   });
 
+  return <QuarterlyBarChartView qtrs={qtrs} year={year} curQtr={curQtr} curYear={curYear} />;
+};
+
+const QuarterlyBarChartView = ({ qtrs, year }) => {
   const maxVal = Math.max(...qtrs.map(q => Math.max(q.landing ?? 0, q.best ?? 0)), 1) * 1.18;
 
   const QTooltip = ({ active, payload, label }) => {
@@ -1720,6 +1742,7 @@ const ForecastingPanel = () => {
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
+  const [quarterlySummary, setQuarterlySummary] = useState(null);
   const [ytd,         setYtd]         = useState(null);
   const [historical,  setHistorical]  = useState(null);
   const [byProduct,   setByProduct]   = useState(null);
@@ -1798,6 +1821,7 @@ const ForecastingPanel = () => {
     if (wk.status === 'fulfilled') {
       setWeekly(wk.value?.rows ?? []);
       setWeeklyKpis(wk.value?.kpis ?? null);
+      setQuarterlySummary(wk.value?.quarterly_summary ?? null);
       setSource(wk.value?.source ?? null);
       if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
         setError(`Forecast data fallback: ${wk.value.error}`);
@@ -1812,6 +1836,7 @@ const ForecastingPanel = () => {
       const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
       setYearRows(base.length || roy.length ? [...base, ...roy] : null);
+      if (yrRoll.status === 'fulfilled' && yrRoll.value?.quarterly_summary) setQuarterlySummary(yrRoll.value.quarterly_summary);
     }
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
@@ -2408,7 +2433,7 @@ const ForecastingPanel = () => {
                     <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
                     <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
                   </div>
-                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
+                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} quarterlyData={quarterlySummary} year={selectedYear} />
                 </CardWrap>
               )}
 

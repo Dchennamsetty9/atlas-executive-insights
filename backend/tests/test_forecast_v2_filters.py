@@ -171,11 +171,50 @@ def test_prophet_weekly_all_regions_uses_total_market_rollup(monkeypatch):
     )
 
     assert result["source"] == "live"
-    assert len(captured_sql) == 3
+    assert len(captured_sql) == 4
     assert all("forecast_all_models" in sql for sql in captured_sql)
     assert all("product = 'UCC'" in sql for sql in captured_sql)
     assert all("sales_market" in sql for sql in captured_sql)
     assert all("= 'Total'" in sql for sql in captured_sql)
+
+
+def test_period_landings_reconciles_quarters_and_fy(monkeypatch):
+    async def fake_cached_query(sql, **_kwargs):
+        assert "forecast_all_models" in sql
+        assert "SUM(CASE" in sql
+        return [
+            {"qtr": 1, "actual": 100.0, "forecast": 0.0, "landing": 100.0, "worst": 100.0, "best": 100.0},
+            {"qtr": 2, "actual": 40.0, "forecast": 60.0, "landing": 100.0, "worst": 90.0, "best": 110.0},
+        ]
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+
+    result = asyncio.run(
+        impl._period_landings(
+            source=impl._model_source("prophet"),
+            product=None,
+            product_line="UCC",
+            sales_market=None,
+            year=datetime.date.today().year,
+        )
+    )
+
+    assert result["fy_landing"] == 200
+    assert sum(q["landing"] for q in result["quarters"]) == result["fy_landing"]
+    assert result["quarters"][0]["landing"] == result["quarters"][0]["actual"] + result["quarters"][0]["forecast"]
+    assert result["quarters"][1]["landing"] == result["quarters"][1]["actual"] + result["quarters"][1]["forecast"]
+
+
+def test_summary_kpis_counts_prophet_forecast_type_rows():
+    kpis = impl._summary_kpis([
+        {"forecast_type": "actuals", "Actuals": 100, "Most_Likely": None, "Worst_Case": None, "Best_Case": None},
+        {"forecast_type": "forecast", "Actuals": None, "Most_Likely": 50, "Worst_Case": 40, "Best_Case": 60},
+    ])
+
+    assert kpis["most_likely"] == 150
+    assert kpis["worst_case"] == 140
+    assert kpis["best_case"] == 160
+    assert kpis["ytd_actuals"] == 100
 
 
 def test_prophet_ytd_uses_forecast_prophet_without_forecast_type(monkeypatch):

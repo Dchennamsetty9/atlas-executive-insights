@@ -530,15 +530,17 @@ def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
         bc = _f(row.get("Best_Case"))
         act = _f(row.get("Actuals"))
 
-        if ml > 0 or ftype in ("rolling", "roy"):
+        if ftype == "actuals" and act > 0:
+            most_likely += act
+            worst_case += act
+            best_case += act
+            ytd_actuals += act
+            continue
+
+        if ml > 0 or ftype not in ("", "actuals"):
             most_likely += ml
             worst_case += wc
             best_case += bc
-
-        # YTD actuals: sum all actuals rows in the result set (already date-filtered
-        # by the caller's kpi_sql — year/quarter filter applied before this function).
-        if ftype == "actuals" and act > 0:
-            ytd_actuals += act
 
     return {
         "most_likely": round(most_likely, 0),
@@ -559,6 +561,123 @@ def _forecast_after_actuals_pred(pf: str = "", gf: str = "") -> str:
         f"WHERE forecast_type = 'actuals' AND {_latest_run()} "
         f"AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0 {pf} {gf}), DATE'1900-01-01')"
     )
+
+
+async def _period_landings(
+    source: Dict[str, Any],
+    product: Optional[str],
+    product_line: Optional[str],
+    sales_market: Optional[str],
+    year: int,
+    quarter: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Canonical period landings: each week contributes actual OR forecast, never both."""
+    value_col = source["most_likely_col"]
+    lower_col = source["lower_col"]
+    upper_col = source["upper_col"]
+    actuals_col = source.get("actuals_col", "Actuals")
+    pf = _source_product_filter(source, product, product_line)
+    gf = _source_geo_filter(source, sales_market)
+    qf = _quarter_filter(quarter, year) if quarter else _year_filter(year)
+
+    if source.get("no_run_date"):
+        table = source["table"]
+        base_filter = _source_base_filter(source).replace("AND ", "", 1)
+        actual_pred = _source_forecast_type_filter(source, actuals=True)
+        forecast_pred = _source_forecast_type_filter(source)
+        sql = f"""
+            SELECT
+                QUARTER(ds) AS qtr,
+                SUM(CASE WHEN {actual_pred} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
+                         THEN CAST({actuals_col} AS DOUBLE) ELSE 0 END) AS actual,
+                SUM(CASE WHEN {forecast_pred} AND COALESCE(CAST({value_col} AS DOUBLE), 0) > 0
+                         THEN CAST({value_col} AS DOUBLE) ELSE 0 END) AS forecast,
+                SUM(CASE WHEN {actual_pred} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
+                         THEN CAST({actuals_col} AS DOUBLE)
+                         WHEN {forecast_pred} THEN COALESCE(CAST({lower_col} AS DOUBLE), 0)
+                         ELSE 0 END) AS worst,
+                SUM(CASE WHEN {actual_pred} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
+                         THEN CAST({actuals_col} AS DOUBLE)
+                         WHEN {forecast_pred} THEN COALESCE(CAST({value_col} AS DOUBLE), 0)
+                         ELSE 0 END) AS landing,
+                SUM(CASE WHEN {actual_pred} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0
+                         THEN CAST({actuals_col} AS DOUBLE)
+                         WHEN {forecast_pred} THEN COALESCE(CAST({upper_col} AS DOUBLE), 0)
+                         ELSE 0 END) AS best
+            FROM {table}
+            WHERE {base_filter}
+              {pf} {gf}
+              AND {qf}
+              AND (({actual_pred} AND COALESCE(CAST({actuals_col} AS DOUBLE), 0) > 0)
+                   OR ({forecast_pred} AND COALESCE(CAST({value_col} AS DOUBLE), 0) > 0))
+            GROUP BY QUARTER(ds)
+            ORDER BY qtr
+        """
+    else:
+        pf = _product_filter(product, product_line)
+        gf = _geo_filter(sales_market)
+        last_actual_pred = _forecast_after_actuals_pred(pf, gf)
+        sql = f"""
+            SELECT
+                QUARTER(ds) AS qtr,
+                SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+                         THEN CAST(Actuals AS DOUBLE) ELSE 0 END) AS actual,
+                SUM(CASE WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         THEN COALESCE(CAST({value_col} AS DOUBLE), 0) ELSE 0 END) AS forecast,
+                SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+                         THEN CAST(Actuals AS DOUBLE)
+                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         THEN COALESCE(CAST({lower_col} AS DOUBLE), 0) ELSE 0 END) AS worst,
+                SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+                         THEN CAST(Actuals AS DOUBLE)
+                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         THEN COALESCE(CAST({value_col} AS DOUBLE), 0) ELSE 0 END) AS landing,
+                SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
+                         THEN CAST(Actuals AS DOUBLE)
+                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         THEN COALESCE(CAST({upper_col} AS DOUBLE), 0) ELSE 0 END) AS best
+            FROM {FC_TABLE}
+            WHERE {_latest_run()}
+              {pf} {gf}
+              AND {qf}
+              AND (forecast_type = 'actuals' OR forecast_type IN ('rolling', 'roy'))
+            GROUP BY QUARTER(ds)
+            ORDER BY qtr
+        """
+
+    rows = await _cached_query(sql, endpoint="/_period_landings", model="custom", forecast_type="landing", product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=year, quarter=quarter)
+    by_q = {int(_f(r.get("qtr"))): r for r in rows}
+    today = datetime.date.today()
+    current_quarter = ((today.month - 1) // 3) + 1
+    quarters = []
+    for q in (1, 2, 3, 4):
+        row = by_q.get(q, {})
+        actual = _f(row.get("actual"))
+        forecast = _f(row.get("forecast"))
+        landing = _f(row.get("landing"))
+        status = "closed" if forecast == 0 and actual > 0 else "in_progress" if actual > 0 else "future"
+        if year < today.year or (year == today.year and q < current_quarter):
+            status = "closed"
+        quarters.append({
+            "q": q,
+            "actual": round(actual, 0),
+            "forecast": round(forecast, 0),
+            "landing": round(landing, 0),
+            "worst": round(_f(row.get("worst")), 0),
+            "best": round(_f(row.get("best")), 0),
+            "status": status,
+        })
+
+    fy_landing = sum(q["landing"] for q in quarters)
+    actuals_ytd = sum(q["actual"] for q in quarters)
+    return {
+        "fy_landing": round(fy_landing, 0),
+        "fy_worst": round(sum(q["worst"] for q in quarters), 0),
+        "fy_best": round(sum(q["best"] for q in quarters), 0),
+        "actuals_ytd": round(actuals_ytd, 0),
+        "pct_realized": round((actuals_ytd / fy_landing) * 100, 1) if fy_landing > 0 else 0,
+        "quarters": quarters,
+    }
 
 
 def _model_mape_for_row(row: Dict[str, Any], model: str) -> Optional[float]:
@@ -1185,10 +1304,11 @@ async def get_weekly(
                     ORDER BY ds
                 """
         
-        actual_rows_raw, forecast_rows_raw, kpi_rows_raw = await asyncio.gather(
+        actual_rows_raw, forecast_rows_raw, kpi_rows_raw, quarterly_summary = await asyncio.gather(
             _cached_query(_normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter, rolling_next_year=rolling_next_year), endpoint="/weekly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter),
             _cached_query(_normalized_forecast_sql(model, eff_forecast_type, product, product_line, sales_market, year, quarter, rolling_next_year=rolling_next_year), endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter),
             _cached_query(kpi_sql, endpoint="/weekly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter, metric="kpis"),
+            _period_landings(_kpi_src, product, product_line, sales_market, year, quarter=None),
         )
     except Exception as exc:
         logger.warning("[forecast/weekly] query failed for model=%s: %s", model, exc)
@@ -1228,6 +1348,7 @@ async def get_weekly(
         "forecast_type": eff_forecast_type,
         "rows": rows,
         "kpis": kpis,
+        "quarterly_summary": quarterly_summary,
     }
 
 
