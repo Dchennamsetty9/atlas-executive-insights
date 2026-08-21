@@ -529,7 +529,11 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual  ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely  ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
     // Variance-aggregated quarter band (consistent with the Overview cards):
     // combine weekly half-widths in quadrature, not additively.
     const loSq = rows.reduce((s, r) => {
@@ -543,7 +547,6 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
     const isFuture  = !isPast && !isCurrent;
-    const landing   = actual + forecast;   // actuals + open-week forecast
     return {
       q, name: `Q${q}`,
       // Stacked: orange realized layer + blue forecast layer. Past quarters are
@@ -1667,7 +1670,11 @@ const _quarterLandings = (yearRows, year) => {
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
     const loSq = rows.reduce((s, r) => {
       const lk = r.arr_likely ?? null;
       return lk != null ? s + Math.max(0, lk - (r.arr_worst ?? lk)) ** 2 : s;
@@ -1678,7 +1685,6 @@ const _quarterLandings = (yearRows, year) => {
     }, 0);
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
-    const landing   = actual + forecast;
     return {
       q, actual, forecast, landing,
       worst: !isPast && landing > 0 ? Math.max(0, landing - Math.sqrt(loSq)) : null,

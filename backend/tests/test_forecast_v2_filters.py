@@ -143,6 +143,9 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
     assert "is_current = TRUE" in kpi_sql
     assert "run_date" not in kpi_sql
     assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in kpi_sql
+    assert "THEN NULL ELSE CAST(forecast_p50 AS DOUBLE) END AS Most_Likely" in kpi_sql
+    assert "THEN NULL ELSE CAST(forecast_p05 AS DOUBLE) END AS Worst_Case" in kpi_sql
+    assert "THEN NULL ELSE CAST(forecast_p95 AS DOUBLE) END AS Best_Case" in kpi_sql
 
 
 def test_prophet_weekly_all_regions_uses_total_market_rollup(monkeypatch):

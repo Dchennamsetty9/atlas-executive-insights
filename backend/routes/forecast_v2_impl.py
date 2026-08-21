@@ -1089,9 +1089,9 @@ async def get_weekly(
             kpi_sql = f"""
                 SELECT ds,
                        CAST({_actual_col} AS DOUBLE) AS Actuals,
-                       COALESCE(CAST({_actual_col} AS DOUBLE), CAST({_value_col} AS DOUBLE), 0) AS Most_Likely,
-                       COALESCE(CAST({_actual_col} AS DOUBLE), CAST({_lower_col} AS DOUBLE), 0) AS Worst_Case,
-                       COALESCE(CAST({_actual_col} AS DOUBLE), CAST({_upper_col} AS DOUBLE), 0) AS Best_Case,
+                       CASE WHEN {_source_forecast_type_filter(_kpi_src, actuals=True)} THEN NULL ELSE CAST({_value_col} AS DOUBLE) END AS Most_Likely,
+                       CASE WHEN {_source_forecast_type_filter(_kpi_src, actuals=True)} THEN NULL ELSE CAST({_lower_col} AS DOUBLE) END AS Worst_Case,
+                       CASE WHEN {_source_forecast_type_filter(_kpi_src, actuals=True)} THEN NULL ELSE CAST({_upper_col} AS DOUBLE) END AS Best_Case,
                                              forecast_type
                 FROM {_table}
                                 WHERE ({qtr_filter})
