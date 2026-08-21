@@ -1738,3 +1738,343 @@ print(f"  {SENSITIVITY_TABLE}: Per-driver elasticity coefficients")
 print(f"  {MODEL_SCENARIO_TABLE}: Model-to-scenario archetype mapping")
 print(f"  {HIST_SCENARIO_TABLE}: Historical what-if anchoring data")
 print("="*70)
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 14 — Unified All-Models Table for Power BI
+# MAGIC %md
+# MAGIC ## Cell 14 — Unified All-Models Table for Power BI
+# MAGIC
+# MAGIC Creates `forecast_all_models` — a single table that combines:
+# MAGIC - **Prophet** results from `forecast_prophet` (native P05/P25/P50/P75/P95 quantiles)
+# MAGIC - **All other models** (MSTL, DHR_ARIMA, ETS, LightGBM, Adaptive_Ensemble) from `forecast_results`
+# MAGIC
+# MAGIC ### Quantile Interpolation (non-Prophet models)
+# MAGIC
+# MAGIC `forecast_results` provides only P10/P50/P90. Under normal-error assumption:
+# MAGIC - σ = (P90 - P10) / (2 × 1.2816)
+# MAGIC - P05 = P50 − 1.6449 × σ
+# MAGIC - P25 = P50 − 0.6745 × σ
+# MAGIC - P75 = P50 + 0.6745 × σ
+# MAGIC - P95 = P50 + 1.6449 × σ
+# MAGIC
+# MAGIC Prophet rows keep their EXACT native quantiles (no interpolation).
+
+# COMMAND ----------
+
+# DBTITLE 1,Build forecast_all_models unified table
+# ══════════════════════════════════════════════════════════════════════════════
+# FORECAST_ALL_MODELS — Unified table for Power BI (all models in one place)
+# ══════════════════════════════════════════════════════════════════════════════
+# Combines:
+#   1. Prophet results from forecast_prophet (native 5-quantile fan)
+#   2. All other models from forecast_results (p10/p50/p90 → interpolated 5-quantile)
+# Actuals & driver features joined model-independently from forecast_prophet.
+# ══════════════════════════════════════════════════════════════════════════════
+
+ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+
+# --- Z-scores for quantile interpolation (normal distribution) ---
+Z_10 = 1.2816
+Z_05 = 1.6449
+Z_25 = 0.6745
+
+# ─── 1. PROPHET ROWS (native quantiles from forecast_prophet) ────────────────
+
+prophet_src = spark.table(f"{CATALOG}.{SCHEMA}.forecast_prophet")
+
+prophet_rows = (prophet_src
+    .select(
+        F.col("ds").cast("date").alias("ds"),
+        F.col("product"),
+        F.when(F.upper(F.col("sales_market")) == "UNKNOWN", F.lit("Unknown"))
+         .otherwise(F.col("sales_market")).alias("sales_market"),
+        F.lit("Prophet").alias("model_name"),
+        F.col("year"),
+        F.col("month"),
+        F.quarter("ds").alias("quarter"),
+        F.col("week_number"),
+        F.weekofyear("ds").alias("iso_week"),
+        F.year(F.col("ds") + F.expr("INTERVAL 3 DAYS")).alias("iso_year"),
+        F.col("summer").cast("int").alias("summer"),
+        F.col("winter").cast("int").alias("winter"),
+        F.col("isweek1").cast("int").alias("isweek1"),
+        F.col("Forecast_P05").alias("forecast_p05"),
+        F.col("Forecast_P25").alias("forecast_p25"),
+        F.col("Forecast_Median").alias("forecast_p50"),
+        F.col("Forecast_P75").alias("forecast_p75"),
+        F.col("Forecast_P95").alias("forecast_p95"),
+        F.when(F.col("Actuals") > 0, F.col("Actuals")).otherwise(F.lit(None).cast("double")).alias("actuals"),
+        F.col("magna_carta_actuals"),
+        F.col("miradore_plan"),
+        F.col("avg_deal_size"),
+        F.col("avg_sales_cycle"),
+        F.col("all_created_arr"),
+        F.col("total_partner_pipeline"),
+        F.col("avg_dials"),
+        F.col("avg_touches"),
+        F.col("avg_push_counter"),
+        F.col("number_of_opps"),
+        F.col("headcount"),
+        F.col("avg_opportunity_age"),
+        F.lit("prophet_native").alias("interval_method"),
+        F.lit(None).cast("double").alias("model_wape"),
+        F.lit(True).alias("is_current"),
+        F.when(F.col("Actuals").isNotNull() & (F.col("Actuals") > 0), F.lit("actuals"))
+         .otherwise(F.lit("forecast")).alias("forecast_type"),
+        F.col("pe_account_flag"),
+        F.current_timestamp().alias("published_at_utc"),
+    )
+)
+
+# ─── 1b. ADD 'Total' MARKET ROLLUP ──────────────────────────────────────────
+# Removed pe_account_flag and published_at_utc from groupBy — they vary between
+# markets for the same ds, causing split Total rows (16 instead of 13 per quarter).
+prophet_total = (prophet_rows
+    .groupBy("ds", "product", "model_name", "year", "month", "quarter",
+             "week_number", "iso_week", "iso_year", "summer", "winter", "isweek1",
+             "interval_method", "model_wape", "is_current", "forecast_type")
+    .agg(
+        F.sum("forecast_p05").alias("forecast_p05"),
+        F.sum("forecast_p25").alias("forecast_p25"),
+        F.sum("forecast_p50").alias("forecast_p50"),
+        F.sum("forecast_p75").alias("forecast_p75"),
+        F.sum("forecast_p95").alias("forecast_p95"),
+        F.sum("actuals").alias("actuals"),
+        F.sum("magna_carta_actuals").alias("magna_carta_actuals"),
+        F.sum("miradore_plan").alias("miradore_plan"),
+        F.avg("avg_deal_size").alias("avg_deal_size"),
+        F.avg("avg_sales_cycle").alias("avg_sales_cycle"),
+        F.sum("all_created_arr").alias("all_created_arr"),
+        F.sum("total_partner_pipeline").alias("total_partner_pipeline"),
+        F.avg("avg_dials").alias("avg_dials"),
+        F.avg("avg_touches").alias("avg_touches"),
+        F.avg("avg_push_counter").alias("avg_push_counter"),
+        F.sum("number_of_opps").alias("number_of_opps"),
+        F.sum("headcount").alias("headcount"),
+        F.avg("avg_opportunity_age").alias("avg_opportunity_age"),
+        F.first("pe_account_flag").alias("pe_account_flag"),
+        F.first("published_at_utc").alias("published_at_utc"),
+    )
+    .withColumn("sales_market", F.lit("Total"))
+)
+
+prophet_rows = prophet_rows.unionByName(prophet_total, allowMissingColumns=True)
+print(f"Prophet rows from forecast_prophet (with Total rollup): {prophet_rows.count()}")
+
+# ─── 2. OTHER MODELS (from forecast_results, interpolated quantiles) ─────────
+
+fr = spark.table(RESULTS_VIEW)
+other_models = fr.where(
+    "model != 'ACTUAL' AND model != 'Prophet_trend' AND forecast_view = 'adaptive'"
+)
+
+other_rows = (other_models
+    .withColumn("_sigma", (F.col("p90") - F.col("p10")) / (2 * Z_10))
+    .select(
+        F.col("ds"),
+        F.col("product"),
+        F.col("sales_market"),
+        F.col("model").alias("model_name"),
+        F.year("ds").alias("year"),
+        F.month("ds").alias("month"),
+        F.quarter("ds").alias("quarter"),
+        F.weekofyear("ds").alias("week_number"),
+        F.weekofyear("ds").alias("iso_week"),
+        F.year(F.col("ds") + F.expr("INTERVAL 3 DAYS")).alias("iso_year"),
+        F.when(F.month("ds").isin(6, 7, 8), 1).otherwise(0).alias("summer"),
+        F.when(F.month("ds").isin(12, 1, 2), 1).otherwise(0).alias("winter"),
+        F.when(F.weekofyear("ds") == 1, 1).otherwise(0).alias("isweek1"),
+        (F.col("p50") - Z_05 * F.col("_sigma")).alias("forecast_p05"),
+        (F.col("p50") - Z_25 * F.col("_sigma")).alias("forecast_p25"),
+        F.col("p50").alias("forecast_p50"),
+        (F.col("p50") + Z_25 * F.col("_sigma")).alias("forecast_p75"),
+        (F.col("p50") + Z_05 * F.col("_sigma")).alias("forecast_p95"),
+        F.lit(None).cast("double").alias("actuals"),
+        F.lit(None).cast("double").alias("magna_carta_actuals"),
+        F.lit(None).cast("double").alias("miradore_plan"),
+        F.lit(None).cast("double").alias("avg_deal_size"),
+        F.lit(None).cast("double").alias("avg_sales_cycle"),
+        F.lit(None).cast("double").alias("all_created_arr"),
+        F.lit(None).cast("double").alias("total_partner_pipeline"),
+        F.lit(None).cast("double").alias("avg_dials"),
+        F.lit(None).cast("double").alias("avg_touches"),
+        F.lit(None).cast("double").alias("avg_push_counter"),
+        F.lit(None).cast("bigint").alias("number_of_opps"),
+        F.lit(None).cast("bigint").alias("headcount"),
+        F.lit(None).cast("double").alias("avg_opportunity_age"),
+        F.when(F.col("model").contains("LGB"), F.lit("quantile_regression"))
+         .when(F.col("model") == "Adaptive_Ensemble", F.lit("monte_carlo"))
+         .otherwise(F.lit("analytic_ci")).alias("interval_method"),
+        F.col("model_wape"),
+        F.lit(True).alias("is_current"),
+        F.col("forecast_type"),
+        F.lit(None).cast("boolean").alias("pe_account_flag"),
+        F.current_timestamp().alias("published_at_utc"),
+    )
+)
+
+# Join actuals & driver features from forecast_prophet
+driver_features = (prophet_src
+    .select(
+        F.col("ds").cast("date").alias("ds"),
+        "product", "sales_market",
+        F.col("Actuals").alias("_actuals"),
+        F.col("magna_carta_actuals").alias("_magna_carta_actuals"),
+        F.col("miradore_plan").alias("_miradore_plan"),
+        F.col("avg_deal_size").alias("_avg_deal_size"),
+        F.col("avg_sales_cycle").alias("_avg_sales_cycle"),
+        F.col("all_created_arr").alias("_all_created_arr"),
+        F.col("total_partner_pipeline").alias("_total_partner_pipeline"),
+        F.col("avg_dials").alias("_avg_dials"),
+        F.col("avg_touches").alias("_avg_touches"),
+        F.col("avg_push_counter").alias("_avg_push_counter"),
+        F.col("number_of_opps").alias("_number_of_opps"),
+        F.col("headcount").alias("_headcount"),
+        F.col("avg_opportunity_age").alias("_avg_opportunity_age"),
+    )
+)
+
+other_rows_enriched = (other_rows
+    .join(driver_features, on=["ds", "product", "sales_market"], how="left")
+    .withColumn("actuals", F.coalesce(F.col("_actuals"), F.col("actuals")))
+    .withColumn("magna_carta_actuals", F.coalesce(F.col("_magna_carta_actuals"), F.col("magna_carta_actuals")))
+    .withColumn("miradore_plan", F.coalesce(F.col("_miradore_plan"), F.col("miradore_plan")))
+    .withColumn("avg_deal_size", F.coalesce(F.col("_avg_deal_size"), F.col("avg_deal_size")))
+    .withColumn("avg_sales_cycle", F.coalesce(F.col("_avg_sales_cycle"), F.col("avg_sales_cycle")))
+    .withColumn("all_created_arr", F.coalesce(F.col("_all_created_arr"), F.col("all_created_arr")))
+    .withColumn("total_partner_pipeline", F.coalesce(F.col("_total_partner_pipeline"), F.col("total_partner_pipeline")))
+    .withColumn("avg_dials", F.coalesce(F.col("_avg_dials"), F.col("avg_dials")))
+    .withColumn("avg_touches", F.coalesce(F.col("_avg_touches"), F.col("avg_touches")))
+    .withColumn("avg_push_counter", F.coalesce(F.col("_avg_push_counter"), F.col("avg_push_counter")))
+    .withColumn("number_of_opps", F.coalesce(F.col("_number_of_opps"), F.col("number_of_opps")))
+    .withColumn("headcount", F.coalesce(F.col("_headcount"), F.col("headcount")))
+    .withColumn("avg_opportunity_age", F.coalesce(F.col("_avg_opportunity_age"), F.col("avg_opportunity_age")))
+)
+cols_to_drop = [c for c in other_rows_enriched.columns if c.startswith("_")]
+other_rows_enriched = other_rows_enriched.drop(*cols_to_drop)
+
+print(f"Other model rows (enriched with actuals/features): {other_rows_enriched.count()}")
+
+# ─── 3. UNION Prophet + Other Models ─────────────────────────────────────────
+
+final_cols = prophet_rows.columns
+for c in final_cols:
+    if c not in other_rows_enriched.columns:
+        other_rows_enriched = other_rows_enriched.withColumn(c, F.lit(None))
+
+other_rows_enriched = other_rows_enriched.select(*final_cols)
+unified = prophet_rows.unionByName(other_rows_enriched, allowMissingColumns=True)
+
+print(f"\nUnified forecast_all_models: {unified.count()} rows")
+print(f"  Models: {sorted([r[0] for r in unified.select('model_name').distinct().collect()])}")
+print(f"  Products: {sorted([r[0] for r in unified.select('product').distinct().collect()])}")
+print(f"  Date range: {unified.agg(F.min('ds')).collect()[0][0]} to {unified.agg(F.max('ds')).collect()[0][0]}")
+
+# ─── 4. WRITE TABLE ──────────────────────────────────────────────────────────
+
+(unified.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(ALL_MODELS_TABLE)
+)
+print(f"\n✓ Written to {ALL_MODELS_TABLE}")
+
+# ─── 5. QUANTILE MONOTONICITY VALIDATION ─────────────────────────────────────
+
+validation = spark.table(ALL_MODELS_TABLE)
+violations = validation.where(
+    (F.col("forecast_p05") > F.col("forecast_p25")) |
+    (F.col("forecast_p25") > F.col("forecast_p50")) |
+    (F.col("forecast_p50") > F.col("forecast_p75")) |
+    (F.col("forecast_p75") > F.col("forecast_p95"))
+).count()
+
+if violations > 0:
+    print(f"  ⚠️  WARNING: {violations} rows violate quantile monotonicity")
+else:
+    print(f"  ✓ Quantile monotonicity: PASS")
+
+# COMMAND ----------
+
+# DBTITLE 1,Grants and companion views for Power BI
+# ══════════════════════════════════════════════════════════════════════════════
+# GRANTS + COMPANION VIEWS
+# ══════════════════════════════════════════════════════════════════════════════
+
+CATALOG = "datagroup_mdl"
+SCHEMA = "mdl_sales_analytics"
+ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
+
+spark.sql(f"GRANT SELECT ON TABLE {ALL_MODELS_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
+print(f"✓ Granted SELECT on {ALL_MODELS_TABLE} to {APP_SERVICE_PRINCIPAL}")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_all_models_current AS
+SELECT 
+    ds, product, sales_market, model_name,
+    year, month, quarter, week_number, iso_week, iso_year,
+    summer, winter, isweek1,
+    forecast_p05, forecast_p25, forecast_p50,
+    forecast_p50 AS Forecast_Median,
+    forecast_p75, forecast_p95,
+    actuals AS Actuals,
+    magna_carta_actuals, miradore_plan,
+    avg_deal_size, avg_sales_cycle, all_created_arr,
+    total_partner_pipeline, avg_dials, avg_touches,
+    avg_push_counter, number_of_opps, headcount, avg_opportunity_age,
+    interval_method, model_wape, forecast_type, pe_account_flag
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_all_models_current")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_model_comparison AS
+SELECT
+    ds, product, sales_market, model_name,
+    forecast_p50,
+    (forecast_p95 - forecast_p05) AS band_width_90,
+    (forecast_p75 - forecast_p25) AS band_width_50,
+    actuals,
+    CASE WHEN actuals IS NOT NULL 
+         THEN ABS(actuals - forecast_p50) / NULLIF(actuals, 0) * 100 
+    END AS abs_pct_error,
+    model_wape, interval_method
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE AND forecast_type != 'actuals'
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_model_comparison")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_accuracy AS
+SELECT
+    ds, product, sales_market, model_name, actuals, forecast_p50,
+    CASE WHEN actuals IS NOT NULL AND actuals != 0
+         THEN ABS(actuals - forecast_p50) / ABS(actuals) * 100
+    END AS ape,
+    CASE WHEN actuals IS NOT NULL
+         THEN (forecast_p50 - actuals)
+    END AS signed_error,
+    CASE WHEN actuals IS NOT NULL
+         THEN CASE WHEN actuals BETWEEN forecast_p25 AND forecast_p75 THEN 1 ELSE 0 END
+    END AS in_p25_p75,
+    CASE WHEN actuals IS NOT NULL
+         THEN CASE WHEN actuals BETWEEN forecast_p05 AND forecast_p95 THEN 1 ELSE 0 END
+    END AS in_p05_p95,
+    CASE WHEN actuals IS NOT NULL
+         THEN 0.5 * ABS(actuals - forecast_p50)
+    END AS pinball_p50,
+    interval_method
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE AND actuals IS NOT NULL
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_accuracy")
+
+for vw in ['v_forecast_all_models_current', 'v_forecast_model_comparison', 'v_forecast_accuracy']:
+    spark.sql(f"GRANT SELECT ON VIEW {CATALOG}.{SCHEMA}.{vw} TO `{APP_SERVICE_PRINCIPAL}`")
+    print(f"  ✓ Granted SELECT on {vw}")
+
+print(f"\n✓ All views created and grants applied.")
