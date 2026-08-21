@@ -330,6 +330,7 @@ def _normalized_forecast_sql(
     value_col = source["most_likely_col"]
     lower_col = source["lower_col"]
     upper_col = source["upper_col"]
+    table = source["table"]
     actuals_col = source.get("actuals_col", "Actuals")
     pf = _source_product_filter(source, product, product_line)
     gf = _source_geo_filter(source, sales_market)
@@ -1389,8 +1390,6 @@ async def get_monthly(
 
     pf = _source_product_filter(source, product, product_line)
     gf = _source_geo_filter(source, sales_market)
-    prophet_pf = "" if _selected_product(product, product_line) == "Total" else pf
-    prophet_gf = "" if _normalize_market_value(sales_market) == "Total" else gf
     yf = _year_filter(selected_year)
     qf = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
@@ -1457,8 +1456,9 @@ async def get_monthly(
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
                     SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
                 FROM {FC_TABLE}
-                WHERE forecast_type IN ('actuals', 'rolling', 'roy')
+                                WHERE forecast_type IN ('rolling', 'roy')
                   AND {_latest_run()}
+                                    AND {_forecast_after_actuals_pred(pf, gf)}
                   {pf} {gf}
                   {date_filter}
                 GROUP BY yr, qtr, mth, month_name
@@ -1490,6 +1490,45 @@ async def get_monthly(
                 ORDER BY yr, mth
             """
 
+    pred_sql = None
+    if include_actuals:
+        if not source.get("no_run_date"):
+            pred_sql = f"""
+                SELECT
+                    year(ds)                     AS yr,
+                    quarter(ds)                  AS qtr,
+                    month(ds)                    AS mth,
+                    date_format(ds, 'MMMM')      AS month_name,
+                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_predicted,
+                    SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_pred_worst,
+                    SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_pred_best
+                FROM {FC_TABLE}
+                WHERE forecast_type = 'actuals'
+                  AND {_latest_run()}
+                  {pf} {gf}
+                  {date_filter}
+                GROUP BY yr, qtr, mth, month_name
+                ORDER BY yr, mth
+            """
+        else:
+            pred_sql = f"""
+                SELECT
+                    year(ds)                     AS yr,
+                    quarter(ds)                  AS qtr,
+                    month(ds)                    AS mth,
+                    date_format(ds, 'MMMM')      AS month_name,
+                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_predicted,
+                    SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_pred_worst,
+                    SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_pred_best
+                FROM {table}
+                WHERE {_source_forecast_type_filter(source, actuals=True)}
+                  AND {_source_base_filter(source).replace('AND ', '', 1)}
+                  {pf} {gf}
+                  {date_filter}
+                GROUP BY yr, qtr, mth, month_name
+                ORDER BY yr, mth
+            """
+
     try:
         key_product = _selected_product(product, product_line)
         key_geo = _normalize_market_value(sales_market)
@@ -1502,10 +1541,13 @@ async def get_monthly(
             pending.append(("act", _cached_query(act_sql, endpoint="/monthly", model=model, forecast_type="actuals", product=key_product, geo=key_geo, year=year, quarter=quarter)))
         if fc_sql:
             pending.append(("fc", _cached_query(fc_sql, endpoint="/monthly", model=model, forecast_type=eff_forecast_type, product=key_product, geo=key_geo, year=year, quarter=quarter)))
+        if pred_sql:
+            pending.append(("pred", _cached_query(pred_sql, endpoint="/monthly", model=model, forecast_type="prediction", product=key_product, geo=key_geo, year=year, quarter=quarter)))
         results = await asyncio.gather(*(c for _, c in pending))
         res_map = {k: r for (k, _), r in zip(pending, results)}
         act_rows = res_map.get("act", [])
         fc_rows = res_map.get("fc", [])
+        pred_rows = res_map.get("pred", [])
     except Exception as exc:
         logger.warning("[forecast/monthly] query failed: %s", exc)
         return _demo("months", error=str(exc))
@@ -1518,16 +1560,21 @@ async def get_monthly(
         (int(_f(r.get("yr"))), int(_f(r.get("mth")))): r
         for r in fc_rows
     }
+    pred_map = {
+        (int(_f(r.get("yr"))), int(_f(r.get("mth")))): r
+        for r in pred_rows
+    }
 
     # Merge keys from BOTH sides: months with only actuals (closed months /
     # closed quarters) must still appear — previously the list was built from
     # forecast rows only, so actuals-only months vanished.
     months = []
-    for key in sorted(set(act_map) | set(fc_by_month)):
+    for key in sorted(set(act_map) | set(fc_by_month) | set(pred_map)):
         yr, mth = key
         a = act_map.get(key)
         f = fc_by_month.get(key)
-        src = f or a
+        p = pred_map.get(key)
+        src = f or a or p
         months.append({
             "year":       yr,
             "quarter":    int(_f(src.get("qtr"))),
@@ -1537,6 +1584,9 @@ async def get_monthly(
             "arr_worst":  _f(f.get("arr_worst")) if f else None,
             "arr_likely": _f(f.get("arr_likely")) if f else None,
             "arr_best":   _f(f.get("arr_best")) if f else None,
+            "arr_predicted":  _f(p.get("arr_predicted")) if p else None,
+            "arr_pred_worst": _f(p.get("arr_pred_worst")) if p else None,
+            "arr_pred_best":  _f(p.get("arr_pred_best")) if p else None,
         })
 
     if rolling_next_year:
@@ -1986,14 +2036,16 @@ async def get_historical(
 
     model = _validate_model(model)
     source = _model_source(model)
+    value_col = source["most_likely_col"]
+    actuals_col = source.get("actuals_col", "Actuals")
     pf = _source_product_filter(source, product, product_line)
     gf = _source_geo_filter(source, sales_market)
+    current_year = datetime.date.today().year
 
     if year:
         date_clause = f"AND {_year_filter(year)}"
     else:
         # Default: last 3 calendar years for multi-year overlay charts
-        current_year = datetime.date.today().year
         date_clause = f"AND YEAR(ds) BETWEEN {current_year - 2} AND {current_year}"
 
     if not source.get("no_run_date"):
@@ -2044,7 +2096,80 @@ async def get_historical(
         "arr":      _f(r.get("arr")),
     } for r in rows_raw]
 
-    return {"source": "live", "rows": rows}
+    if source.get("no_run_date"):
+        fc_cont_sql = f"""
+            SELECT
+                CAST(ds AS STRING)          AS date,
+                year(ds)                    AS year,
+                weekofyear(ds)              AS iso_week,
+                quarter(ds)                 AS quarter,
+                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr
+            FROM {source["table"]}
+            WHERE {_source_forecast_type_filter(source)}
+              AND {_source_base_filter(source).replace('AND ', '', 1)}
+              AND COALESCE(CAST({value_col} AS DOUBLE), 0) > 0
+              AND YEAR(ds) = {current_year}
+              {pf} {gf}
+            GROUP BY ds, year(ds), weekofyear(ds), quarter(ds)
+            ORDER BY ds
+        """
+    else:
+        fc_cont_sql = f"""
+            SELECT
+                CAST(ds AS STRING)          AS date,
+                year(ds)                    AS year,
+                weekofyear(ds)              AS iso_week,
+                quarter(ds)                 AS quarter,
+                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('rolling', 'roy')
+              AND {_latest_run()}
+              AND YEAR(ds) = {current_year}
+              AND {_forecast_after_actuals_pred(pf, gf)}
+              {pf} {gf}
+            GROUP BY ds, year(ds), weekofyear(ds), quarter(ds)
+            ORDER BY ds
+        """
+
+    try:
+        fc_rows_raw = await _cached_query(fc_cont_sql, endpoint="/historical", model=model, forecast_type="forecast", product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=current_year, quarter=None, metric="forecast_continuation")
+    except Exception:
+        fc_rows_raw = []
+    forecast_continuation = [{
+        "date":     str(r.get("date") or "")[:10],
+        "year":     int(_f(r.get("year"))),
+        "iso_week": int(_f(r.get("iso_week"))),
+        "quarter":  int(_f(r.get("quarter"))),
+        "arr":      _f(r.get("arr")),
+    } for r in fc_rows_raw]
+
+    weeks_per_year: Dict[int, int] = {}
+    for r in rows:
+        weeks_per_year[r["year"]] = weeks_per_year.get(r["year"], 0) + 1
+    lfl_max_week = max((r["iso_week"] for r in rows if r["year"] == current_year), default=52)
+    lfl_totals: Dict[int, float] = {}
+    for r in rows:
+        if r["iso_week"] <= lfl_max_week:
+            lfl_totals[r["year"]] = lfl_totals.get(r["year"], 0.0) + r["arr"]
+    data_health = {
+        "total_rows": len(rows),
+        "years_available": sorted(weeks_per_year),
+        "min_year_weeks": min(weeks_per_year.values()) if weeks_per_year else 0,
+        "sufficient_for_yoy": all(v >= 10 for v in weeks_per_year.values()) if weeks_per_year else False,
+        "model": model,
+        "product": _selected_product(product, product_line),
+        "geo": _normalize_market_value(sales_market),
+    }
+
+    return {
+        "source": "live",
+        "rows": rows,
+        "forecast_continuation": forecast_continuation,
+        "weeks_per_year": weeks_per_year,
+        "lfl_totals": {str(k): round(v, 0) for k, v in lfl_totals.items()},
+        "lfl_max_week": lfl_max_week,
+        "data_health": data_health,
+    }
 
 
 # ── GET /confidence-bands ───────────────────────────────────────────────────────

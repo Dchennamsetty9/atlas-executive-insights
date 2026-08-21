@@ -432,23 +432,37 @@ const RunningTotalsChart = ({ rows }) => {
 };
 
 
-const MultiYearChart = ({ rows }) => {
+const MultiYearChart = ({ rows, data }) => {
   const years = [...new Set(rows.map(r => r.year))].sort();
   const byIsoWeek = {};
   for (const r of rows) {
     if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
     byIsoWeek[r.iso_week][r.year] = (byIsoWeek[r.iso_week][r.year] || 0) + r.arr;
   }
-  const data = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
+  const forecastRows = data?.forecast_continuation || [];
+  for (const r of forecastRows) {
+    if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
+    byIsoWeek[r.iso_week][`${r.year}_fc`] = (byIsoWeek[r.iso_week][`${r.year}_fc`] || 0) + r.arr;
+  }
+  const chartData = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
 
   // Compute annual totals and YoY growth for the summary bar
   const annualTotals = {};
   for (const r of rows) { annualTotals[r.year] = (annualTotals[r.year] || 0) + r.arr; }
+  const latestYear = years.length ? Math.max(...years) : new Date().getFullYear();
+  const lflTotals = data?.lfl_totals || (() => {
+    const maxWeek = Math.max(...rows.filter(r => r.year === latestYear).map(r => r.iso_week), 0);
+    const totals = {};
+    for (const r of rows) if (r.iso_week <= maxWeek) totals[r.year] = (totals[r.year] || 0) + r.arr;
+    return totals;
+  })();
+  const maxWeek = data?.lfl_max_week || 52;
+  const fcTotal = forecastRows.filter(r => r.year === latestYear).reduce((sum, r) => sum + Number(r.arr || 0), 0);
 
   return (
     <div>
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+        <LineChart data={chartData} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
           <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
           <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
@@ -458,6 +472,11 @@ const MultiYearChart = ({ rows }) => {
             <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
                   stroke={YEAR_COLORS[yr] ?? '#94a3b8'} strokeWidth={1.5} dot={false} connectNulls isAnimationActive />
           ))}
+          {fcTotal > 0 && (
+            <Line type="monotone" dataKey={`${latestYear}_fc`} name={`${latestYear} Forecast`}
+                  stroke={YEAR_COLORS[latestYear] ?? '#94a3b8'} strokeWidth={1.5}
+                  strokeDasharray="6 3" dot={false} connectNulls opacity={0.65} isAnimationActive />
+          )}
         </LineChart>
       </ResponsiveContainer>
       {/* YoY growth summary */}
@@ -465,8 +484,10 @@ const MultiYearChart = ({ rows }) => {
                     borderTop: '1px solid rgba(255,255,255,0.06)' }}>
         {years.map((yr, i) => {
           const total = annualTotals[yr] || 0;
-          const prev = annualTotals[years[i - 1]];
-          const yoy = prev && prev > 0 ? ((total - prev) / prev * 100) : null;
+          const lfl = Number(lflTotals[yr] || lflTotals[String(yr)] || 0);
+          const prevLfl = Number(lflTotals[years[i - 1]] || lflTotals[String(years[i - 1])] || 0);
+          const yoy = prevLfl > 0 ? ((lfl - prevLfl) / prevLfl * 100) : null;
+          const projectedTotal = yr === latestYear && fcTotal > 0 ? total + fcTotal : null;
           return (
             <div key={yr} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
                                    borderRadius: 8, background: 'rgba(255,255,255,0.03)',
@@ -474,13 +495,13 @@ const MultiYearChart = ({ rows }) => {
               <div style={{ width: 10, height: 10, borderRadius: '50%', background: YEAR_COLORS[yr] ?? '#94a3b8', flexShrink: 0 }} />
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9' }}>{yr}</div>
-                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}{projectedTotal ? ` + ${fmtM(fcTotal)} fc = ${fmtM(projectedTotal)}` : ''}</div>
               </div>
               {yoy != null && (
                 <div style={{ fontSize: 12, fontWeight: 800, padding: '2px 7px', borderRadius: 6,
                               color: yoy >= 0 ? '#10b981' : '#ef4444',
                               background: yoy >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)' }}>
-                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY
+                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY{maxWeek < 52 ? ` wk 1-${maxWeek}` : ''}
                 </div>
               )}
             </div>
@@ -809,7 +830,14 @@ const MonthlyTable = ({ months }) => {
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?m.year:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?`Q${q}`:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 500 }}>{m.month_name}</td>
-                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>{fmtM(m.arr_actual)}</td>
+                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>
+                    {fmtM(m.arr_actual)}
+                    {m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0 && (
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                        Predicted {fmtM(m.arr_predicted)} ({(((m.arr_predicted - m.arr_actual) / m.arr_actual) * 100).toFixed(1)}%)
+                      </div>
+                    )}
+                  </td>
                   <td style={{ ...td, color: '#ef4444' }}>{fmtM(m.arr_worst)}</td>
                   <td style={{ ...td, color: '#f1f5f9', fontWeight: 600 }}>{fmtM(m.arr_likely)}</td>
                   <td style={{ ...td, color: '#10b981' }}>{fmtM(m.arr_best)}</td>
@@ -1745,6 +1773,7 @@ const ForecastingPanel = () => {
   const [quarterlySummary, setQuarterlySummary] = useState(null);
   const [ytd,         setYtd]         = useState(null);
   const [historical,  setHistorical]  = useState(null);
+  const [historicalMeta, setHistoricalMeta] = useState(null);
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
@@ -1859,7 +1888,10 @@ const ForecastingPanel = () => {
         const [hs] = await Promise.allSettled([
           apiService.getForecastV2Historical(null, activePl, activeGeo, null, model),
         ]);
-        if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
+        if (hs.status === 'fulfilled') {
+          setHistorical(hs.value?.rows ?? []);
+          setHistoricalMeta(hs.value ?? null);
+        }
       } else if (targetTab === 'By Product') {
         const [bp] = await Promise.allSettled([
           apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
@@ -1983,6 +2015,7 @@ const ForecastingPanel = () => {
   const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
   const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
+  const historicalData = isDemo ? null : historicalMeta;
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
@@ -2466,12 +2499,17 @@ const ForecastingPanel = () => {
               {multiYearView === 'overlay' && (
                 <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+                  {historicalData?.data_health && !historicalData.data_health.sufficient_for_yoy && (
+                    <div style={{ fontSize: 10, color: '#f59e0b', padding: '6px 12px', borderRadius: 6, background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.15)', marginBottom: 8 }}>
+                      Limited data: {historicalData.data_health.min_year_weeks} weeks in some years — YoY comparisons may be unreliable.
+                    </div>
+                  )}
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
                       <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
                     ))}
                   </div>
-                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
+                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} data={historicalData} /> : <EmptyState />}
                 </CardWrap>
               )}
 
