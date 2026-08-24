@@ -618,30 +618,35 @@ async def _period_landings(
         pf = _product_filter(product, product_line)
         gf = _geo_filter(sales_market)
         last_actual_pred = _forecast_after_actuals_pred(pf, gf)
+        if year > datetime.date.today().year:
+            forecast_pred = "forecast_type = 'forward_1yr'"
+        else:
+            forecast_pred = f"forecast_type IN ('rolling', 'roy') AND {last_actual_pred}"
+        row_type_pred = "forecast_type = 'actuals' OR " + forecast_pred
         sql = f"""
             SELECT
                 QUARTER(ds) AS qtr,
                 SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
                          THEN CAST(Actuals AS DOUBLE) ELSE 0 END) AS actual,
-                SUM(CASE WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                SUM(CASE WHEN {forecast_pred}
                          THEN COALESCE(CAST({value_col} AS DOUBLE), 0) ELSE 0 END) AS forecast,
                 SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
                          THEN CAST(Actuals AS DOUBLE)
-                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         WHEN {forecast_pred}
                          THEN COALESCE(CAST({lower_col} AS DOUBLE), 0) ELSE 0 END) AS worst,
                 SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
                          THEN CAST(Actuals AS DOUBLE)
-                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         WHEN {forecast_pred}
                          THEN COALESCE(CAST({value_col} AS DOUBLE), 0) ELSE 0 END) AS landing,
                 SUM(CASE WHEN forecast_type = 'actuals' AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
                          THEN CAST(Actuals AS DOUBLE)
-                         WHEN forecast_type IN ('rolling', 'roy') AND {last_actual_pred}
+                         WHEN {forecast_pred}
                          THEN COALESCE(CAST({upper_col} AS DOUBLE), 0) ELSE 0 END) AS best
             FROM {FC_TABLE}
             WHERE {_latest_run()}
               {pf} {gf}
               AND {qf}
-              AND (forecast_type = 'actuals' OR forecast_type IN ('rolling', 'roy'))
+              AND ({row_type_pred})
             GROUP BY QUARTER(ds)
             ORDER BY qtr
         """
