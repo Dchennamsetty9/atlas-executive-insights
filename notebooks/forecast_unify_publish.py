@@ -206,6 +206,63 @@ assert ucc is not None or itsg is not None, "No source forecast tables available
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Cell 2b — Extend forecast with BOQ 2027 data
+# MAGIC
+# MAGIC V5 forecast tables may stop before the full 2027 planning window. Pull the
+# MAGIC forecast-only BOQ rows after each V5 table's max `ds` so Cell 4's existing
+# MAGIC `forward_1yr` tagging has complete 2027 input data.
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+UCC_BOQ_SRC  = f"{CATALOG}.{SCHEMA}.ucc_forecast_boq"
+ITSG_BOQ_SRC = f"{CATALOG}.{SCHEMA}.itsg_forecast_boq"
+
+def _boq_extension_rows(boq_table, v5_df, product):
+    """Map forecast-only BOQ rows beyond the V5 horizon into V5-compatible rows."""
+    if v5_df is None:
+        return None
+    max_ds = v5_df.agg(F.max(F.to_date("ds")).alias("max_ds")).collect()[0]["max_ds"]
+    if max_ds is None:
+        return None
+    try:
+        boq = spark.table(boq_table)
+    except Exception as exc:
+        print(f"  WARN could not read {boq_table}: {exc}")
+        return None
+
+    out = (boq
+        .where((F.to_date("ds") > F.lit(max_ds)) & (F.lower(F.col("source")) == F.lit("forecast")))
+        .select(
+            F.col("model"),
+            F.to_date("ds").alias("ds"),
+            F.col("forecast").cast("double").alias("forecast"),
+            F.col("p10").cast("double").alias("p10"),
+            F.col("p50").cast("double").alias("p50"),
+            F.col("p90").cast("double").alias("p90"),
+            F.col("grain_level"),
+            F.col("sales_market"),
+            F.when(F.col("model") == F.lit(REC_MODEL), F.lit(1)).otherwise(F.lit(0)).cast("bigint").alias("recommended_for_exec"),
+            F.col("run_date_utc").cast("timestamp").alias("run_timestamp_utc"),
+            F.col("pipeline_version"),
+        ))
+    print(f"  {product} BOQ extension rows after {max_ds}: {out.count()}")
+    return out
+
+ucc_ext = _boq_extension_rows(UCC_BOQ_SRC, ucc, "UCC")
+itsg_ext = _boq_extension_rows(ITSG_BOQ_SRC, itsg, "ITSG")
+
+if ucc_ext is not None:
+    ucc = ucc.unionByName(ucc_ext, allowMissingColumns=True)
+if itsg_ext is not None:
+    itsg = itsg.unionByName(itsg_ext, allowMissingColumns=True)
+
+print(f"Rows after BOQ extension — UCC: {ucc.count() if ucc is not None else 0}, ITSG: {itsg.count() if itsg is not None else 0}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cell 3 — Normalize forecasts to the canonical schema
 # MAGIC
 # MAGIC `run_date` = publish date (this run), so the daily `replaceWhere` overwrite is

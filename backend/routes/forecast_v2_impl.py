@@ -1251,22 +1251,38 @@ async def get_weekly(
                 # insight, with no double-count and no dropped in-flight week.
                 _pf = _product_filter(product, product_line)
                 _gf = _geo_filter(sales_market)
-                kpi_sql = f"""
-                    SELECT ds, Actuals,
-                           {_ml_expr} AS Most_Likely,
-                           COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                           COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
-                           forecast_type
-                    FROM {FC_TABLE}
-                    WHERE {_latest_run()}
-                            {_pf} {_gf}
-                      AND (
-                            (forecast_type = 'actuals' AND {qtr_filter})
-                            OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter}
-                                AND {_forecast_after_actuals_pred(_pf, _gf)})
-                          )
-                    ORDER BY ds
-                """
+                if _is_future_year:
+                    # Future year quarters: all data is forward_1yr, no actuals exist.
+                    kpi_sql = f"""
+                        SELECT ds, Actuals,
+                               {_ml_expr} AS Most_Likely,
+                               COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
+                               COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                               forecast_type
+                        FROM {FC_TABLE}
+                        WHERE {_latest_run()}
+                                {_pf} {_gf}
+                          AND forecast_type = 'forward_1yr'
+                          AND {qtr_filter}
+                        ORDER BY ds
+                    """
+                else:
+                    kpi_sql = f"""
+                        SELECT ds, Actuals,
+                               {_ml_expr} AS Most_Likely,
+                               COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
+                               COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                               forecast_type
+                        FROM {FC_TABLE}
+                        WHERE {_latest_run()}
+                                {_pf} {_gf}
+                          AND (
+                                (forecast_type = 'actuals' AND {qtr_filter})
+                                OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter}
+                                    AND {_forecast_after_actuals_pred(_pf, _gf)})
+                              )
+                        ORDER BY ds
+                    """
         else:
             # Full year: actuals + forecast spliced after the last closed actual
             # week (no double-count, keeps the in-flight week).
