@@ -32,10 +32,12 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
-# Default to the legacy tables for production safety. Environments that have the
-# new unified compat views can opt in via env vars without code changes.
-FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
-LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "arr_forecast_v2_leaderboard")
+FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
+# Default to the exact-value compat views published by forecast_unify_publish.
+# This ensures the app reads the deduplicated, latest-run data instead of legacy
+# tables that may carry stale or reconstructed values.
+FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "forecast_results_v2compat")
+LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "forecast_leaderboard_v2compat")
 # Default = the unified insights (compat view over forecast_insights, written by
 # forecast_unify_publish daily) so the AI tab matches the rest of the panel.
 # Env-overridable back to arr_forecast_insights if needed.
@@ -77,7 +79,7 @@ _ACC_MODEL = {
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
 VALID_FORECAST_TYPES = {"actuals", "rolling", "roy", "forward_1yr"}
-CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "300"))
+CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "86400"))
 _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
     "ets": {
@@ -456,25 +458,17 @@ def _fill_monthly_gaps(months: list[Dict[str, Any]], year: int, include_actuals:
 
 
 def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
-    """Compute KPI card totals from the kpi_sql result rows.
+    """Compute KPI card totals from the exact published row-level values.
 
-    The Panel Writer sets Most_Likely/Worst_Case/Best_Case = Actuals for closed
-    (actuals) rows, so we sum ML/BC/WC from ALL rows regardless of forecast_type.
-    For open (rolling/roy) rows the model forecast is already in those columns.
-    This makes closed-quarter and mixed-quarter selections both correct.
+    The notebook publishes exact forecast quantile rows (p10/p50/p90) and the
+    v2 compat view maps Worst_Case = p10 and Best_Case = p90. Summing those exact
+    values is the correct quarter landing; reconstructing a band with
+    sqrt(sum-of-squares) artificially compresses the uncertainty range and hides
+    real downside/upside.
     """
-    import math
-
     most_likely = 0.0
-    # Quarter band via VARIANCE aggregation, not summed weekly quantiles.
-    # Summing each week's P10/P90 assumes every week simultaneously hits its
-    # worst (or best) case — which never happens; weekly noise partly cancels.
-    # The correct quarter spread combines the weekly half-widths in quadrature
-    # (spread grows with sqrt(weeks), not weeks), giving a tight, realistic band.
-    # Upper/lower kept separate to preserve asymmetric intervals. Closed weeks
-    # (actuals) have Worst=Best=ML, so they contribute 0 variance automatically.
-    sum_up_sq = 0.0   # Σ (P90 − P50)²
-    sum_lo_sq = 0.0   # Σ (P50 − P10)²
+    worst_case = 0.0
+    best_case = 0.0
     ytd_actuals = 0.0
 
     for row in rows:
@@ -486,21 +480,20 @@ def _summary_kpis(rows: list[Dict[str, Any]]) -> Dict[str, float]:
 
         if ml > 0 or ftype in ("rolling", "roy"):
             most_likely += ml
-            sum_up_sq += max(0.0, bc - ml) ** 2
-            sum_lo_sq += max(0.0, ml - wc) ** 2
 
-        # YTD actuals: sum all actuals rows in the result set (already date-filtered
-        # by the caller's kpi_sql — year/quarter filter applied before this function).
+        if wc > 0 or ftype in ("rolling", "roy"):
+            worst_case += wc
+
+        if bc > 0 or ftype in ("rolling", "roy"):
+            best_case += bc
+
         if ftype == "actuals" and act > 0:
             ytd_actuals += act
 
-    quarter_up = math.sqrt(sum_up_sq)
-    quarter_lo = math.sqrt(sum_lo_sq)
-
     return {
         "most_likely": round(most_likely, 0),
-        "worst_case": round(max(0.0, most_likely - quarter_lo), 0),  # floored at 0
-        "best_case": round(most_likely + quarter_up, 0),
+        "worst_case": round(max(0.0, worst_case), 0),
+        "best_case": round(best_case, 0),
         "ytd_actuals": round(ytd_actuals, 0),
     }
 
@@ -596,9 +589,9 @@ def _v5_forward_sql(table: str, has_pg: bool, product: str, market: str, grain: 
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
-            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST(p50 AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
@@ -632,9 +625,9 @@ def _v5_monthly_sql(table: str, has_pg: bool, product: str, market: str, grain: 
             QUARTER(ds) AS qtr,
             MONTH(ds) AS mth,
             DATE_FORMAT(ds, 'MMMM') AS month_name,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 0.90)) AS arr_worst,
-            SUM(COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) * 1.10)) AS arr_best
+            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM(COALESCE(CAST(p50 AS DOUBLE), 0)) AS arr_likely,
+            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
@@ -1165,6 +1158,8 @@ async def get_monthly(
 
     pf = _product_filter(product, product_line)
     gf = _geo_filter(sales_market)
+    prophet_pf = "" if _selected_product(product, product_line) == "Total" else pf
+    prophet_gf = "" if _normalize_market_value(sales_market) == "Total" else gf
     yf = _year_filter(selected_year)
     qf = _quarter_filter(quarter, selected_year) if quarter else ""
     date_filter = f"AND {qf}" if qf else (f"AND {_rolling_next_year_filter()}" if rolling_next_year else f"AND {yf}")
@@ -1213,21 +1208,12 @@ async def get_monthly(
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                -- Variance-aggregated month bands (same method as Overview):
-                -- summing weekly P10/P90 assumes every week hits its extreme at
-                -- once and overstates the band ~sqrt(weeks)x.
-                GREATEST(SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST({value_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({lower_col} AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
                 SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST({upper_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
+                SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
             FROM {FC_TABLE}
-                        WHERE {forecast_type_condition}
+            WHERE forecast_type IN ('actuals', 'rolling', 'roy')
               AND {_latest_run()}
-                            -- Monthly table should show full forecast months (not only the
-                            -- remaining open weeks after latest actuals splice).
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
@@ -1426,6 +1412,7 @@ async def get_ytd(
 
     # Compute cumulative totals, filling gaps with previous values
     cum_a = cum_w = cum_l = cum_b = 0.0
+    last_actual_date = max(act_map) if act_map else None
     rows = []
     for d in all_dates:
         if d in act_map:
@@ -1438,10 +1425,10 @@ async def get_ytd(
         
         rows.append({
             "date":       d,
-            "ytd_actual": round(cum_a, 0) if include_actuals else None,
-            "ytd_worst":  round(cum_w, 0) if include_forecasts else None,
-            "ytd_likely": round(cum_l, 0) if include_forecasts else None,
-            "ytd_best":   round(cum_b, 0) if include_forecasts else None,
+            "ytd_actual": round(cum_a, 0) if include_actuals and (last_actual_date is None or d <= last_actual_date) else None,
+            "ytd_worst":  round(cum_a + cum_w, 0) if include_forecasts and d in fc_map else None,
+            "ytd_likely": round(cum_a + cum_l, 0) if include_forecasts and d in fc_map else None,
+            "ytd_best":   round(cum_a + cum_b, 0) if include_forecasts and d in fc_map else None,
         })
 
     return {
@@ -1473,13 +1460,19 @@ async def get_by_product(
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
     rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
-    year = year if year else datetime.date.today().year
+    selected_year = year if year else datetime.date.today().year
+    year = selected_year
     if quarter:
         period_filter = _quarter_filter(quarter, year)
     elif rolling_next_year:
         period_filter = _rolling_next_year_filter()
     else:
         period_filter = f"YEAR(ds) = {year}"
+    forecast_type_condition = _monthly_forecast_type_condition(
+        eff_forecast_type,
+        rolling_next_year,
+        selected_year,
+    )
 
     # Totals are the period LANDING: actuals for closed weeks + forecast spliced
     # after the last actual (matches the Overview KPI and the AI insight). A
@@ -1539,7 +1532,7 @@ async def get_by_product(
                    COALESCE(CAST({lower_col} AS DOUBLE), 0),
                    COALESCE(CAST({upper_col} AS DOUBLE), 0)
             FROM {table}
-                        WHERE forecast_type = '{eff_forecast_type}' AND {_latest_run()} AND {period_filter}
+                        WHERE {forecast_type_condition} AND {_latest_run()} AND {period_filter}
               AND {_forecast_after_actuals_pred()} {extra_where}
         )"""
 
@@ -1998,14 +1991,14 @@ async def get_backtest(
 
 # ── GET /graph-explanation ────────────────────────────────────────────────────
 _DEMO_EXPLAIN = {
-    "title": "Chart Explanation",
-    "explanation": ("This chart shows the ARR forecast for the selected product and time period. "
-                    "Confidence bands represent the P10 (Risk Floor) to P90 (Stretch Case) range — "
-                    "the most likely outcome sits at the P50 centerline. "
-                    "Actuals are shown in orange up to today; forecast lines extend to the right."),
-    "bullets": ["Ensemble model combines ETS, Prophet, and LightGBM for robustness",
-                "Wider bands mean higher uncertainty further out in the forecast horizon",
-                "Band coverage target is ~80% — actuals should fall inside the range 4 out of 5 weeks"],
+    "title": "KEY SIGNALS",
+    "explanation": ("Executive signals are temporarily using preview mode; focus on pace, concentration, "
+                    "uncertainty, like-for-like trajectory, and downside triggers for decisions."),
+    "bullets": ["Pace signal: compare latest 4-week run-rate vs prior-quarter baseline",
+                "Concentration risk: quantify how much of remaining FY depends on Q4 delivery",
+                "Uncertainty: treat wider quarter bands as lower planning confidence",
+                "Like-for-like YoY: use same-week comparison, not partial-vs-full-year totals",
+                "Risk trigger: sustained regional slowdown can pull FY landing below central path"],
 }
 
 
