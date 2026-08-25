@@ -503,9 +503,8 @@ const ByProductChart = ({ byProduct, byLine }) => {
     name: l.product_line || l.product,
     worst: (l.arr_worst || 0) / 1e6, likely: (l.arr_likely || 0) / 1e6, best: (l.arr_best || 0) / 1e6,
   }));
-  const prodData = (byProduct || []).map(p => ({ name: p.product, likely: (p.arr_likely || 0) / 1e6 }));
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+    <div>
       <div>
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product Line</div>
         <ResponsiveContainer width="100%" height={180}>
@@ -517,18 +516,6 @@ const ByProductChart = ({ byProduct, byLine }) => {
             <Bar dataKey="worst"  name="Risk Floor"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
             <Bar dataKey="likely" name="Most Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
             <Bar dataKey="best"   name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product (Most Likely)</div>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={prodData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-            <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 9 }} axisLine={false} tickLine={false} width={72} />
-            <Tooltip content={<DarkTip />} />
-            <Bar dataKey="likely" name="Most Likely" fill="#3b82f6" radius={[0,4,4,0]} barSize={12} isAnimationActive />
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -1551,7 +1538,7 @@ const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 const PROD_LINES = ['All', 'UCC', 'ITSG'];
-const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Full Year' }];
+const FC_TYPES   = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
 
 const _toIsoDate = (d) => {
   const dt = new Date(d);
@@ -2096,7 +2083,7 @@ const ForecastingPanel = () => {
               className="select-dark"
               style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
                        color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-              <option value="">Full Year</option>
+              <option value="">Year</option>
               <option value="1">Q1 (Jan–Mar)</option>
               <option value="2">Q2 (Apr–Jun)</option>
               <option value="3">Q3 (Jul–Sep)</option>
@@ -2204,7 +2191,7 @@ const ForecastingPanel = () => {
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd' }}>
-          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `Full Year ${selectedYear}`}
+          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `${selectedYear} Year`}
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, color: '#94a3b8' }}>
@@ -2293,7 +2280,7 @@ const ForecastingPanel = () => {
                                           display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                               <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>
                                 Forecast range not available — all {selectedQuarter ? `Q${selectedQuarter}` : 'selected'} weeks are closed actuals.
-                                Select a future quarter or <b style={{color:'#f59e0b'}}>Full Year</b> to see scenario bands.
+                                Select a future quarter to see scenario bands.
                               </div>
                             </div>
                           </div>

@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Component } from 're
 import {
   ComposedChart, BarChart, LineChart,
   Area, Bar, Line, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine,
+  ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
 import { apiService } from '../services/api';
 import { exportCardPng } from '../utils/chartExport';
@@ -281,11 +281,10 @@ const SectionTitle = ({ children }) => (
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
-  // Find the split date where actuals end and forecast begins
   const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
 
-  // Quarter boundary dates for reference lines (GoTo fiscal = calendar year)
+  // Quarter boundary dates for reference lines
   const qBoundaries = combined.reduce((acc, r) => {
     const d = new Date(r.date);
     const qtr = Math.floor(d.getMonth() / 3) + 1;
@@ -295,49 +294,33 @@ const WeeklyChart = ({ rows }) => {
   }, {});
   const qBoundaryDates = Object.entries(qBoundaries).filter(([k]) => k !== 'Q1').map(([k, v]) => ({ label: k, date: v }));
 
-  // Build unified dataset — bands use stacking trick: floor (transparent) + range (colored).
-  // Stored Worst_Case/Best_Case are the model's P10/P90 → an 80% prediction interval.
-  // The inner ~50% band (≈P25–P75) is derived by z-score scaling of the P10/P90 spread
-  // around Most Likely (z25/z10 = 0.6745/1.2816 ≈ 0.526) assuming symmetric-ish residuals.
-  const INNER_Z_RATIO = 0.6745 / 1.2816;
+  // Simple data: actuals + forecast line + single uncertainty band
   const data = combined.map(r => {
     const likely = r.arr_likely ?? null;
     const worst  = r.arr_worst  ?? null;
     const best   = r.arr_best   ?? null;
-    const hasBand = likely != null && worst != null && best != null;
-    const innerLo = hasBand ? likely - (likely - worst) * INNER_Z_RATIO : null;
-    const innerHi = hasBand ? likely + (best - likely) * INNER_Z_RATIO : null;
     return {
       date: r.date,
       actual: r.arr_actual ?? null,
-      likely, worst, best,
-      innerLo, innerHi,
+      likely,
+      // Single band: floor + range for stacked area
       bandFloor: worst,
       bandRange: (best != null && worst != null) ? Math.max(0, best - worst) : null,
-      innerFloor: innerLo,
-      innerRange: (innerHi != null && innerLo != null) ? Math.max(0, innerHi - innerLo) : null,
     };
   });
 
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) return null;
     const d = payload[0]?.payload || {};
     return (
       <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
-                    padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
-        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
-        {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
-        {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-10 upside: <b>{fmtM(d.best)}</b></div>}
-        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
-        {d.innerLo != null && d.innerHi != null && (
-          <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-            ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
-          </div>
-        )}
-        {d.worst != null && d.best != null && (
-          <div style={{ color: '#60a5fa', marginTop: 2 }}>
-            ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
+                    padding: '12px 16px', fontSize: 12, minWidth: 160 }}>
+        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{d.date}</div>
+        {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 4 }}>● Actual: <b>{fmtM(d.actual)}</b></div>}
+        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 4 }}>● Forecast: <b>{fmtM(d.likely)}</b></div>}
+        {d.bandFloor != null && d.bandRange != null && (
+          <div style={{ color: '#60a5fa', fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            Range: {fmtM(d.bandFloor)} – {fmtM(d.bandFloor + d.bandRange)}
           </div>
         )}
       </div>
@@ -345,20 +328,16 @@ const WeeklyChart = ({ rows }) => {
   };
 
   return (
-    <ResponsiveContainer width="100%" height={360}>
+    <ResponsiveContainer width="100%" height={320}>
       <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
           <linearGradient id="bandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.18} />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.03} />
-          </linearGradient>
-          <linearGradient id="innerBandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.30} />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.08} />
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -366,42 +345,30 @@ const WeeklyChart = ({ rows }) => {
                tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false}
                interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<CustomTooltip />} />
         {splitDate && (
-          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4"
-            label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />
-        )}
-        {splitDate && (
-          <ReferenceLine x={splitDate} stroke="none"
-            label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
+          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.5)" strokeDasharray="4 4"
+            label={{ value: 'Today', position: 'top', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
         )}
         {/* Quarter boundary reference lines */}
         {qBoundaryDates.map(qb => (
-          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.25)" strokeDasharray="3 3"
+          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3"
             label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
         ))}
-        {/* Outer 80% band (P10–P90): transparent floor stacked under colored band */}
-        <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
+        {/* Single uncertainty band (P10–P90) */}
+        <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent"
               legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Inner ~50% band (≈P25–P75, z-scaled from P10/P90) drawn on top for nested effect */}
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent"
-              legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Actuals — gradient fill area */}
+        <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)"
+              name="Forecast Range" connectNulls dot={false} />
+        {/* Actuals — solid orange area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
-        {/* Forecast lines */}
-        <Line type="monotone" dataKey="worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
-        <Line type="monotone" dataKey="likely" name="Most Likely"  stroke="#e2e8f0"
-              strokeWidth={3} dot={false} connectNulls />
-        <Line type="monotone" dataKey="best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
+        {/* Forecast — single solid white line */}
+        <Line type="monotone" dataKey="likely" name="Forecast"  stroke="#e2e8f0"
+              strokeWidth={2.5} dot={false} connectNulls />
+        <Legend wrapperStyle={{ paddingTop: 12, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -409,53 +376,93 @@ const WeeklyChart = ({ rows }) => {
 
 const RunningTotalsChart = ({ rows }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  const monthTicks = [];
+  const seenMonths = new Set();
+  for (const row of data) {
+    const monthKey = row.date?.slice(0, 7);
+    if (monthKey && !seenMonths.has(monthKey)) {
+      seenMonths.add(monthKey);
+      monthTicks.push(row.date);
+    }
+  }
+  const monthLabel = (date) => {
+    const parsed = new Date(`${date}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? date?.slice(5, 7) : parsed.toLocaleString('en-US', { month: 'short' });
+  };
+  // Find year-end target (last ytd_likely value)
+  const lastRow = data[data.length - 1];
+  const yearEndTarget = lastRow?.ytd_likely ?? null;
+
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={data} margin={{ top: 16, right: 20, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={220}>
+      <ComposedChart data={data} margin={{ top: 16, right: 80, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="ytdActualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-        <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} interval="preserveStartEnd" />
+        <XAxis dataKey="date" ticks={monthTicks} tickFormatter={monthLabel} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} interval={0} />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Cumulative Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<DarkTip />} />
+        {/* Year-end forecast target reference line */}
+        {yearEndTarget && (
+          <ReferenceLine y={yearEndTarget} stroke="rgba(99,102,241,0.5)" strokeDasharray="6 3"
+            label={{ value: `Plan ${fmtM(yearEndTarget)}`, position: 'right', fill: '#818cf8', fontSize: 10, fontWeight: 600 }} />
+        )}
+        {/* Actuals cumulative — solid orange area */}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_likely" name="Most Likely"  stroke="#e2e8f0"
+        {/* Forecast cumulative — solid white line (actuals + forecast stacked) */}
+        <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {/* Worst/best as thin dashed bounds */}
+        <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Legend wrapperStyle={{ paddingTop: 8, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
 };
 
 
-const MultiYearChart = ({ rows }) => {
+const MultiYearChart = ({ rows, data }) => {
   const years = [...new Set(rows.map(r => r.year))].sort();
   const byIsoWeek = {};
   for (const r of rows) {
     if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
     byIsoWeek[r.iso_week][r.year] = (byIsoWeek[r.iso_week][r.year] || 0) + r.arr;
   }
-  const data = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
+  const forecastRows = data?.forecast_continuation || [];
+  for (const r of forecastRows) {
+    if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
+    byIsoWeek[r.iso_week][`${r.year}_fc`] = (byIsoWeek[r.iso_week][`${r.year}_fc`] || 0) + r.arr;
+  }
+  const chartData = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
 
   // Compute annual totals and YoY growth for the summary bar
   const annualTotals = {};
   for (const r of rows) { annualTotals[r.year] = (annualTotals[r.year] || 0) + r.arr; }
+  const latestYear = years.length ? Math.max(...years) : new Date().getFullYear();
+  const lflTotals = data?.lfl_totals || (() => {
+    const maxWeek = Math.max(...rows.filter(r => r.year === latestYear).map(r => r.iso_week), 0);
+    const totals = {};
+    for (const r of rows) if (r.iso_week <= maxWeek) totals[r.year] = (totals[r.year] || 0) + r.arr;
+    return totals;
+  })();
+  const maxWeek = data?.lfl_max_week || 52;
+  const fcTotal = forecastRows.filter(r => r.year === latestYear).reduce((sum, r) => sum + Number(r.arr || 0), 0);
 
   return (
     <div>
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+        <LineChart data={chartData} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
           <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
           <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
@@ -465,6 +472,11 @@ const MultiYearChart = ({ rows }) => {
             <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
                   stroke={YEAR_COLORS[yr] ?? '#94a3b8'} strokeWidth={1.5} dot={false} connectNulls isAnimationActive />
           ))}
+          {fcTotal > 0 && (
+            <Line type="monotone" dataKey={`${latestYear}_fc`} name={`${latestYear} Forecast`}
+                  stroke={YEAR_COLORS[latestYear] ?? '#94a3b8'} strokeWidth={1.5}
+                  strokeDasharray="6 3" dot={false} connectNulls opacity={0.65} isAnimationActive />
+          )}
         </LineChart>
       </ResponsiveContainer>
       {/* YoY growth summary */}
@@ -472,8 +484,10 @@ const MultiYearChart = ({ rows }) => {
                     borderTop: '1px solid rgba(255,255,255,0.06)' }}>
         {years.map((yr, i) => {
           const total = annualTotals[yr] || 0;
-          const prev = annualTotals[years[i - 1]];
-          const yoy = prev && prev > 0 ? ((total - prev) / prev * 100) : null;
+          const lfl = Number(lflTotals[yr] || lflTotals[String(yr)] || 0);
+          const prevLfl = Number(lflTotals[years[i - 1]] || lflTotals[String(years[i - 1])] || 0);
+          const yoy = prevLfl > 0 ? ((lfl - prevLfl) / prevLfl * 100) : null;
+          const projectedTotal = yr === latestYear && fcTotal > 0 ? total + fcTotal : null;
           return (
             <div key={yr} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
                                    borderRadius: 8, background: 'rgba(255,255,255,0.03)',
@@ -481,13 +495,13 @@ const MultiYearChart = ({ rows }) => {
               <div style={{ width: 10, height: 10, borderRadius: '50%', background: YEAR_COLORS[yr] ?? '#94a3b8', flexShrink: 0 }} />
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9' }}>{yr}</div>
-                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}{projectedTotal ? ` + ${fmtM(fcTotal)} fc = ${fmtM(projectedTotal)}` : ''}</div>
               </div>
               {yoy != null && (
                 <div style={{ fontSize: 12, fontWeight: 800, padding: '2px 7px', borderRadius: 6,
                               color: yoy >= 0 ? '#10b981' : '#ef4444',
                               background: yoy >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)' }}>
-                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY
+                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY{maxWeek < 52 ? ` wk 1-${maxWeek}` : ''}
                 </div>
               )}
             </div>
@@ -503,41 +517,46 @@ const ByProductChart = ({ byProduct, byLine }) => {
     name: l.product_line || l.product,
     worst: (l.arr_worst || 0) / 1e6, likely: (l.arr_likely || 0) / 1e6, best: (l.arr_best || 0) / 1e6,
   }));
-  const prodData = (byProduct || []).map(p => ({ name: p.product, likely: (p.arr_likely || 0) / 1e6 }));
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-      <div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product Line</div>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={lineData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-            <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
-            <Tooltip content={<DarkTip />} />
-            <Bar dataKey="worst"  name="Risk Floor"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="likely" name="Most Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="best"   name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-          </BarChart>
-        </ResponsiveContainer>
+    <div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        By Product Line — Risk Floor / Most Likely / Stretch Case
       </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product (Most Likely)</div>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={prodData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-            <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 9 }} axisLine={false} tickLine={false} width={72} />
-            <Tooltip content={<DarkTip />} />
-            <Bar dataKey="likely" name="Most Likely" fill="#3b82f6" radius={[0,4,4,0]} barSize={12} isAnimationActive />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <ResponsiveContainer width="100%" height={200}>
+        <BarChart data={lineData} layout="vertical" margin={{ left: 8, right: 16 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+          <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
+          <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={60} />
+          <Tooltip content={<DarkTip />} />
+          <Bar dataKey="worst" name="Risk Floor" fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+          <Bar dataKey="likely" name="Most Likely" fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+          <Bar dataKey="best" name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 };
 
 // ── Quarterly Bar Chart (actuals for closed qtrs, forecast for open qtrs) ──────
-const QuarterlyBarChart = ({ weeklyRows, year }) => {
+const QuarterlyBarChart = ({ weeklyRows, quarterlyData, year }) => {
+  if (quarterlyData?.quarters?.length) {
+    const today = new Date();
+    const curQtr = Math.floor(today.getMonth() / 3) + 1;
+    const curYear = today.getFullYear();
+    return <QuarterlyBarChartView qtrs={quarterlyData.quarters.map(q => ({
+      q: q.q,
+      name: `Q${q.q}`,
+      actual: q.actual > 0 ? q.actual : null,
+      forecast: q.forecast > 0 ? q.forecast : null,
+      landing: q.landing,
+      worst: q.worst,
+      best: q.best,
+      isPast: q.status === 'closed',
+      isCurrent: q.status === 'in_progress',
+      isFuture: q.status === 'future',
+      weeks: q.weeks,
+    }))} year={year} curQtr={curQtr} curYear={curYear} />;
+  }
   if (!weeklyRows || weeklyRows.length === 0) return null;
   const today = new Date();
   const curQtr = Math.floor(today.getMonth() / 3) + 1;
@@ -549,7 +568,11 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual  ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely  ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
     // Variance-aggregated quarter band (consistent with the Overview cards):
     // combine weekly half-widths in quadrature, not additively.
     const loSq = rows.reduce((s, r) => {
@@ -563,7 +586,6 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
     const isFuture  = !isPast && !isCurrent;
-    const landing   = actual + forecast;   // actuals + open-week forecast
     return {
       q, name: `Q${q}`,
       // Stacked: orange realized layer + blue forecast layer. Past quarters are
@@ -578,6 +600,10 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     };
   });
 
+  return <QuarterlyBarChartView qtrs={qtrs} year={year} curQtr={curQtr} curYear={curYear} />;
+};
+
+const QuarterlyBarChartView = ({ qtrs, year }) => {
   const maxVal = Math.max(...qtrs.map(q => Math.max(q.landing ?? 0, q.best ?? 0)), 1) * 1.18;
 
   const QTooltip = ({ active, payload, label }) => {
@@ -695,100 +721,6 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
   );
 };
 
-// ── Multi-Model Cumulative Line Chart ────────────────────────────────────────
-const MODEL_LINES = [
-  { key: 'actual',   label: 'Actuals',   color: '#f59e0b', width: 2.5, dash: '' },
-  { key: 'ensemble', label: 'Ensemble ★', color: '#10b981', width: 2,   dash: '' },
-  { key: 'prophet',  label: 'Prophet',   color: '#3b82f6', width: 1.5, dash: '4 2' },
-  { key: 'ets',      label: 'ETS',       color: '#a78bfa', width: 1.5, dash: '4 2' },
-  { key: 'lgbm',     label: 'LightGBM',  color: '#f472b6', width: 1.5, dash: '4 2' },
-  { key: 'mstl',     label: 'MSTL',      color: '#34d399', width: 1.5, dash: '4 2' },
-  { key: 'dhr',      label: 'DHR-ARIMA', color: '#fb923c', width: 1.5, dash: '4 2' },
-];
-
-const MultiModelCumulativeChart = ({ rows }) => {
-  if (!rows || rows.length === 0) return <EmptyState />;
-
-  // Build cumulative sums per model — skip a model if it has no non-null values
-  const cumulative = { actual: 0, ensemble: 0, prophet: 0, ets: 0, lgbm: 0, mstl: 0, dhr: 0 };
-  const hasData    = { actual: false, ensemble: false, prophet: false, ets: false, lgbm: false, mstl: false, dhr: false };
-
-  const data = rows.map(r => {
-    const pt = { date: r.date };
-    MODEL_LINES.forEach(m => {
-      const v = r[m.key];
-      if (v != null && v > 0) {
-        cumulative[m.key] += v;
-        pt[m.key] = cumulative[m.key];
-        hasData[m.key] = true;
-      } else {
-        // carry forward cumulative if we already started accumulating
-        pt[m.key] = cumulative[m.key] > 0 ? cumulative[m.key] : null;
-      }
-    });
-    return pt;
-  });
-
-  const visibleLines = MODEL_LINES.filter(m => hasData[m.key]);
-
-  if (visibleLines.length === 0) return (
-    <EmptyState message="No forecast model data available yet — individual model predictions appear after the V5 pipeline runs" />
-  );
-
-  const today = new Date().toISOString().slice(0, 10);
-  const todayRow = rows.find(r => r.date >= today);
-
-  const MMTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    return (
-      <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 14px', fontSize: 11 }}>
-        <div style={{ color: '#94a3b8', marginBottom: 6, fontSize: 10 }}>{label}</div>
-        {payload.filter(p => p.value != null).map(p => (
-          <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
-            {MODEL_LINES.find(m => m.key === p.dataKey)?.label}: <b>{fmtM(p.value)}</b>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 10, fontSize: 10 }}>
-        {visibleLines.map(m => (
-          <span key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ display: 'inline-block', width: 18, height: 0,
-                           borderTop: `2px ${m.dash ? 'dashed' : 'solid'} ${m.color}` }} />
-            <span style={{ color: '#94a3b8' }}>{m.label}</span>
-          </span>
-        ))}
-        {visibleLines.length < MODEL_LINES.length && (
-          <span style={{ color: '#334155', fontSize: 9, marginLeft: 'auto' }}>
-            {MODEL_LINES.length - visibleLines.length} models have no data yet
-          </span>
-        )}
-      </div>
-      <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-          <XAxis dataKey="date" tickFormatter={d => d?.slice(5, 10)} tick={{ fill: '#475569', fontSize: 9 }}
-                 axisLine={false} tickLine={false} interval={Math.max(1, Math.floor(data.length / 10))} />
-          <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} />
-          <Tooltip content={<MMTooltip />} />
-          {todayRow && <ReferenceLine x={todayRow.date} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4"
-                         label={{ value: 'TODAY', position: 'top', fill: '#475569', fontSize: 8 }} />}
-          {visibleLines.map(m => (
-            <Line key={m.key} type="monotone" dataKey={m.key} name={m.label}
-                  stroke={m.color} strokeWidth={m.width}
-                  strokeDasharray={m.dash || undefined}
-                  dot={false} connectNulls isAnimationActive={false} />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-};
-
 // ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
 const QuarterlyMapeMatrix = ({ data }) => {
   if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
@@ -898,7 +830,14 @@ const MonthlyTable = ({ months }) => {
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?m.year:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?`Q${q}`:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 500 }}>{m.month_name}</td>
-                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>{fmtM(m.arr_actual)}</td>
+                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>
+                    {fmtM(m.arr_actual)}
+                    {m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0 && (
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                        Predicted {fmtM(m.arr_predicted)} ({(((m.arr_predicted - m.arr_actual) / m.arr_actual) * 100).toFixed(1)}%)
+                      </div>
+                    )}
+                  </td>
                   <td style={{ ...td, color: '#ef4444' }}>{fmtM(m.arr_worst)}</td>
                   <td style={{ ...td, color: '#f1f5f9', fontWeight: 600 }}>{fmtM(m.arr_likely)}</td>
                   <td style={{ ...td, color: '#10b981' }}>{fmtM(m.arr_best)}</td>
@@ -1124,7 +1063,9 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
       icon: '🎯',
       color: a.avgSmape < 15 ? '#10b981' : a.avgSmape < 25 ? '#f59e0b' : '#ef4444',
       title: 'Historical accuracy',
-      text: `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarter${a.nQuarters > 1 ? 's' : ''}.`,
+      text: a.nQuarters === 1
+        ? `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error over the most recent closed quarter.`
+        : `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarters.`,
     });
   }
   {
@@ -1132,7 +1073,9 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
     if (s && (s.mape_pct != null || s.coverage_pct != null)) {
       const bits = [];
       if (s.mape_pct != null) bits.push(`within ~${s.mape_pct}% of the actual four weeks out`);
-      if (s.coverage_pct != null && s.weeks_scored) bits.push(`the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
+      if (s.coverage_pct != null && s.weeks_scored) bits.push(s.weeks_scored === 1
+          ? `the 80% range caught the actual ${s.coverage_pct}% of the time over the most recent scored week (target ~80%)`
+          : `the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
       FACT_CARDS.push({
         icon: '⏱️', color: '#3b82f6', title: 'How close, this far out',
         text: `Recently, forecasts have landed ${bits.join('; ')}.`,
@@ -1777,7 +1720,11 @@ const _quarterLandings = (yearRows, year) => {
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
     const loSq = rows.reduce((s, r) => {
       const lk = r.arr_likely ?? null;
       return lk != null ? s + Math.max(0, lk - (r.arr_worst ?? lk)) ** 2 : s;
@@ -1788,7 +1735,6 @@ const _quarterLandings = (yearRows, year) => {
     }, 0);
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
-    const landing   = actual + forecast;
     return {
       q, actual, forecast, landing,
       worst: !isPast && landing > 0 ? Math.max(0, landing - Math.sqrt(loSq)) : null,
@@ -1812,165 +1758,6 @@ const _historicalAccuracy = (accuracyByQtr) => {
   return { avgSmape: avg, nQuarters: vals.length, isDemo: accuracyByQtr.source === 'demo' };
 };
 
-const ExecutiveSummary = ({ loading, yearRows, allModels, runDelta,
-                            trust, accuracyByQtr, selectedYear, prodLine }) => {
-  const prodLabel = prodLine === 'All' ? 'All products' : prodLine;
-
-  if (loading) {
-    return (
-      <div style={{ background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.22)',
-                    borderRadius: 14, padding: '18px 20px' }}>
-        <Skeleton height={18} /><div style={{ height: 10 }} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
-          {[0,1,2].map(i => <Skeleton key={i} height={78} />)}
-        </div>
-      </div>
-    );
-  }
-
-  const ql = _quarterLandings(yearRows, selectedYear);
-  if (!ql) return null; // no year data → fall back to existing cards silently
-
-  const acc       = _historicalAccuracy(accuracyByQtr);
-  const trustLive = trust?.source === 'live';
-  const cov       = trustLive ? trust.summary?.coverage_pct : null;
-  const covWeeks  = trustLive ? trust.summary?.weeks_scored : null;
-  const btMape    = trustLive ? trust.summary?.mape_pct : null;
-
-  // Focus quarter = the in-progress quarter when we're viewing the current year;
-  // otherwise summarize the whole selected year.
-  const cur   = ql.qtrs.find(q => q.isCurrent) || null;
-  const next  = cur ? (ql.qtrs.find(q => q.q === cur.q + 1) || null) : null;
-  const finish   = cur || null;                // "expected finish" subject
-  const finishQ  = finish ? `Q${finish.q} ${selectedYear}` : `FY ${selectedYear}`;
-  const finishVal = finish ? finish.landing : ql.fyLanding;
-  const finishActual = finish ? finish.actual : ql.fyActual;
-  const finishWorst = finish ? finish.worst : null;
-  const finishBest  = finish ? finish.best  : null;
-  const pctBooked = finishVal > 0 ? Math.round((finishActual / finishVal) * 100) : null;
-
-  // Next-quarter tile: the following quarter if it exists in this year, else the
-  // full-year total (so the tile is never blank when we're already in Q4).
-  const nextLabel = next ? `Q${next.q} ${selectedYear}` : `FY ${selectedYear}`;
-  const nextVal   = next ? next.landing : ql.fyLanding;
-  const nextWorst = next ? next.worst : null;
-  const nextBest  = next ? next.best  : null;
-
-  // Plain-language one-liner.
-  const parts = [];
-  parts.push(`${finishQ} ${prodLabel} is tracking to finish around ${fmtM(finishVal)}` +
-             (finishWorst != null && finishBest != null ? ` (range ${fmtM(finishWorst)}–${fmtM(finishBest)})` : '') + '.');
-  if (finishActual > 0 && pctBooked != null && finish) {
-    parts.push(`${fmtM(finishActual)} is already booked — about ${pctBooked}% of the way there.`);
-  }
-  if (finish) parts.push(`That puts the full year near ${fmtM(ql.fyLanding)}.`);
-  if (acc && !acc.isDemo) {
-    parts.push(`Forecasts have averaged about ±${acc.avgSmape.toFixed(0)}% error over the last ${acc.nQuarters} closed quarter${acc.nQuarters > 1 ? 's' : ''}.`);
-  } else if (cov != null) {
-    parts.push(`The 80% range has captured the actual in ${cov}% of recent weeks.`);
-  }
-  if (runDelta?.available && runDelta?.total && runDelta.total.delta != null) {
-    const dd = runDelta.total.delta;
-    const dpct = runDelta.total.delta_pct;
-    if (dpct != null && Math.abs(dpct) >= 0.1) {
-      parts.push(`Since the last run the outlook is ${dd >= 0 ? 'up' : 'down'} ${fmtM(Math.abs(dd))}.`);
-    }
-  }
-  const narrative = parts.join(' ');
-
-  const tileWrap = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-                     borderRadius: 12, padding: '14px 16px' };
-  const tileLabel = { fontSize: 9, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6, fontWeight: 700 };
-  const tileSub   = { fontSize: 10.5, color: '#64748b', marginTop: 6, lineHeight: 1.45 };
-
-  // Accuracy tile content
-  const accColor = acc && !acc.isDemo
-    ? (acc.avgSmape < 15 ? '#10b981' : acc.avgSmape < 25 ? '#f59e0b' : '#ef4444')
-    : '#94a3b8';
-
-  return (
-    <div style={{ background: 'linear-gradient(180deg, rgba(59,130,246,0.07), rgba(59,130,246,0.02))',
-                  border: '1px solid rgba(59,130,246,0.25)', borderRadius: 14, padding: '18px 20px',
-                  display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0', letterSpacing: 0.2 }}>
-          Executive Summary
-          <span style={{ fontSize: 10, fontWeight: 600, color: '#64748b', marginLeft: 8 }}>· {prodLabel} · {selectedYear}</span>
-        </div>
-        <span style={{ fontSize: 9.5, color: '#64748b', padding: '3px 9px', borderRadius: 20,
-                       background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
-          Computed from the latest forecast run
-        </span>
-      </div>
-
-      <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.65 }}>{narrative}</div>
-
-      {/* Three answers, in Brian's order */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        {/* 1 — Expected finish */}
-        <div style={tileWrap}>
-          <div style={tileLabel}>Expected finish · {finishQ}</div>
-          <div style={{ fontSize: 26, fontWeight: 900, color: '#f1f5f9', letterSpacing: -0.6, lineHeight: 1 }}>{fmtM(finishVal)}</div>
-          <div style={tileSub}>
-            {finish && finishActual > 0
-              ? <>{fmtM(finishActual)} booked + {fmtM(finish.forecast)} forecast{pctBooked != null ? ` · ${pctBooked}% there` : ''}</>
-              : 'Full-year most-likely outlook'}
-            {finishWorst != null && finishBest != null && <><br/>Range {fmtM(finishWorst)} – {fmtM(finishBest)}</>}
-          </div>
-        </div>
-
-        {/* 2 — How accurate */}
-        <div style={tileWrap}>
-          <div style={tileLabel}>How accurate</div>
-          {acc && !acc.isDemo ? (
-            <>
-              <div style={{ fontSize: 26, fontWeight: 900, color: accColor, letterSpacing: -0.6, lineHeight: 1 }}>±{acc.avgSmape.toFixed(0)}%</div>
-              <div style={tileSub}>
-                Avg error over {acc.nQuarters} closed quarter{acc.nQuarters > 1 ? 's' : ''}
-                {btMape != null && <><br/>~{btMape}% off at 4 weeks out</>}
-                {cov != null && covWeeks ? <><br/>Range caught {cov}% of last {covWeeks} wks (target ~80%)</> : null}
-              </div>
-            </>
-          ) : cov != null && covWeeks ? (
-            <>
-              <div style={{ fontSize: 26, fontWeight: 900, color: '#f1f5f9', letterSpacing: -0.6, lineHeight: 1 }}>{cov}%</div>
-              <div style={tileSub}>of last {covWeeks} weeks landed inside the 80% range (target ~80%){btMape != null && <><br/>~{btMape}% off at 4 weeks out</>}</div>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#94a3b8', lineHeight: 1.1 }}>Building history</div>
-              <div style={tileSub}>Accuracy fills in as forecast vintages accumulate week over week.</div>
-            </>
-          )}
-        </div>
-
-        {/* 3 — Next quarter */}
-        <div style={tileWrap}>
-          <div style={tileLabel}>{next ? `Next quarter · ${nextLabel}` : `Full year · ${selectedYear}`}</div>
-          <div style={{ fontSize: 26, fontWeight: 900, color: '#60a5fa', letterSpacing: -0.6, lineHeight: 1 }}>{fmtM(nextVal)}</div>
-          <div style={tileSub}>
-            {next ? 'Most-likely outlook' : 'Full-year most-likely outlook'}
-            {nextWorst != null && nextBest != null && <><br/>Range {fmtM(nextWorst)} – {fmtM(nextBest)}</>}
-          </div>
-        </div>
-      </div>
-
-      {/* Brian's ask: one cumulative graph showing where every model lands. */}
-      {allModels && allModels.length > 0 && (
-        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em', marginBottom: 2 }}>
-            All models — cumulative outlook
-          </div>
-          <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
-            Where each model lands vs actuals. Tight clustering = models agree.
-          </div>
-          <MultiModelCumulativeChart rows={allModels} />
-        </div>
-      )}
-    </div>
-  );
-};
-
 const ForecastingPanel = () => {
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
@@ -1983,8 +1770,10 @@ const ForecastingPanel = () => {
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
+  const [quarterlySummary, setQuarterlySummary] = useState(null);
   const [ytd,         setYtd]         = useState(null);
   const [historical,  setHistorical]  = useState(null);
+  const [historicalMeta, setHistoricalMeta] = useState(null);
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
@@ -2000,7 +1789,6 @@ const ForecastingPanel = () => {
       { model: 'DHR-ARIMA', values: [26.8, 23.2, 29.1, 21.7, 25.6, 27.9] },
     ],
   });
-  const [allModels,   setAllModels]   = useState(null);
   const [yearRows,    setYearRows]    = useState(null);   // full-year rolling+roy for quarterly bars
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
@@ -2045,28 +1833,24 @@ const ForecastingPanel = () => {
   const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy, bt, aqtr] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
-      apiService.getForecastV2WeeklyAllModels(activePl, apiYear, apiQuarter),
       // Full-year rows for the Quarterly Summary bars: rolling covers only the
       // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-      // Accuracy inputs for the top Executive Summary (so the "how accurate"
-      // answer is available on first load, not only after visiting Accuracy tab).
-      apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-      apiService.getForecastV2AccuracyByQuarter(activePl),
     ]);
 
     if (wk.status === 'fulfilled') {
       setWeekly(wk.value?.rows ?? []);
       setWeeklyKpis(wk.value?.kpis ?? null);
+      setQuarterlySummary(wk.value?.quarterly_summary ?? null);
       setSource(wk.value?.source ?? null);
       if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
         setError(`Forecast data fallback: ${wk.value.error}`);
@@ -2077,17 +1861,12 @@ const ForecastingPanel = () => {
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-    if (am.status === 'fulfilled') setAllModels(am.value?.rows ?? null);
     {
       const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
       setYearRows(base.length || roy.length ? [...base, ...roy] : null);
+      if (yrRoll.status === 'fulfilled' && yrRoll.value?.quarterly_summary) setQuarterlySummary(yrRoll.value.quarterly_summary);
     }
-    // Feed the Executive Summary's accuracy answer. These also populate the
-    // Accuracy tab's state so it renders instantly when opened.
-    if (bt.status === 'fulfilled' && bt.value) setTrust(bt.value);
-    if (aqtr.status === 'fulfilled' && aqtr.value) setAccuracyByQtr(aqtr.value);
-
     const firstReject = [wk, yt].find((r) => r.status === 'rejected');
     if (firstReject) {
       setSource('demo');
@@ -2107,9 +1886,12 @@ const ForecastingPanel = () => {
         await fetchOverviewData();
       } else if (targetTab === 'Multi-Year') {
         const [hs] = await Promise.allSettled([
-          apiService.getForecastV2Historical(null, activePl, activeGeo),
+          apiService.getForecastV2Historical(null, activePl, activeGeo, null, model),
         ]);
-        if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
+        if (hs.status === 'fulfilled') {
+          setHistorical(hs.value?.rows ?? []);
+          setHistoricalMeta(hs.value ?? null);
+        }
       } else if (targetTab === 'By Product') {
         const [bp] = await Promise.allSettled([
           apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
@@ -2233,6 +2015,7 @@ const ForecastingPanel = () => {
   const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
   const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
+  const historicalData = isDemo ? null : historicalMeta;
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
@@ -2530,19 +2313,23 @@ const ForecastingPanel = () => {
 
           {tab === 'Overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Executive Summary — the point, first: expected finish, accuracy,
-                  next quarter, and where every model lands. Everything below is
-                  the drill-down. */}
-              <ExecutiveSummary
-                loading={loading}
-                yearRows={yearRows}
-                allModels={allModels}
-                runDelta={runDelta}
-                trust={trust}
-                accuracyByQtr={accuracyByQtr}
-                selectedYear={selectedYear}
-                prodLine={prodLine}
-              />
+              {!loading && weeklyKpis && (() => {
+                const ml = weeklyKpis.most_likely ?? 0;
+                const wc = weeklyKpis.worst_case ?? 0;
+                const bc = weeklyKpis.best_case ?? 0;
+                const ytdActual = weeklyKpis.ytd_actuals ?? 0;
+                const pctBooked = ml > 0 ? Math.round((ytdActual / ml) * 100) : 0;
+                const periodLabel = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY${selectedYear}`;
+                if (ml === 0) return null;
+                return (
+                  <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 6, lineHeight: 1.6, padding: '2px 2px 0' }}>
+                    <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{periodLabel} tracking to {fmtM(ml)}</span>
+                    {' '}(range {fmtM(wc)}–{fmtM(bc)}).{' '}
+                    <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtM(ytdActual)} booked</span>
+                    {' '}= {pctBooked}% realized.
+                  </div>
+                );
+              })()}
 
               {/* Hero KPI cards */}
               {loading
@@ -2679,41 +2466,9 @@ const ForecastingPanel = () => {
                     <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
                     <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
                   </div>
-                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
+                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} quarterlyData={quarterlySummary} year={selectedYear} />
                 </CardWrap>
               )}
-
-              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
-                  {(() => {
-                    // Interval trust badge — empirical band coverage from /backtest @4wk horizon
-                    const cov = trust?.summary?.coverage_pct;
-                    const n   = trust?.summary?.weeks_scored;
-                    if (cov == null || !n) return null;
-                    const covColor = cov >= 70 && cov <= 92 ? '#10b981' : cov >= 50 ? '#f59e0b' : '#ef4444';
-                    return (
-                      <span title={`Over the last ${n} closed weeks, the actual landed inside the 80% band ${cov}% of the time (forecasts made 4 weeks ahead). Calibrated bands should be near ~80% — much higher means the bands are too wide, much lower means too narrow.`}
-                        style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 20, marginBottom: 10,
-                                 color: covColor, background: `${covColor}14`, border: `1px solid ${covColor}40`,
-                                 cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        🛡 Bands caught {cov}% of last {n} actuals
-                        <span style={{ fontWeight: 400, opacity: 0.75 }}>· target ~80%</span>
-                        {trust?.source === 'demo' && <span style={{ fontWeight: 400, opacity: 0.6 }}>· demo</span>}
-                      </span>
-                    );
-                  })()}
-                </div>
-                <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                  <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-                  <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
-                  <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-                  <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
-                  <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
-                  <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
-                </div>
-                {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
-              </CardWrap>
 
               <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>
@@ -2724,8 +2479,6 @@ const ForecastingPanel = () => {
                 {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
-              {/* All-models cumulative now lives in the Executive Summary hero
-                  at the top of this tab. */}
             </div>
           )}
 
@@ -2746,12 +2499,17 @@ const ForecastingPanel = () => {
               {multiYearView === 'overlay' && (
                 <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+                  {historicalData?.data_health && !historicalData.data_health.sufficient_for_yoy && (
+                    <div style={{ fontSize: 10, color: '#f59e0b', padding: '6px 12px', borderRadius: 6, background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.15)', marginBottom: 8 }}>
+                      Limited data: {historicalData.data_health.min_year_weeks} weeks in some years — YoY comparisons may be unreliable.
+                    </div>
+                  )}
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
                       <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
                     ))}
                   </div>
-                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
+                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} data={historicalData} /> : <EmptyState />}
                 </CardWrap>
               )}
 
@@ -3080,7 +2838,7 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Driver Bridge (Plan vs Actual)
-                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
+                  
                 </SectionTitle>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>

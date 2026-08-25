@@ -339,6 +339,96 @@ resources:
 
       max_concurrent_runs: 1
 
+    # ── V5 Forecast Pipeline (daily — UCC + ITSG + Unify/Publish) ─────────────
+    forecast_v5_daily:
+      name: "Forecast V5 — Daily Pipeline (UCC + ITSG + Publish)"
+      description: >
+        Production V5 forecast pipeline. Chains three notebooks sequentially:
+        1. UCC Forecast Foundation V5 — trains 5-model ensemble, writes ucc_forecast_v5/boq/cbe
+        2. ITSG Growth ARR Forecasting V5 — same for ITSG product, writes itsg_forecast_v5/boq/cbe
+        3. forecast_unify_publish — consolidates both into forecast_results + compat views
+        App reads from forecast_results_v2compat which is refreshed by step 3.
+
+      # ── Schedule: daily at 07:00 AM Eastern ────────────────────────────────
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+
+      # ── Cluster: ML runtime (prophet, lightgbm, statsforecast, shap) ───────
+      job_clusters:
+        - job_cluster_key: forecast_v5_cluster
+          new_cluster:
+            spark_version: "15.4.x-cpu-ml-scala2.12"
+            node_type_id: m5d.xlarge    # 32 GB — Monte Carlo sims + LGB training
+            num_workers: 1
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+
+      tasks:
+        - task_key: ucc_forecast_v5
+          job_cluster_key: forecast_v5_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/UCC Forecast Foundation V5
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: statsforecast==2.0.3
+            - pypi:
+                package: prophet==1.3.0
+            - pypi:
+                package: statsmodels>=0.14.6
+            - pypi:
+                package: holidays>=0.72
+            - pypi:
+                package: lightgbm>=4.5.0
+            - pypi:
+                package: scipy>=1.14.1
+            - pypi:
+                package: shap>=0.46.0
+          timeout_seconds: 3600   # 1h — typical run ~8-10 min
+
+        - task_key: itsg_forecast_v5
+          job_cluster_key: forecast_v5_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/ITSG_Growth_ARR_Forecasting_v5
+            source: WORKSPACE
+          libraries:
+            - pypi:
+                package: statsforecast==2.0.3
+            - pypi:
+                package: prophet==1.3.0
+            - pypi:
+                package: statsmodels>=0.14.6
+            - pypi:
+                package: holidays>=0.72
+            - pypi:
+                package: lightgbm>=4.5.0
+            - pypi:
+                package: scipy>=1.14.1
+            - pypi:
+                package: shap>=0.46.0
+          timeout_seconds: 3600   # 1h — typical run ~8-10 min
+
+        - task_key: forecast_unify_publish
+          depends_on:
+            - task_key: ucc_forecast_v5
+            - task_key: itsg_forecast_v5
+          job_cluster_key: forecast_v5_cluster
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/forecast_unify_publish
+            source: WORKSPACE
+          timeout_seconds: 1800   # 30 min — lightweight consolidation (PySpark only)
+
+      email_notifications:
+        on_failure:
+          - dileep.chennamsetty@goto.com
+        on_start: []
+
+      timeout_seconds: 10800       # 3-hour hard limit for entire pipeline
+      max_concurrent_runs: 1
+
 targets:
   dev:
     mode: development

@@ -31,10 +31,10 @@ HTTP_PATH = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH") \
          or os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
 
 # Maximum total time the SDK retry loop will run before giving up.
-# Default is 900 s — far too long for a web request; cap at 12 s so a failed
-# connection fails fast and the caller can fall back to demo data.
-# On Databricks Apps (warm warehouse, local network) this is plenty.
-_RETRY_TIMEOUT = 12.0
+# Default is 900 s — far too long for a web request; but 12 s is too aggressive
+# when the SQL warehouse is cold (auto-suspended). 45 s tolerates a cold start
+# while still failing reasonably fast if the warehouse is truly unreachable.
+_RETRY_TIMEOUT = 45.0
 
 # Per-request token (set by inject_forwarded_token middleware in main.py).
 # Databricks Apps forwards the active user's OAuth token as
@@ -106,8 +106,8 @@ def get_connection():
             server_hostname=HOST,
             http_path=HTTP_PATH,
             access_token=token,
-            _socket_timeout=5,                       # 5 s per socket op — fail fast locally
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 12 s total retry budget
+            _socket_timeout=10,                      # 10 s per socket op (was 5; tolerates cold-start)
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
     if _oauth_m2m_available():
@@ -117,7 +117,7 @@ def get_connection():
             auth_type="oauth-m2m",
             oauth_client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
             oauth_client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
-            _socket_timeout=5,
+            _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
 
@@ -131,8 +131,8 @@ def execute_query(
     query: str,
     params=None,
     *,
-    max_attempts: int = 1,   # No retries on hot-path; fail fast → demo data
-    backoff: float = 2.0,
+    max_attempts: int = 2,   # Retry once on cold-start failures (was 1)
+    backoff: float = 3.0,
 ) -> List[Dict[str, Any]]:
     """
     Execute a SQL query and return results as a list of dicts.

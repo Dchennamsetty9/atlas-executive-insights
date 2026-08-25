@@ -16,7 +16,7 @@ const RunningTotalsChartTooltip = ({ active, payload, label }) => {
   );
 };
 
-const RunningTotalsChart = ({ rows }) => {
+const RunningTotalsChart = ({ rows, simplified = false }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date)).map((r) => {
     const likely = r.ytd_likely ?? null;
     const worst = r.ytd_worst ?? null;
@@ -57,12 +57,12 @@ const RunningTotalsChart = ({ rows }) => {
         <Tooltip content={<RunningTotalsChartTooltip />} />
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
         <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#ytdBandFill)" legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#ytdInnerBandFill)" legendType="none" connectNulls dot={false} />
+        {!simplified && <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {!simplified && <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#ytdInnerBandFill)" legendType="none" connectNulls dot={false} />}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b" strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {!simplified && <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />}
         <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0" strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {!simplified && <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />}
       </ComposedChart>
     </ResponsiveContainer>
   );

@@ -206,6 +206,63 @@ assert ucc is not None or itsg is not None, "No source forecast tables available
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Cell 2b — Extend forecast with BOQ 2027 data
+# MAGIC
+# MAGIC V5 forecast tables may stop before the full 2027 planning window. Pull the
+# MAGIC forecast-only BOQ rows after each V5 table's max `ds` so Cell 4's existing
+# MAGIC `forward_1yr` tagging has complete 2027 input data.
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+UCC_BOQ_SRC  = f"{CATALOG}.{SCHEMA}.ucc_forecast_boq"
+ITSG_BOQ_SRC = f"{CATALOG}.{SCHEMA}.itsg_forecast_boq"
+
+def _boq_extension_rows(boq_table, v5_df, product):
+    """Map forecast-only BOQ rows beyond the V5 horizon into V5-compatible rows."""
+    if v5_df is None:
+        return None
+    max_ds = v5_df.agg(F.max(F.to_date("ds")).alias("max_ds")).collect()[0]["max_ds"]
+    if max_ds is None:
+        return None
+    try:
+        boq = spark.table(boq_table)
+    except Exception as exc:
+        print(f"  WARN could not read {boq_table}: {exc}")
+        return None
+
+    out = (boq
+        .where((F.to_date("ds") > F.lit(max_ds)) & (F.lower(F.col("source")) == F.lit("forecast")))
+        .select(
+            F.col("model"),
+            F.to_date("ds").alias("ds"),
+            F.col("forecast").cast("double").alias("forecast"),
+            F.col("p10").cast("double").alias("p10"),
+            F.col("p50").cast("double").alias("p50"),
+            F.col("p90").cast("double").alias("p90"),
+            F.col("grain_level"),
+            F.col("sales_market"),
+            F.when(F.col("model") == F.lit(REC_MODEL), F.lit(1)).otherwise(F.lit(0)).cast("bigint").alias("recommended_for_exec"),
+            F.col("run_date_utc").cast("timestamp").alias("run_timestamp_utc"),
+            F.col("pipeline_version"),
+        ))
+    print(f"  {product} BOQ extension rows after {max_ds}: {out.count()}")
+    return out
+
+ucc_ext = _boq_extension_rows(UCC_BOQ_SRC, ucc, "UCC")
+itsg_ext = _boq_extension_rows(ITSG_BOQ_SRC, itsg, "ITSG")
+
+if ucc_ext is not None:
+    ucc = ucc.unionByName(ucc_ext, allowMissingColumns=True)
+if itsg_ext is not None:
+    itsg = itsg.unionByName(itsg_ext, allowMissingColumns=True)
+
+print(f"Rows after BOQ extension — UCC: {ucc.count() if ucc is not None else 0}, ITSG: {itsg.count() if itsg is not None else 0}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cell 3 — Normalize forecasts to the canonical schema
 # MAGIC
 # MAGIC `run_date` = publish date (this run), so the daily `replaceWhere` overwrite is
@@ -216,7 +273,37 @@ assert ucc is not None or itsg is not None, "No source forecast tables available
 
 from pyspark.sql import functions as F
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EXACT-VALUE PHILOSOPHY
+# ══════════════════════════════════════════════════════════════════════════════
+# This notebook publishes EXACT values from the upstream forecast pipelines.
+#
+# Source of p10 / p50 / p90:
+#   - UCC: Monte Carlo simulation quantiles from ucc_forecast_v5
+#   - ITSG: Holdout-residual-based quantiles from itsg_forecast_v5
+#   These are the EXACT quantiles written by the per-product forecasting
+#   notebooks. No reconstruction, no band-math, no sqrt(sum-of-squares).
+#
+# Source of most_likely:
+#   - Always equals p50 (the median point estimate). Never an inferred or
+#     approximate value.
+#
+# Source of actuals:
+#   - CBE tables (ucc_forecast_cbe, itsg_forecast_cbe) for 2026+ weeks: TRUE
+#     Growth ARR from SFDC, closed weekly.
+#   - arr_forecast_v2 for 2022-2025 historical (UCC only; ITSG there is inflated).
+#
+# The app MUST consume these exact published values. It should NOT reconstruct
+# Most Likely / Stretch Case / Risk Floor from approximate band math.
+# ══════════════════════════════════════════════════════════════════════════════
+
 def normalize_forecast(df, product):
+    """Normalize a V5 forecast table into the canonical schema.
+
+    All numeric values (p10, p50, p90, most_likely) are passed through EXACTLY
+    as they appear in the source table. No transformation, no approximation.
+    recommended_for_exec is preserved from the upstream pipeline.
+    """
     if df is None:
         return None
     cols = set(df.columns)
@@ -225,13 +312,15 @@ def normalize_forecast(df, product):
         .withColumn("run_date", F.current_date())
         .withColumn("published_at_utc", F.current_timestamp())
         .withColumn("ds", F.to_date(F.col("ds")))                 # unify DATE type
-        .withColumn("most_likely", F.col("p50"))
-        .withColumn("actual", F.lit(None).cast("double"))
+        .withColumn("most_likely", F.col("p50"))                   # EXACT: most_likely := p50
+        .withColumn("actual", F.lit(None).cast("double"))          # forecast rows have no actual
         .withColumn("forecast_type", F.lit(None).cast("string"))  # set in Cell 4
         .withColumn("forecast_view", F.lit("adaptive"))            # default; BOQ rows added in Cell 4b
         .withColumn("source_run_ts",
                     F.col("run_timestamp_utc") if "run_timestamp_utc" in cols
                     else F.lit(None).cast("timestamp")))
+    # recommended_for_exec is preserved from the source V5 table (bigint).
+    # If not present in source, it defaults to NULL (filled by the loop below).
     for c in BASE:
         if c not in out.columns:
             out = out.withColumn(c, F.lit(None))
@@ -437,14 +526,34 @@ print(f"Rows incl. actuals: {combined.count()}")
 # COMMAND ----------
 
 # DBTITLE 1,Cell 6 — Total rollup (UCC + ITSG)
-total = (combined
+# ══════════════════════════════════════════════════════════════════════════════
+# TOTAL ROLLUP — EXACT SUM, NOT VARIANCE RECONSTRUCTION
+# ══════════════════════════════════════════════════════════════════════════════
+# The "Total" product = UCC + ITSG summed per (ds, market, model, forecast_type, view).
+#
+# Why simple SUM is correct and preferred:
+#   actual:     SUM of actuals = total actual (exact).
+#   p50:        SUM of per-product p50 = total point estimate (exact for expectations).
+#   most_likely: same as p50 (exact).
+#   p10 / p90:  SUM of per-product quantiles. This is conservative for p10 and
+#               aggressive for p90 (exact only under perfect correlation). But it is
+#               the PUBLISHED truth — the app reads these values directly. No sqrt,
+#               no variance math, no band reconstruction.
+#
+# Guard: strip any pre-existing "Total" rows from upstream sources before
+# computing the rollup, preventing accidental double-counting.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Safety guard: remove any "Total" product rows that leaked from upstream sources
+# (e.g. arr_forecast_v2 had a 'Total' product that includes non-Growth revenue).
+per_product = combined.where(F.upper(F.col("product")) != "TOTAL")
+
+total = (per_product
     .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
+         F.sum("p10").alias("p10"),
          F.sum("p50").alias("p50"),
-         # Quadrature band aggregation: σ_total = sqrt(Σσᵢ²) so UCC+ITSG uncertainty
-         # doesn't compound additively (which assumes perfect correlation and overstates risk).
-         (F.sum("p50") - F.sqrt(F.sum(F.pow(F.col("p50") - F.col("p10"), 2)))).alias("p10"),
-         (F.sum("p50") + F.sqrt(F.sum(F.pow(F.col("p90") - F.col("p50"), 2)))).alias("p90"),
+         F.sum("p90").alias("p90"),
          F.sum("most_likely").alias("most_likely"),
          F.max("recommended_for_exec").alias("recommended_for_exec"))
     .withColumn("product", F.lit("Total"))
@@ -452,8 +561,10 @@ total = (combined
     .withColumn("published_at_utc", F.current_timestamp())
     .select(*BASE))
 
-results_base = combined.unionByName(total)
+# Final results_base = per-product rows (UCC, ITSG) + computed Total
+results_base = per_product.unionByName(total)
 print(f"Rows incl. Total rollup: {results_base.count()}")
+print(f"  Per-product rows: {per_product.count()}, Total rollup rows: {total.count()}")
 
 # COMMAND ----------
 
@@ -469,19 +580,10 @@ def _latest(table, ts_col):
 
 acc_parts = []
 try:
-    u = _latest(UCC_BASELINE, "run_date_utc")
-    if "metric_scope" in u.columns:
-        tot = u.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
-        u = tot if tot.count() > 0 else u
-    u = (u.select(
-            F.lit("UCC").alias("product"),
-            F.col("model"),
-            F.col("holdout_wape_baseline").cast("double").alias("model_wape"),
-            F.lit(None).cast("double").alias("model_mape"))
-         # Deterministic collapse for duplicate baseline rows
-         .groupBy("product", "model")
-         .agg(F.min("model_wape").alias("model_wape"),
-              F.min("model_mape").alias("model_mape")))
+    u = _latest(UCC_BASELINE, "run_date_utc").select(
+        F.lit("UCC").alias("product"), F.col("model"),
+        F.col("holdout_wape_baseline").alias("model_wape"),
+        F.lit(None).cast("double").alias("model_mape"))
     acc_parts.append(u)
 except Exception as exc:
     print(f"  WARN UCC baseline skipped: {exc}")
@@ -490,13 +592,9 @@ try:
     if "metric_scope" in i.columns:
         tot = i.where(F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
         i = tot if tot.count() > 0 else i
-    i = (i.select(F.lit("ITSG").alias("product"), F.col("model"),
-                  F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).cast("double").alias("model_wape"),
-                  F.col("mape").cast("double").alias("model_mape"))
-         # Deterministic collapse for duplicate baseline rows
-         .groupBy("product", "model")
-         .agg(F.min("model_wape").alias("model_wape"),
-              F.min("model_mape").alias("model_mape")))
+    i = i.select(F.lit("ITSG").alias("product"), F.col("model"),
+                 F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")).alias("model_wape"),
+                 F.col("mape").alias("model_mape"))
     acc_parts.append(i)
 except Exception as exc:
     print(f"  WARN ITSG baseline skipped: {exc}")
@@ -505,6 +603,7 @@ if acc_parts:
     acc = acc_parts[0]
     for a in acc_parts[1:]:
         acc = acc.unionByName(a)
+    acc = acc.dropDuplicates(["product", "model"])
     results = results_base.join(acc, ["product", "model"], "left")
 else:
     results = (results_base
@@ -519,18 +618,46 @@ results = results.select(*COLS)
 
 # COMMAND ----------
 
-(results.write.format("delta").mode("overwrite")
+# ══════════════════════════════════════════════════════════════════════════════
+# WRITE forecast_results + CREATE DEDUPED VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+# Deduplication guarantee: exactly ONE row per natural key. If the upstream union
+# produced any duplicates (e.g. overlapping date windows), the dedup removes them
+# BEFORE writing, so the table is the canonical source of truth.
+
+from pyspark.sql import Window
+
+DEDUP_KEY = ["ds", "product", "sales_market", "grain_level", "model", "forecast_type", "forecast_view"]
+
+# Deduplicate: keep the row with the latest published_at_utc per natural key
+w = Window.partitionBy(*DEDUP_KEY).orderBy(F.col("published_at_utc").desc())
+results_deduped = (results
+    .withColumn("_rn", F.row_number().over(w))
+    .where("_rn = 1")
+    .drop("_rn"))
+
+(results_deduped.write.format("delta").mode("overwrite")
    .option("replaceWhere", "run_date = current_date()")
    .option("mergeSchema", "true")
    .partitionBy("product")
    .saveAsTable(RESULTS_TABLE))
 
+# The view selects the latest run_date snapshot with a secondary dedup guard:
+# ROW_NUMBER ensures exactly one row per key even if table has residual dupes.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {RESULTS_VIEW} AS
-    SELECT * FROM {RESULTS_TABLE}
-    WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    WITH latest AS (
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY ds, product, sales_market, grain_level, model, forecast_type, forecast_view
+                ORDER BY published_at_utc DESC
+            ) AS _rn
+        FROM {RESULTS_TABLE}
+        WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    )
+    SELECT * EXCEPT (_rn) FROM latest WHERE _rn = 1
 """)
-print(f"Wrote {results.count()} rows to {RESULTS_TABLE} (vintage = today).")
+print(f"Wrote {results_deduped.count()} rows to {RESULTS_TABLE} (vintage = today, deduped).")
 
 # COMMAND ----------
 
@@ -543,6 +670,7 @@ print(f"Wrote {results.count()} rows to {RESULTS_TABLE} (vintage = today).")
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 9 — Build & write forecast_insights
 import json
 
 res = spark.table(RESULTS_VIEW).toPandas()
@@ -628,14 +756,19 @@ def _stats(df, region="Total", period="quarter"):
         print(f"  WARN insight stats failed: {_e}")
         return None
 
-def _render(s, label):
+def _render(s, label, product_stats=None):
+    """Render executive-quality insight payload.
+    product_stats: dict of per-product stats (UCC/ITSG) for the aggregate view."""
     _pl = s.get("period_label", _Q_LABEL)
     risk = "LOW RISK" if s["confidence"] >= 80 else "MODERATE RISK" if s["confidence"] >= 60 else "HIGH RISK"
     yoy = s.get("yoy")
     yoy_txt = (f" — {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year"
                if yoy is not None else "")
-    rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {s['n_fwd']} open week(s)"
-              if s.get("run_rate") else "n/a")
+    n_weeks = s.get("n_fwd", 0)
+    rr_txt = (f"{_fmt_m(s['run_rate'])}/wk across {n_weeks} open weeks"
+              if s.get("run_rate") and n_weeks else "n/a")
+
+    # Key Drivers — include product split for aggregate view
     drivers = [
         f"{label} {_pl} landing {_fmt_m(s['most_likely'])} = {_fmt_m(s['qtd'])} realized "
         f"+ {_fmt_m(s['most_likely'] - s['qtd'])} forecast.",
@@ -643,27 +776,75 @@ def _render(s, label):
     ]
     if yoy is not None:
         drivers.append(f"Tracking {'+' if yoy >= 0 else ''}{yoy:.0f}% YoY vs {_fmt_m(s['prior'])} last year ({_pl.replace(str(_Q_YEAR), str(_Q_YEAR - 1))}).")
+    if product_stats:
+        parts = [f"{k}: {_fmt_m(v['most_likely'])}" for k, v in sorted(product_stats.items())]
+        drivers.append(f"Product mix: {', '.join(parts)}.")
+
+    # Downside Risks — quantified and specific
+    spread_pct = s.get("spread_pct", 0)
+    risk_items = [
+        f"Downside case {_fmt_m(s['worst'])} — {_fmt_m(s['downside'])} ({s['downside']/(s['most_likely'])*100:.0f}%) below the central path." if s['most_likely'] else f"Downside case {_fmt_m(s['worst'])}.",
+    ]
+    if s["momentum"] == "DECELERATING":
+        risk_items.append("Momentum decelerating — recent weeks trending below the quarterly run-rate.")
+    elif s["momentum"] == "VOLATILE":
+        risk_items.append(f"Week-to-week coefficient of variation elevated; band spread is {spread_pct:.0f}% of the central path.")
+    else:
+        risk_items.append("Primary risk is execution slip against the paced weekly target.")
+    if product_stats:
+        weakest = min(product_stats.items(), key=lambda x: x[1].get("confidence", 100))
+        if weakest[1].get("momentum") in ("VOLATILE", "DECELERATING"):
+            risk_items.append(f"{weakest[0]} showing {weakest[1]['momentum'].lower()} momentum — monitor closely.")
+
+    # Upside Opportunities — specific triggers
+    opp_items = [
+        f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} ({s['upside']/(s['most_likely'])*100:.0f}%) above the central path." if s['most_likely'] else f"Stretch case {_fmt_m(s['best'])}.",
+    ]
+    if product_stats:
+        strongest = max(product_stats.items(), key=lambda x: x[1].get("confidence", 0))
+        if strongest[1].get("momentum") == "ACCELERATING":
+            opp_items.append(f"{strongest[0]} accelerating — could outperform if trend persists.")
+    if yoy is not None and yoy > 0:
+        opp_items.append(f"Already tracking +{yoy:.0f}% above prior-year pace.")
+
+    # Executive Actions — specific and quantified
+    actions = []
+    if n_weeks > 0 and s.get("run_rate"):
+        actions.append(f"Maintain {_fmt_m(s['run_rate'])}/wk run-rate over the remaining {n_weeks} weeks to land {_fmt_m(s['most_likely'])} for {_pl}.")
+    else:
+        actions.append(f"Hold current weekly pace to land the {_pl} outlook.")
+    if product_stats and len(product_stats) > 1:
+        largest = max(product_stats.items(), key=lambda x: x[1].get("most_likely", 0))
+        pct = largest[1]["most_likely"] / s["most_likely"] * 100 if s["most_likely"] else 0
+        actions.append(f"Prioritize {largest[0]} execution ({pct:.0f}% of total) — largest lever on the combined number.")
+    if s["momentum"] == "VOLATILE":
+        actions.append("Review pipeline coverage and deal slippage risk for the next 4 weeks.")
+    elif s["momentum"] == "DECELERATING":
+        actions.append("Escalate deal pull-forward and pipeline acceleration actions this week.")
+    else:
+        actions.append("Maintain current cadence; next model refresh will update the outlook.")
+
+    # Narrative — concise executive summary
+    momentum_desc = {"VOLATILE": "with elevated weekly variability",
+                     "ACCELERATING": "on an accelerating trajectory",
+                     "DECELERATING": "on a decelerating trajectory",
+                     "STABLE": "on a stable trajectory"}
+    narrative = (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
+                 f"({_fmt_m(s['qtd'])} realized + forecast), "
+                 f"ranging {_fmt_m(s['worst'])} to {_fmt_m(s['best'])}{yoy_txt}. "
+                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.")
+
     return {
         "product": label, "run_date": str(latest_run), "period": _pl,
         "momentum": s["momentum"], "risk_level": risk,
         "model_confidence": s["confidence"], "best_model": REC_MODEL,
         "mape": round(s["wape"], 1) if s["wape"] is not None else None,
-        "narrative": (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
-                      f"({_fmt_m(s['qtd'])} realized + forecast), ranging {_fmt_m(s['worst'])} to "
-                      f"{_fmt_m(s['best'])}{yoy_txt}. Momentum {s['momentum'].lower()}."),
+        "narrative": narrative,
         "upside": round(s["upside"], 0), "downside": round(s["downside"], 0),
         "key_drivers": drivers,
-        "downside_risks": [
-            f"Downside case {_fmt_m(s['worst'])} — {_fmt_m(s['downside'])} below the most-likely path.",
-            "Momentum decelerating — watch weekly pacing." if s["momentum"] == "DECELERATING"
-                else "Elevated week-to-week volatility." if s["momentum"] == "VOLATILE"
-                else "Primary risk is execution against the central path.",
-        ],
-        "upside_opportunities": [f"Stretch case {_fmt_m(s['best'])} — {_fmt_m(s['upside'])} above the most-likely path."],
-        "executive_actions": [
-            f"Hold ~{rr_txt} to land the most-likely {_pl} outlook.",
-            "Focus on the largest at-risk product/region slices; revisit after the next run.",
-        ],
+        "downside_risks": risk_items,
+        "upside_opportunities": opp_items,
+        "executive_actions": actions,
         "source": "unified",
     }
 
@@ -680,19 +861,25 @@ for product in sorted(res["product"].dropna().unique()):
                  s["confidence"], s["momentum"], payload["risk_level"]))
 
 if stats:
-    _sum = lambda k: sum((v.get(k) or 0) for v in stats.values())
-    agg = dict(most_likely=_sum("most_likely"), worst=_sum("worst"), best=_sum("best"),
-               qtd=_sum("qtd"), prior=_sum("prior"),
-               n_fwd=max((v.get("n_fwd") or 0) for v in stats.values()), wape=None)
-    agg["upside"]   = max(0.0, agg["best"] - agg["most_likely"])
-    agg["downside"] = max(0.0, agg["most_likely"] - agg["worst"])
-    agg["spread_pct"] = ((agg["best"] - agg["worst"]) / agg["most_likely"] * 100) if agg["most_likely"] else 0.0
-    agg["yoy"] = ((agg["most_likely"] - agg["prior"]) / agg["prior"] * 100) if agg["prior"] else None
-    agg["run_rate"] = ((agg["most_likely"] - agg["qtd"]) / agg["n_fwd"]) if agg["n_fwd"] else None
+    # Compute aggregate from the TOTAL product directly (correct splice logic)
+    total_stats = _stats(res[res["product"] == "Total"])
+    if total_stats:
+        agg = total_stats
+    else:
+        _sum = lambda k: sum((v.get(k) or 0) for v in stats.values())
+        agg = dict(most_likely=_sum("most_likely"), worst=_sum("worst"), best=_sum("best"),
+                   qtd=_sum("qtd"), prior=_sum("prior"),
+                   n_fwd=min((v.get("n_fwd") or 0) for v in stats.values()), wape=None)
+        agg["upside"]   = max(0.0, agg["best"] - agg["most_likely"])
+        agg["downside"] = max(0.0, agg["most_likely"] - agg["worst"])
+        agg["spread_pct"] = ((agg["best"] - agg["worst"]) / agg["most_likely"] * 100) if agg["most_likely"] else 0.0
+        agg["yoy"] = ((agg["most_likely"] - agg["prior"]) / agg["prior"] * 100) if agg["prior"] else None
+        agg["run_rate"] = ((agg["most_likely"] - agg["qtd"]) / agg["n_fwd"]) if agg["n_fwd"] else None
     order = {"STABLE": 0, "ACCELERATING": 1, "DECELERATING": 2, "VOLATILE": 3}
-    agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order[m])
+    agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order.get(m, 0))
     agg["confidence"] = round(sum(v["confidence"] for v in stats.values()) / len(stats), 0)
-    payload = _render(agg, "Total portfolio")
+    agg["period_label"] = _Q_LABEL
+    payload = _render(agg, "Total portfolio", product_stats=stats)
     rows.append((latest_run, "ALL", "ai_insights", json.dumps(payload),
                  agg["confidence"], agg["momentum"], payload["risk_level"]))
 
@@ -956,13 +1143,41 @@ if ge_rows:
 # COMMAND ----------
 
 # DBTITLE 1,Cell 9b — V2 compat views
+# ══════════════════════════════════════════════════════════════════════════════
+# V2 COMPAT VIEWS — EXACT VALUES FROM forecast_results (no reconstruction)
+# ══════════════════════════════════════════════════════════════════════════════
+# These views reshape the single-source-of-truth (forecast_results) into the
+# wide schema the legacy app endpoints expect. All values (Most_Likely, Worst_Case,
+# Best_Case, p10, p90) are EXACT pass-throughs from the published forecast.
+# No approximate band math or variance reconstruction is applied.
+#
+# Key invariants:
+#   Most_Likely = Adaptive_Ensemble.p50 (EXACT median)
+#   Worst_Case  = Adaptive_Ensemble.p10 (EXACT 10th percentile)
+#   Best_Case   = Adaptive_Ensemble.p90 (EXACT 90th percentile)
+# For actuals rows: Most_Likely = Worst_Case = Best_Case = actual value.
+# ══════════════════════════════════════════════════════════════════════════════
+
 # Wide forecast view (mirrors arr_forecast_v2). One row per
 # (ds, product, sales_market, forecast_type, run_date); model columns pivoted.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {RESULTS_V2_VIEW} AS
-    WITH cutoff AS (
-        SELECT product, DATE_ADD(MIN(ds), (({ROLLING_WEEKS} - 1) * 7)) AS roll_end
+    WITH src AS (
+        -- CRITICAL: filter to latest run_date only, then dedup on natural key
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY ds, product, sales_market, grain_level, model, forecast_type, forecast_view
+                ORDER BY published_at_utc DESC
+            ) AS _rn
         FROM {RESULTS_TABLE}
+        WHERE run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
+    ),
+    base AS (
+        SELECT * EXCEPT (_rn) FROM src WHERE _rn = 1
+    ),
+    cutoff AS (
+        SELECT product, DATE_ADD(MIN(ds), (({ROLLING_WEEKS} - 1) * 7)) AS roll_end
+        FROM base
         WHERE forecast_type IN ('rolling', 'roy')
         GROUP BY product
     ),
@@ -970,7 +1185,7 @@ spark.sql(f"""
         -- Defensive: keep roy rows only beyond the rolling window so rolling/roy
         -- never overlap (prevents KPI double-count even if the table still holds
         -- overlapping rows from an older run).
-        SELECT fr.* FROM {RESULTS_TABLE} fr
+        SELECT fr.* FROM base fr
         LEFT JOIN cutoff c ON fr.product = c.product
         WHERE (fr.forecast_type <> 'roy' OR c.roll_end IS NULL OR fr.ds > c.roll_end)
           AND (fr.forecast_view = 'adaptive' OR fr.forecast_view IS NULL)
@@ -1007,6 +1222,7 @@ spark.sql(f"""
 # per-region rows just repeated the product value and implied precision the
 # pipeline doesn't have. Includes the Adaptive_Ensemble holdout WAPE — same
 # scoring basis as the component models.
+# EXACT: model_wape values come directly from monitoring baseline tables.
 spark.sql(f"""
     CREATE OR REPLACE VIEW {LEADERBOARD_VIEW} AS
     WITH m AS (
@@ -1021,6 +1237,7 @@ spark.sql(f"""
         FROM {RESULTS_TABLE}
         WHERE model_wape IS NOT NULL
           AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+          AND run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
         GROUP BY product
     ),
     l AS (
@@ -1129,25 +1346,88 @@ print(f"\nGranted SELECT on {len(GRANT_TARGETS)} objects to app service principa
 
 # COMMAND ----------
 
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPREHENSIVE VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+# Validates:
+#   1. Schema presence
+#   2. Latest run_date
+#   3. Row counts by forecast_type
+#   4. Sample values for actuals, p10, p50, p90
+#   5. No nulls in key dimensions
+#   6. No duplicates on natural key
+# ══════════════════════════════════════════════════════════════════════════════
+
 r = spark.table(RESULTS_VIEW)
 n = r.count()
 products = sorted([row["product"] for row in r.select("product").distinct().collect()])
 ftypes   = sorted([row["forecast_type"] for row in r.select("forecast_type").distinct().collect()])
 models   = sorted([row["model"] for row in r.select("model").distinct().collect()])
 
+# --- 1. Basic assertions ---
 assert n > 0, "forecast_results_latest is empty."
 assert r.where(F.col("p50").isNotNull()).count() > 0, "No non-null p50."
 assert "Total" in products, "Total rollup missing."
 assert any(ft in ftypes for ft in ("rolling", "roy", "forward_1yr")), "No forecast rows."
-assert "actuals" in ftypes, "No actuals rows — check arr_forecast_v2 source."
+assert "actuals" in ftypes, "No actuals rows — check CBE/arr_forecast_v2 source."
 
-print(f"forecast_results_latest: {n} rows")
+# --- 2. Latest run_date ---
+latest_rd = r.agg(F.max("run_date")).collect()[0][0]
+print(f"Latest run_date: {latest_rd}")
+
+# --- 3. Counts by forecast_type ---
+print("\nRow counts by forecast_type:")
+r.groupBy("forecast_type").count().orderBy("forecast_type").show(truncate=False)
+
+# --- 4. Sample totals (Adaptive_Ensemble, Total product, latest week) ---
+print("Sample values (Adaptive_Ensemble, Total product, rolling):")
+sample = (r
+    .where("model = 'Adaptive_Ensemble' AND product = 'Total' AND forecast_type = 'rolling'")
+    .orderBy("ds")
+    .select("ds", "actual", "p10", "p50", "p90", "most_likely")
+    .limit(3))
+sample.show(truncate=False)
+
+# Verify most_likely == p50 exactly (no approximation)
+ml_mismatch = r.where(
+    (F.col("model") != "ACTUAL") &
+    F.col("p50").isNotNull() &
+    (F.col("most_likely") != F.col("p50"))
+).count()
+assert ml_mismatch == 0, f"FAIL: {ml_mismatch} rows where most_likely != p50 (expected EXACT equality)"
+print(f"most_likely == p50 check: PASS (0 mismatches in {n} rows)")
+
+# --- 5. Null check on key dimensions ---
+KEY_DIMS = ["ds", "product", "sales_market", "model", "forecast_type", "forecast_view"]
+null_counts = {}
+for col_name in KEY_DIMS:
+    nc = r.where(F.col(col_name).isNull()).count()
+    null_counts[col_name] = nc
+nulls_found = {k: v for k, v in null_counts.items() if v > 0}
+if nulls_found:
+    print(f"WARNING: Nulls in key dimensions: {nulls_found}")
+else:
+    print(f"Null check on key dimensions: PASS (0 nulls in {KEY_DIMS})")
+
+# --- 6. Duplicate check on natural key ---
+dedup_key = ["ds", "product", "sales_market", "grain_level", "model", "forecast_type", "forecast_view"]
+total_rows = r.count()
+distinct_keys = r.select(*dedup_key).distinct().count()
+dupes = total_rows - distinct_keys
+assert dupes == 0, f"FAIL: {dupes} duplicate rows on natural key {dedup_key}"
+print(f"Duplicate check: PASS ({total_rows} rows, {distinct_keys} distinct keys, 0 dupes)")
+
+# --- 7. Schema ---
+print(f"\nSchema ({len(r.columns)} columns): {r.columns}")
+
+# --- Summary ---
+print(f"\nforecast_results_latest: {n} rows")
 print(f"  products      : {products}")
 print(f"  forecast_types: {ftypes}")
 print(f"  models        : {models}")
 print(f"  WAPE attached : {r.where(F.col('model_wape').isNotNull()).count()} rows")
 print(f"  insight scopes: {[row['product'] for row in spark.table(INSIGHTS_TABLE).where(F.col('run_date')==F.current_date()).select('product').collect()]}")
-print('\nPublish complete — app reads forecast_results / forecast_insights.')
+print('\nPublish complete — app reads EXACT values from forecast_results / forecast_insights.')
 
 # COMMAND ----------
 
@@ -1515,3 +1795,343 @@ print(f"  {SENSITIVITY_TABLE}: Per-driver elasticity coefficients")
 print(f"  {MODEL_SCENARIO_TABLE}: Model-to-scenario archetype mapping")
 print(f"  {HIST_SCENARIO_TABLE}: Historical what-if anchoring data")
 print("="*70)
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 14 — Unified All-Models Table for Power BI
+# MAGIC %md
+# MAGIC ## Cell 14 — Unified All-Models Table for Power BI
+# MAGIC
+# MAGIC Creates `forecast_all_models` — a single table that combines:
+# MAGIC - **Prophet** results from `forecast_prophet` (native P05/P25/P50/P75/P95 quantiles)
+# MAGIC - **All other models** (MSTL, DHR_ARIMA, ETS, LightGBM, Adaptive_Ensemble) from `forecast_results`
+# MAGIC
+# MAGIC ### Quantile Interpolation (non-Prophet models)
+# MAGIC
+# MAGIC `forecast_results` provides only P10/P50/P90. Under normal-error assumption:
+# MAGIC - σ = (P90 - P10) / (2 × 1.2816)
+# MAGIC - P05 = P50 − 1.6449 × σ
+# MAGIC - P25 = P50 − 0.6745 × σ
+# MAGIC - P75 = P50 + 0.6745 × σ
+# MAGIC - P95 = P50 + 1.6449 × σ
+# MAGIC
+# MAGIC Prophet rows keep their EXACT native quantiles (no interpolation).
+
+# COMMAND ----------
+
+# DBTITLE 1,Build forecast_all_models unified table
+# ══════════════════════════════════════════════════════════════════════════════
+# FORECAST_ALL_MODELS — Unified table for Power BI (all models in one place)
+# ══════════════════════════════════════════════════════════════════════════════
+# Combines:
+#   1. Prophet results from forecast_prophet (native 5-quantile fan)
+#   2. All other models from forecast_results (p10/p50/p90 → interpolated 5-quantile)
+# Actuals & driver features joined model-independently from forecast_prophet.
+# ══════════════════════════════════════════════════════════════════════════════
+
+ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+
+# --- Z-scores for quantile interpolation (normal distribution) ---
+Z_10 = 1.2816
+Z_05 = 1.6449
+Z_25 = 0.6745
+
+# ─── 1. PROPHET ROWS (native quantiles from forecast_prophet) ────────────────
+
+prophet_src = spark.table(f"{CATALOG}.{SCHEMA}.forecast_prophet")
+
+prophet_rows = (prophet_src
+    .select(
+        F.col("ds").cast("date").alias("ds"),
+        F.col("product"),
+        F.when(F.upper(F.col("sales_market")) == "UNKNOWN", F.lit("Unknown"))
+         .otherwise(F.col("sales_market")).alias("sales_market"),
+        F.lit("Prophet").alias("model_name"),
+        F.col("year"),
+        F.col("month"),
+        F.quarter("ds").alias("quarter"),
+        F.col("week_number"),
+        F.weekofyear("ds").alias("iso_week"),
+        F.year(F.col("ds") + F.expr("INTERVAL 3 DAYS")).alias("iso_year"),
+        F.col("summer").cast("int").alias("summer"),
+        F.col("winter").cast("int").alias("winter"),
+        F.col("isweek1").cast("int").alias("isweek1"),
+        F.col("Forecast_P05").alias("forecast_p05"),
+        F.col("Forecast_P25").alias("forecast_p25"),
+        F.col("Forecast_Median").alias("forecast_p50"),
+        F.col("Forecast_P75").alias("forecast_p75"),
+        F.col("Forecast_P95").alias("forecast_p95"),
+        F.when(F.col("Actuals") > 0, F.col("Actuals")).otherwise(F.lit(None).cast("double")).alias("actuals"),
+        F.col("magna_carta_actuals"),
+        F.col("miradore_plan"),
+        F.col("avg_deal_size"),
+        F.col("avg_sales_cycle"),
+        F.col("all_created_arr"),
+        F.col("total_partner_pipeline"),
+        F.col("avg_dials"),
+        F.col("avg_touches"),
+        F.col("avg_push_counter"),
+        F.col("number_of_opps"),
+        F.col("headcount"),
+        F.col("avg_opportunity_age"),
+        F.lit("prophet_native").alias("interval_method"),
+        F.lit(None).cast("double").alias("model_wape"),
+        F.lit(True).alias("is_current"),
+        F.when(F.col("Actuals").isNotNull() & (F.col("Actuals") > 0), F.lit("actuals"))
+         .otherwise(F.lit("forecast")).alias("forecast_type"),
+        F.col("pe_account_flag"),
+        F.current_timestamp().alias("published_at_utc"),
+    )
+)
+
+# ─── 1b. ADD 'Total' MARKET ROLLUP ──────────────────────────────────────────
+# Removed pe_account_flag and published_at_utc from groupBy — they vary between
+# markets for the same ds, causing split Total rows (16 instead of 13 per quarter).
+prophet_total = (prophet_rows
+    .groupBy("ds", "product", "model_name", "year", "month", "quarter",
+             "week_number", "iso_week", "iso_year", "summer", "winter", "isweek1",
+             "interval_method", "model_wape", "is_current", "forecast_type")
+    .agg(
+        F.sum("forecast_p05").alias("forecast_p05"),
+        F.sum("forecast_p25").alias("forecast_p25"),
+        F.sum("forecast_p50").alias("forecast_p50"),
+        F.sum("forecast_p75").alias("forecast_p75"),
+        F.sum("forecast_p95").alias("forecast_p95"),
+        F.sum("actuals").alias("actuals"),
+        F.sum("magna_carta_actuals").alias("magna_carta_actuals"),
+        F.sum("miradore_plan").alias("miradore_plan"),
+        F.avg("avg_deal_size").alias("avg_deal_size"),
+        F.avg("avg_sales_cycle").alias("avg_sales_cycle"),
+        F.sum("all_created_arr").alias("all_created_arr"),
+        F.sum("total_partner_pipeline").alias("total_partner_pipeline"),
+        F.avg("avg_dials").alias("avg_dials"),
+        F.avg("avg_touches").alias("avg_touches"),
+        F.avg("avg_push_counter").alias("avg_push_counter"),
+        F.sum("number_of_opps").alias("number_of_opps"),
+        F.sum("headcount").alias("headcount"),
+        F.avg("avg_opportunity_age").alias("avg_opportunity_age"),
+        F.first("pe_account_flag").alias("pe_account_flag"),
+        F.first("published_at_utc").alias("published_at_utc"),
+    )
+    .withColumn("sales_market", F.lit("Total"))
+)
+
+prophet_rows = prophet_rows.unionByName(prophet_total, allowMissingColumns=True)
+print(f"Prophet rows from forecast_prophet (with Total rollup): {prophet_rows.count()}")
+
+# ─── 2. OTHER MODELS (from forecast_results, interpolated quantiles) ─────────
+
+fr = spark.table(RESULTS_VIEW)
+other_models = fr.where(
+    "model != 'ACTUAL' AND model != 'Prophet_trend' AND forecast_view = 'adaptive'"
+)
+
+other_rows = (other_models
+    .withColumn("_sigma", (F.col("p90") - F.col("p10")) / (2 * Z_10))
+    .select(
+        F.col("ds"),
+        F.col("product"),
+        F.col("sales_market"),
+        F.col("model").alias("model_name"),
+        F.year("ds").alias("year"),
+        F.month("ds").alias("month"),
+        F.quarter("ds").alias("quarter"),
+        F.weekofyear("ds").alias("week_number"),
+        F.weekofyear("ds").alias("iso_week"),
+        F.year(F.col("ds") + F.expr("INTERVAL 3 DAYS")).alias("iso_year"),
+        F.when(F.month("ds").isin(6, 7, 8), 1).otherwise(0).alias("summer"),
+        F.when(F.month("ds").isin(12, 1, 2), 1).otherwise(0).alias("winter"),
+        F.when(F.weekofyear("ds") == 1, 1).otherwise(0).alias("isweek1"),
+        (F.col("p50") - Z_05 * F.col("_sigma")).alias("forecast_p05"),
+        (F.col("p50") - Z_25 * F.col("_sigma")).alias("forecast_p25"),
+        F.col("p50").alias("forecast_p50"),
+        (F.col("p50") + Z_25 * F.col("_sigma")).alias("forecast_p75"),
+        (F.col("p50") + Z_05 * F.col("_sigma")).alias("forecast_p95"),
+        F.lit(None).cast("double").alias("actuals"),
+        F.lit(None).cast("double").alias("magna_carta_actuals"),
+        F.lit(None).cast("double").alias("miradore_plan"),
+        F.lit(None).cast("double").alias("avg_deal_size"),
+        F.lit(None).cast("double").alias("avg_sales_cycle"),
+        F.lit(None).cast("double").alias("all_created_arr"),
+        F.lit(None).cast("double").alias("total_partner_pipeline"),
+        F.lit(None).cast("double").alias("avg_dials"),
+        F.lit(None).cast("double").alias("avg_touches"),
+        F.lit(None).cast("double").alias("avg_push_counter"),
+        F.lit(None).cast("bigint").alias("number_of_opps"),
+        F.lit(None).cast("bigint").alias("headcount"),
+        F.lit(None).cast("double").alias("avg_opportunity_age"),
+        F.when(F.col("model").contains("LGB"), F.lit("quantile_regression"))
+         .when(F.col("model") == "Adaptive_Ensemble", F.lit("monte_carlo"))
+         .otherwise(F.lit("analytic_ci")).alias("interval_method"),
+        F.col("model_wape"),
+        F.lit(True).alias("is_current"),
+        F.col("forecast_type"),
+        F.lit(None).cast("boolean").alias("pe_account_flag"),
+        F.current_timestamp().alias("published_at_utc"),
+    )
+)
+
+# Join actuals & driver features from forecast_prophet
+driver_features = (prophet_src
+    .select(
+        F.col("ds").cast("date").alias("ds"),
+        "product", "sales_market",
+        F.col("Actuals").alias("_actuals"),
+        F.col("magna_carta_actuals").alias("_magna_carta_actuals"),
+        F.col("miradore_plan").alias("_miradore_plan"),
+        F.col("avg_deal_size").alias("_avg_deal_size"),
+        F.col("avg_sales_cycle").alias("_avg_sales_cycle"),
+        F.col("all_created_arr").alias("_all_created_arr"),
+        F.col("total_partner_pipeline").alias("_total_partner_pipeline"),
+        F.col("avg_dials").alias("_avg_dials"),
+        F.col("avg_touches").alias("_avg_touches"),
+        F.col("avg_push_counter").alias("_avg_push_counter"),
+        F.col("number_of_opps").alias("_number_of_opps"),
+        F.col("headcount").alias("_headcount"),
+        F.col("avg_opportunity_age").alias("_avg_opportunity_age"),
+    )
+)
+
+other_rows_enriched = (other_rows
+    .join(driver_features, on=["ds", "product", "sales_market"], how="left")
+    .withColumn("actuals", F.coalesce(F.col("_actuals"), F.col("actuals")))
+    .withColumn("magna_carta_actuals", F.coalesce(F.col("_magna_carta_actuals"), F.col("magna_carta_actuals")))
+    .withColumn("miradore_plan", F.coalesce(F.col("_miradore_plan"), F.col("miradore_plan")))
+    .withColumn("avg_deal_size", F.coalesce(F.col("_avg_deal_size"), F.col("avg_deal_size")))
+    .withColumn("avg_sales_cycle", F.coalesce(F.col("_avg_sales_cycle"), F.col("avg_sales_cycle")))
+    .withColumn("all_created_arr", F.coalesce(F.col("_all_created_arr"), F.col("all_created_arr")))
+    .withColumn("total_partner_pipeline", F.coalesce(F.col("_total_partner_pipeline"), F.col("total_partner_pipeline")))
+    .withColumn("avg_dials", F.coalesce(F.col("_avg_dials"), F.col("avg_dials")))
+    .withColumn("avg_touches", F.coalesce(F.col("_avg_touches"), F.col("avg_touches")))
+    .withColumn("avg_push_counter", F.coalesce(F.col("_avg_push_counter"), F.col("avg_push_counter")))
+    .withColumn("number_of_opps", F.coalesce(F.col("_number_of_opps"), F.col("number_of_opps")))
+    .withColumn("headcount", F.coalesce(F.col("_headcount"), F.col("headcount")))
+    .withColumn("avg_opportunity_age", F.coalesce(F.col("_avg_opportunity_age"), F.col("avg_opportunity_age")))
+)
+cols_to_drop = [c for c in other_rows_enriched.columns if c.startswith("_")]
+other_rows_enriched = other_rows_enriched.drop(*cols_to_drop)
+
+print(f"Other model rows (enriched with actuals/features): {other_rows_enriched.count()}")
+
+# ─── 3. UNION Prophet + Other Models ─────────────────────────────────────────
+
+final_cols = prophet_rows.columns
+for c in final_cols:
+    if c not in other_rows_enriched.columns:
+        other_rows_enriched = other_rows_enriched.withColumn(c, F.lit(None))
+
+other_rows_enriched = other_rows_enriched.select(*final_cols)
+unified = prophet_rows.unionByName(other_rows_enriched, allowMissingColumns=True)
+
+print(f"\nUnified forecast_all_models: {unified.count()} rows")
+print(f"  Models: {sorted([r[0] for r in unified.select('model_name').distinct().collect()])}")
+print(f"  Products: {sorted([r[0] for r in unified.select('product').distinct().collect()])}")
+print(f"  Date range: {unified.agg(F.min('ds')).collect()[0][0]} to {unified.agg(F.max('ds')).collect()[0][0]}")
+
+# ─── 4. WRITE TABLE ──────────────────────────────────────────────────────────
+
+(unified.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(ALL_MODELS_TABLE)
+)
+print(f"\n✓ Written to {ALL_MODELS_TABLE}")
+
+# ─── 5. QUANTILE MONOTONICITY VALIDATION ─────────────────────────────────────
+
+validation = spark.table(ALL_MODELS_TABLE)
+violations = validation.where(
+    (F.col("forecast_p05") > F.col("forecast_p25")) |
+    (F.col("forecast_p25") > F.col("forecast_p50")) |
+    (F.col("forecast_p50") > F.col("forecast_p75")) |
+    (F.col("forecast_p75") > F.col("forecast_p95"))
+).count()
+
+if violations > 0:
+    print(f"  ⚠️  WARNING: {violations} rows violate quantile monotonicity")
+else:
+    print(f"  ✓ Quantile monotonicity: PASS")
+
+# COMMAND ----------
+
+# DBTITLE 1,Grants and companion views for Power BI
+# ══════════════════════════════════════════════════════════════════════════════
+# GRANTS + COMPANION VIEWS
+# ══════════════════════════════════════════════════════════════════════════════
+
+CATALOG = "datagroup_mdl"
+SCHEMA = "mdl_sales_analytics"
+ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
+
+spark.sql(f"GRANT SELECT ON TABLE {ALL_MODELS_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
+print(f"✓ Granted SELECT on {ALL_MODELS_TABLE} to {APP_SERVICE_PRINCIPAL}")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_all_models_current AS
+SELECT 
+    ds, product, sales_market, model_name,
+    year, month, quarter, week_number, iso_week, iso_year,
+    summer, winter, isweek1,
+    forecast_p05, forecast_p25, forecast_p50,
+    forecast_p50 AS Forecast_Median,
+    forecast_p75, forecast_p95,
+    actuals AS Actuals,
+    magna_carta_actuals, miradore_plan,
+    avg_deal_size, avg_sales_cycle, all_created_arr,
+    total_partner_pipeline, avg_dials, avg_touches,
+    avg_push_counter, number_of_opps, headcount, avg_opportunity_age,
+    interval_method, model_wape, forecast_type, pe_account_flag
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_all_models_current")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_model_comparison AS
+SELECT
+    ds, product, sales_market, model_name,
+    forecast_p50,
+    (forecast_p95 - forecast_p05) AS band_width_90,
+    (forecast_p75 - forecast_p25) AS band_width_50,
+    actuals,
+    CASE WHEN actuals IS NOT NULL 
+         THEN ABS(actuals - forecast_p50) / NULLIF(actuals, 0) * 100 
+    END AS abs_pct_error,
+    model_wape, interval_method
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE AND forecast_type != 'actuals'
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_model_comparison")
+
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_accuracy AS
+SELECT
+    ds, product, sales_market, model_name, actuals, forecast_p50,
+    CASE WHEN actuals IS NOT NULL AND actuals != 0
+         THEN ABS(actuals - forecast_p50) / ABS(actuals) * 100
+    END AS ape,
+    CASE WHEN actuals IS NOT NULL
+         THEN (forecast_p50 - actuals)
+    END AS signed_error,
+    CASE WHEN actuals IS NOT NULL
+         THEN CASE WHEN actuals BETWEEN forecast_p25 AND forecast_p75 THEN 1 ELSE 0 END
+    END AS in_p25_p75,
+    CASE WHEN actuals IS NOT NULL
+         THEN CASE WHEN actuals BETWEEN forecast_p05 AND forecast_p95 THEN 1 ELSE 0 END
+    END AS in_p05_p95,
+    CASE WHEN actuals IS NOT NULL
+         THEN 0.5 * ABS(actuals - forecast_p50)
+    END AS pinball_p50,
+    interval_method
+FROM {ALL_MODELS_TABLE}
+WHERE is_current = TRUE AND actuals IS NOT NULL
+""")
+print(f"✓ Created view {CATALOG}.{SCHEMA}.v_forecast_accuracy")
+
+for vw in ['v_forecast_all_models_current', 'v_forecast_model_comparison', 'v_forecast_accuracy']:
+    spark.sql(f"GRANT SELECT ON VIEW {CATALOG}.{SCHEMA}.{vw} TO `{APP_SERVICE_PRINCIPAL}`")
+    print(f"  ✓ Granted SELECT on {vw}")
+
+print(f"\n✓ All views created and grants applied.")
