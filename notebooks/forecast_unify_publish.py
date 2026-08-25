@@ -696,10 +696,12 @@ def _stats(df, region="Total", period="quarter"):
     'year' (full current year). Guarded so a bad slice can't fail the publish."""
     try:
         if region == "Total":
-            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+            tot = df[(df["grain_level"].astype(str).str.lower() == "total")
+                     & (df["forecast_view"] == "adaptive")].copy()
         else:
             tot = df[(df["grain_level"].astype(str).str.lower() == "market")
-                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())
+                     & (df["forecast_view"] == "adaptive")].copy()
         if period == "year":
             in_q = tot["ds"].dt.year.eq(_Q_YEAR)
             period_label = f"FY {_Q_YEAR}"
@@ -929,10 +931,12 @@ def _extra_context(df, region="Total"):
     and multi-model graph explanations. Same region scoping as _stats."""
     try:
         if region == "Total":
-            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+            tot = df[(df["grain_level"].astype(str).str.lower() == "total")
+                     & (df["forecast_view"] == "adaptive")].copy()
         else:
             tot = df[(df["grain_level"].astype(str).str.lower() == "market")
-                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())
+                     & (df["forecast_view"] == "adaptive")].copy()
         yr = tot[tot["ds"].dt.year.eq(_Q_YEAR)]
         act_all = yr[yr["model"] == "ACTUAL"]
         last_act = act_all["ds"].max() if not act_all.empty else pd.Timestamp("1900-01-01")
