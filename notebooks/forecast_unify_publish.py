@@ -397,15 +397,17 @@ forecasts = forecasts_with_views
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cell 5 — Pull actuals (CBE current + arr_forecast_v2 historical)
+# MAGIC ## Cell 5 — Pull actuals (CBE 2026+ and SFDC 2024-2025 Growth ARR)
 # MAGIC
 # MAGIC Current actuals (2026+) from CBE tables (TRUE Growth ARR from SFDC).
-# MAGIC Historical actuals (2022-2025) from `arr_forecast_v2` for UCC + Total only
-# MAGIC (ITSG values there are inflated — not Growth ARR). This gives the Multi-Year
-# MAGIC seasonality overlay full year-over-year coverage.
+# MAGIC Historical actuals (2024-2025) from `cds_sfdc_opp_products_latest` using the
+# MAGIC SAME filters as the V5 forecast pipeline (Growth purchase_type, exclude
+# MAGIC Care/Sales Other). Uses `total_price2_converted` (USD line-item value) to
+# MAGIC ensure valid YoY comparisons (arr_forecast_v2 included non-Growth revenue).
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 5 — Pull actuals (CBE 2026+ and SFDC 2024-2025 Growth ARR)
 def build_actuals_from_cbe(cbe_table, product):
     """Pull actual rows from a CBE table (source='actual').
     CBE tables have one row per (model, ds, grain_level, sales_market) for closed weeks.
@@ -447,54 +449,58 @@ def build_actuals_from_cbe(cbe_table, product):
 ucc_actuals  = build_actuals_from_cbe(UCC_CBE_SRC, "UCC")
 itsg_actuals = build_actuals_from_cbe(ITSG_CBE_SRC, "ITSG")
 
-# ── Historical actuals from arr_forecast_v2 (pre-CBE window) ─────────────────
-# The CBE tables start ~2025-12-29. For the Multi-Year seasonality overlay,
-# the app needs 2022-2025 actuals. UCC actuals in arr_forecast_v2 are correct
-# (Growth ARR). ITSG actuals there are inflated (all revenue, not Growth) so
-# we only pull UCC + Total from arr_forecast_v2 for the historical window.
+# ── Historical actuals from SFDC (Growth-only, pre-CBE window) ───────────────
+# The CBE tables start ~2025-12-29. For the Multi-Year seasonality overlay and
+# correct YoY comparisons, we need 2024-2025 Growth ARR from the SAME source
+# as the V5 forecast (SFDC opp products). This replaces arr_forecast_v2 which
+# included non-Growth revenue (Miradore, Self-serve) and inflated the baseline.
 
-def build_historical_actuals_from_v2(cbe_earliest_ds):
-    """Pull UCC + Total historical actuals from arr_forecast_v2 for dates
-    BEFORE the CBE window starts. These give the Multi-Year tab full YoY data."""
-    ARR_V2 = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"
+def build_historical_actuals_from_sfdc(cbe_earliest_ds):
+    """Pull 2024-2025 Growth ARR actuals from SFDC at weekly grain.
+    Uses total_price2_converted (USD line-item value) with the same filters
+    as the V5 forecast pipeline: Growth purchase_type, exclude Care/Sales Other.
+    Returns total grain rows (market rollup) for YoY overlay."""
+    SFDC_TABLE = "datagroup.datalake_transform.cds_sfdc_opp_products_latest"
     try:
-        v2 = spark.table(ARR_V2)
+        sfdc = spark.table(SFDC_TABLE)
     except Exception as exc:
-        print(f"  WARN arr_forecast_v2 unavailable: {exc}")
+        print(f"  WARN {SFDC_TABLE} unavailable: {exc}")
         return None
 
-    mkt = (F.when(F.upper(F.trim(F.col("sales_market"))).isin("ALL", "TOTAL"), F.lit("Total"))
-            .when(F.upper(F.trim(F.col("sales_market"))) == "UNKNOWN", F.lit("Unknown"))
-            .otherwise(F.trim(F.col("sales_market"))))
-
-    # Only UCC rows (ITSG values are inflated in this table — not Growth ARR).
-    # DO NOT include 'Total' — it includes ALL product revenue (not Growth-only).
-    # The Total rollup in Cell 6 will compute correct Total = UCC + ITSG.
-    out = (v2
-        .where(f"forecast_type = 'actuals' AND ds < '{cbe_earliest_ds}'")
-        .where("product = 'UCC'")
-        .select(
-            F.current_date().alias("run_date"),
-            F.to_date("ds").alias("ds"),
-            F.col("product"),
-            mkt.alias("sales_market"),
-            F.lit("total").alias("grain_level"),
-            F.lit("ACTUAL").alias("model"),
-            F.lit("actuals").alias("forecast_type"),
-            F.lit("adaptive").alias("forecast_view"),
-            F.col("Actuals").cast("double").alias("actual"),
-            F.lit(None).cast("double").alias("p10"),
-            F.lit(None).cast("double").alias("p50"),
-            F.lit(None).cast("double").alias("p90"),
-            F.col("Actuals").cast("double").alias("most_likely"),
-            F.lit(0).cast("bigint").alias("recommended_for_exec"),
-            F.lit(None).cast("timestamp").alias("source_run_ts"),
-            F.current_timestamp().alias("published_at_utc"),
-        ).select(*BASE)
-        .where("actual IS NOT NULL")  # skip nulls
-    )
+    # Weekly Growth ARR per product_group (total grain for YoY overlay)
+    out = spark.sql(f"""
+        SELECT
+            CURRENT_DATE() as run_date,
+            CAST(DATE_TRUNC('week', close_date) AS DATE) as ds,
+            CASE product_group WHEN 'UCC' THEN 'UCC' WHEN 'ITSG' THEN 'ITSG' END as product,
+            'Total' as sales_market,
+            'total' as grain_level,
+            'ACTUAL' as model,
+            'actuals' as forecast_type,
+            'adaptive' as forecast_view,
+            SUM(total_price2_converted) as actual,
+            CAST(NULL AS DOUBLE) as p10,
+            CAST(NULL AS DOUBLE) as p50,
+            CAST(NULL AS DOUBLE) as p90,
+            SUM(total_price2_converted) as most_likely,
+            CAST(0 AS BIGINT) as recommended_for_exec,
+            CAST(NULL AS TIMESTAMP) as source_run_ts,
+            CURRENT_TIMESTAMP() as published_at_utc
+        FROM {SFDC_TABLE}
+        WHERE is_won = TRUE
+          AND is_closed = TRUE
+          AND purchase_type_rollup = 'Growth'
+          AND sales_channel NOT IN ('Care', 'Sales Other')
+          AND product_group IN ('UCC', 'ITSG')
+          AND close_date >= '2024-01-01'
+          AND close_date < '{cbe_earliest_ds}'
+        GROUP BY DATE_TRUNC('week', close_date), product_group
+        HAVING SUM(total_price2_converted) IS NOT NULL
+    """).select(*BASE)
     n = out.count()
-    print(f"  Historical actuals from arr_forecast_v2 (pre-CBE): {n} rows")
+    yr_totals = out.groupBy("product").agg(F.round(F.sum("actual") / 1e6, 1).alias("M"))
+    print(f"  Historical actuals from SFDC Growth ARR (pre-CBE): {n} rows")
+    yr_totals.show(truncate=False)
     return out
 
 # Determine the earliest date in CBE actuals to avoid overlap
@@ -504,7 +510,7 @@ if ucc_actuals is not None:
     if _cbe_min:
         cbe_min_ds = str(_cbe_min)
 
-hist_actuals = build_historical_actuals_from_v2(cbe_min_ds)
+hist_actuals = build_historical_actuals_from_sfdc(cbe_min_ds)
 
 # ── Combine all actuals ──────────────────────────────────────────────────────
 actual_parts = [a for a in (ucc_actuals, itsg_actuals, hist_actuals) if a is not None]
