@@ -1467,7 +1467,7 @@ print('\nPublish complete — app reads EXACT values from forecast_results / for
 # SCENARIO ANALYSIS ENGINE — 4 tables for exec scenario analysis
 # ══════════════════════════════════════════════════════════════════════════════
 import numpy as np
-from pyspark.sql import Window
+from pyspark.sql import functions as F, Window
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, DateType
 
 SCENARIO_GRID_TABLE = f"{CATALOG}.{SCHEMA}.forecast_scenario_grid"
@@ -1532,123 +1532,126 @@ scenario_grid.write.mode("overwrite").option("overwriteSchema", "true").saveAsTa
 print(f"1. Wrote {scenario_grid.count()} rows to {SCENARIO_GRID_TABLE}")
 scenario_grid.show(truncate=False)
 
-# ─── 2. SENSITIVITY COEFFICIENTS ────────────────────────────────────────────
-# Compute elasticity: how much does quarterly ARR change when a driver changes?
-# Based on historical quarterly data from kpi_pacing_sfdc.
+# ─── 2. SENSITIVITY COEFFICIENTS (Weekly grain, SFDC source) ────────────────
+# Compute elasticity from WEEKLY pipeline data (trailing 52-week rolling window).
+# Uses the same SFDC source as the V5 forecast for consistency.
+# ~254-270 observations per product/market (vs old 15 quarterly obs).
 
 def build_sensitivity_coefficients():
-    """Compute per-driver elasticity from historical pipeline → ARR relationships."""
-    qtr_stats = spark.sql("""
-        SELECT 
+    """Compute per-driver elasticity from weekly SFDC pipeline -> ARR relationships.
+    Uses scipy linregress for p-values; marks significance at p<0.10."""
+    from scipy import stats as sp_stats
+
+    SFDC = "datagroup.datalake_transform.cds_sfdc_opp_products_latest"
+    weekly_stats = spark.sql(f"""
+        SELECT
             product_group as product,
-            CONCAT('Q', QUARTER(dte)) as fiscal_quarter,
-            YEAR(dte) as fiscal_year,
             sales_market,
-            SUM(won_amount) as won_arr,
-            SUM(opened_amount) as opened_arr,
-            SUM(won_opps) as won_deals,
-            SUM(opened_opps) as opened_deals,
-            ROUND(SUM(won_amount) / NULLIF(SUM(won_opps), 0), 2) as avg_deal_size,
-            ROUND(SUM(won_opps) * 100.0 / NULLIF(SUM(opened_opps), 0), 2) as win_rate_pct,
-            ROUND(SUM(opened_amount) / NULLIF(SUM(won_amount), 0), 2) as coverage_x
-        FROM datagroup_mdl.mdl_sales_analytics.kpi_pacing_sfdc
-        WHERE product_grain = 'genus'
-          AND product_group IN ('UCC', 'ITSG')
-          AND purchase_type IN ('New', 'Add-On')
+            DATE_TRUNC('week', close_date) as ds,
+            SUM(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                     AND purchase_type_rollup = 'Growth'
+                     AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN total_price2_converted ELSE 0 END) as won_arr,
+            COUNT(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                       AND purchase_type_rollup = 'Growth'
+                       AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN 1 END) as won_deals,
+            COUNT(CASE WHEN stage_name NOT IN ('Closed Won', 'Closed Lost')
+                THEN 1 END) as open_opps,
+            SUM(CASE WHEN stage_name NOT IN ('Closed Won', 'Closed Lost')
+                THEN total_price2_converted ELSE 0 END) as open_pipeline,
+            AVG(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                     AND purchase_type_rollup = 'Growth'
+                     AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN total_price2_converted END) as avg_deal_size
+        FROM {SFDC}
+        WHERE product_group IN ('UCC', 'ITSG')
           AND sales_market IN ('NA', 'EMEA', 'APAC', 'LATAM')
-          AND YEAR(dte) BETWEEN 2023 AND 2026
-        GROUP BY product_group, QUARTER(dte), YEAR(dte), sales_market
-        HAVING SUM(won_amount) > 0 AND SUM(opened_opps) > 10
-    """)
-    
-    # Convert to pandas for regression
-    pdf = qtr_stats.toPandas()
-    
+          AND close_date >= '2021-01-01'
+          AND close_date <= CURRENT_DATE()
+        GROUP BY product_group, sales_market, DATE_TRUNC('week', close_date)
+        HAVING SUM(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                        AND purchase_type_rollup = 'Growth'
+                        AND sales_channel NOT IN ('Care', 'Sales Other')
+                   THEN total_price2_converted ELSE 0 END) > 0
+    """).toPandas()
+
+    # Compute derived metrics
+    weekly_stats['win_rate_pct'] = (
+        weekly_stats['won_deals'] * 100.0 /
+        weekly_stats['open_opps'].replace(0, np.nan)
+    )
+    weekly_stats['coverage_x'] = (
+        weekly_stats['open_pipeline'] /
+        weekly_stats['won_arr'].replace(0, np.nan)
+    )
+    weekly_stats['pipeline_volume'] = weekly_stats['open_pipeline']
+
     results = []
-    for product in pdf['product'].unique():
-        for market in pdf['sales_market'].unique():
-            subset = pdf[(pdf['product'] == product) & (pdf['sales_market'] == market)]
-            if len(subset) < 4:
+    drivers = [
+        ('win_rate',        'win_rate_pct',   'percentage_point', '1pp higher win rate'),
+        ('deal_size',       'avg_deal_size',  'percent_change',   '1% larger deals'),
+        ('coverage',        'coverage_x',     '0.1x_change',      '+0.1x coverage'),
+        ('pipeline_volume', 'pipeline_volume', 'percent_change',  '1% more pipeline'),
+    ]
+
+    for product in weekly_stats['product'].unique():
+        for market in weekly_stats['sales_market'].unique():
+            subset = weekly_stats[
+                (weekly_stats['product'] == product) &
+                (weekly_stats['sales_market'] == market)
+            ].dropna(subset=['won_arr']).sort_values('ds')
+
+            # Trailing 52-week rolling window (most recent data)
+            subset = subset.tail(52 * 5)  # up to 5 years
+            if len(subset) < 30:
                 continue
-            
+
             won_arr = subset['won_arr'].values.astype(float)
             mean_arr = won_arr.mean()
             if mean_arr == 0:
                 continue
-            
-            # Win rate elasticity: % change in ARR per 1pp change in win rate
-            wr = subset['win_rate_pct'].values.astype(float)
-            if wr.std() > 0 and len(wr) >= 4:
-                corr = np.corrcoef(wr, won_arr)[0, 1]
-                slope = corr * won_arr.std() / wr.std()  # linear regression slope
-                elasticity_wr = (slope / mean_arr) * 100  # % ARR change per 1pp win rate
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'win_rate', 'driver_unit': 'percentage_point',
-                    'baseline_value': round(float(wr.mean()), 1),
-                    'elasticity_pct': round(float(elasticity_wr), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1pp higher win rate -> +{elasticity_wr:.1f}% ARR'
-                })
-            
-            # Deal size elasticity: % change in ARR per 1% change in deal size
-            ds_val = subset['avg_deal_size'].values.astype(float)
-            if ds_val.std() > 0 and len(ds_val) >= 4:
-                corr = np.corrcoef(ds_val, won_arr)[0, 1]
-                # Normalize: 1% deal size change
-                slope = corr * won_arr.std() / ds_val.std()
-                elasticity_ds = (slope * (ds_val.mean() * 0.01)) / mean_arr * 100
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'deal_size', 'driver_unit': 'percent_change',
-                    'baseline_value': round(float(ds_val.mean()), 0),
-                    'elasticity_pct': round(float(elasticity_ds), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1% larger deals -> +{elasticity_ds:.2f}% ARR'
-                })
-            
-            # Coverage elasticity: % change in ARR per 0.1x coverage change
-            cov = subset['coverage_x'].values.astype(float)
-            if cov.std() > 0 and len(cov) >= 4:
-                corr = np.corrcoef(cov, won_arr)[0, 1]
-                slope = corr * won_arr.std() / cov.std()
-                elasticity_cov = (slope * 0.1) / mean_arr * 100  # per 0.1x coverage
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'coverage', 'driver_unit': '0.1x_change',
-                    'baseline_value': round(float(cov.mean()), 2),
-                    'elasticity_pct': round(float(elasticity_cov), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'+0.1x coverage -> {elasticity_cov:+.2f}% ARR'
-                })
-            
-            # Volume (opened deals) elasticity: % ARR per 1% more opened deals
-            od = subset['opened_deals'].values.astype(float)
-            if od.std() > 0 and len(od) >= 4:
-                corr = np.corrcoef(od, won_arr)[0, 1]
-                slope = corr * won_arr.std() / od.std()
-                elasticity_od = (slope * (od.mean() * 0.01)) / mean_arr * 100
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'pipeline_volume', 'driver_unit': 'percent_change',
-                    'baseline_value': round(float(od.mean()), 0),
-                    'elasticity_pct': round(float(elasticity_od), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1% more opened deals -> +{elasticity_od:.2f}% ARR'
-                })
-    
-    sens_df = spark.createDataFrame(results)
-    sens_df = sens_df.withColumn("run_date", F.current_date())
-    return sens_df
 
-sensitivity = build_sensitivity_coefficients()
-sensitivity.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SENSITIVITY_TABLE)
-print(f"\n2. Wrote {sensitivity.count()} rows to {SENSITIVITY_TABLE}")
-sensitivity.where("sales_market = 'NA'").orderBy("product", "driver").show(truncate=False)
+            for driver_name, col_name, unit, desc_prefix in drivers:
+                if col_name not in subset.columns:
+                    continue
+                x = subset[col_name].values.astype(float)
+                valid = ~(np.isnan(x) | np.isinf(x) | np.isnan(won_arr))
+                x_v, y_v = x[valid], won_arr[valid]
+                if len(x_v) < 30 or np.std(x_v) == 0:
+                    continue
+
+                slope, intercept, r_value, p_value, std_err = sp_stats.linregress(x_v, y_v)
+                corr = r_value
+
+                # Elasticity: % change in ARR per unit driver change
+                if unit == 'percent_change':
+                    elasticity = (slope * (np.mean(x_v) * 0.01)) / mean_arr * 100
+                elif unit == '0.1x_change':
+                    elasticity = (slope * 0.1) / mean_arr * 100
+                else:  # percentage_point
+                    elasticity = (slope / mean_arr) * 100
+
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': driver_name, 'driver_unit': unit,
+                    'baseline_value': round(float(np.mean(x_v)), 2),
+                    'elasticity_pct': round(float(elasticity), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(x_v)),
+                    'description': f'{desc_prefix} -> {elasticity:+.2f}% ARR (p={p_value:.4f})'
+                })
+
+    import pandas as pd
+    sens_pdf = pd.DataFrame(results)
+    sens_pdf['run_date'] = pd.Timestamp.now().date()
+    return spark.createDataFrame(sens_pdf)
+
+sens_df = build_sensitivity_coefficients()
+sens_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SENSITIVITY_TABLE)
+print(f"2. Wrote {sens_df.count()} rows to {SENSITIVITY_TABLE}")
+sens_df.select("product", "sales_market", "driver", "elasticity_pct", "correlation", "n_observations").show(30, truncate=False)
+
 
 # ─── 3. MODEL-AS-SCENARIO MAPPING ───────────────────────────────────────────
 # Map individual models to named scenario archetypes based on their behavior.
