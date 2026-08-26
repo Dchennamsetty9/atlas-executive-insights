@@ -856,6 +856,287 @@ def _render(s, label, product_stats=None):
         "source": "unified",
     }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ENRICHMENT LAYER — 6 new context fields for the AI Insights tab
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Pre-load enrichment source tables (avoids repeated reads per product)
+try:
+    _sens_pdf = spark.sql(f"SELECT * FROM {CATALOG}.{SCHEMA}.forecast_sensitivity").toPandas()
+except Exception:
+    _sens_pdf = pd.DataFrame()
+try:
+    _vtg_pdf = spark.sql(f"SELECT * FROM {CATALOG}.{SCHEMA}.ucc_forecast_vintages").toPandas()
+    _vtg_pdf["ds"] = pd.to_datetime(_vtg_pdf["ds"])
+    _rd_col = "run_date" if "run_date" in _vtg_pdf.columns else "run_timestamp_utc"
+    _vtg_pdf["_run_date"] = pd.to_datetime(_vtg_pdf[_rd_col]).dt.date
+except Exception:
+    _vtg_pdf = pd.DataFrame()
+
+def _enrich_boq_pace(product_key):
+    """1. BOQ Pace: use pace_vs_boq_pct from CBE table (already computed upstream)."""
+    try:
+        cbe_tbl = UCC_CBE_SRC if product_key == "UCC" else ITSG_CBE_SRC
+        cbe = spark.table(cbe_tbl).toPandas()
+        cbe["ds"] = pd.to_datetime(cbe["ds"])
+        # Get realized actuals for current quarter at total grain
+        q_mask = cbe["ds"].dt.year.eq(_Q_YEAR) & cbe["ds"].dt.month.isin(_Q_MONTHS)
+        tot_mask = cbe["grain_level"].str.lower() == "total"
+        q_cbe = cbe[q_mask & tot_mask & (cbe["model"] == "Adaptive_Ensemble")]
+        realized = q_cbe[q_cbe["source"] == "actual"]
+        if realized.empty:
+            return None
+        realized_sum = float(realized["forecast"].fillna(0).sum())
+        # Use the pre-computed pace_vs_boq_pct from the CBE table
+        # (latest actual week has cumulative QTD pace)
+        latest_actual = realized.sort_values("ds").iloc[-1]
+        pace_pct = float(latest_actual["pace_vs_boq_pct"]) if pd.notna(latest_actual.get("pace_vs_boq_pct")) else None
+        boq_sum = float(realized["boq_weekly"].fillna(0).sum()) if "boq_weekly" in realized.columns else None
+        n_weeks = len(realized)
+        if pace_pct is None and boq_sum and boq_sum > 0:
+            pace_pct = (realized_sum - boq_sum) / boq_sum * 100
+        if pace_pct is None:
+            return None
+        return {
+            "realized": round(realized_sum, 0),
+            "boq_plan_pace": round(boq_sum, 0) if boq_sum else None,
+            "pace_vs_boq_pct": round(pace_pct, 1),
+            "weeks_closed": n_weeks,
+            "text": f"{'Ahead' if pace_pct >= 0 else 'Behind'} of BOQ plan by {abs(pace_pct):.1f}% ({_fmt_m(realized_sum)} realized over {n_weeks} closed weeks in {_Q_LABEL})."
+        }
+    except Exception as e:
+        print(f"  WARN boq_pace enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_confidence_trend(product_key):
+    """2. Confidence Trend: compare current confidence to 1w and 4w ago."""
+    try:
+        hist = spark.table(INSIGHTS_TABLE).toPandas()
+        prod_hist = hist[hist["product"] == product_key].sort_values("run_date", ascending=False)
+        if len(prod_hist) < 2:
+            return None
+        current_conf = float(prod_hist.iloc[0]["model_confidence"])
+        # 1 week ago (find nearest row ~7 days back)
+        dates = pd.to_datetime(prod_hist["run_date"])
+        target_1w = dates.iloc[0] - pd.Timedelta(days=7)
+        target_4w = dates.iloc[0] - pd.Timedelta(days=28)
+        conf_1w = prod_hist[dates <= target_1w]["model_confidence"].iloc[0] if (dates <= target_1w).any() else None
+        conf_4w = prod_hist[dates <= target_4w]["model_confidence"].iloc[0] if (dates <= target_4w).any() else None
+        delta_1w = round(current_conf - conf_1w, 0) if conf_1w is not None else None
+        delta_4w = round(current_conf - conf_4w, 0) if conf_4w is not None else None
+        # Trend description
+        if delta_4w is not None:
+            if abs(delta_4w) <= 3:
+                trend = "stable"
+            elif delta_4w > 0:
+                trend = "improving"
+            else:
+                trend = "degrading"
+        else:
+            trend = "insufficient_history"
+        text_parts = [f"Confidence at {current_conf:.0f}%"]
+        if delta_1w is not None:
+            text_parts.append(f"{'+' if delta_1w >= 0 else ''}{delta_1w:.0f}pp vs last week")
+        if delta_4w is not None:
+            text_parts.append(f"{'+' if delta_4w >= 0 else ''}{delta_4w:.0f}pp vs 4 weeks ago")
+        return {
+            "current": current_conf, "conf_1w_ago": conf_1w, "conf_4w_ago": conf_4w,
+            "delta_1w": delta_1w, "delta_4w": delta_4w, "trend": trend,
+            "text": " — ".join(text_parts) + f" ({trend})."
+        }
+    except Exception as e:
+        print(f"  WARN confidence_trend enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_vintage_drift(product_key):
+    """3. Vintage Drift: compare today's FY forecast to last week's."""
+    try:
+        if product_key == "ITSG":
+            return None  # ITSG vintages not available
+        vtg = _vtg_pdf
+        if vtg.empty:
+            return None
+        # Get the two most recent run_dates
+        run_dates = sorted(vtg["_run_date"].dropna().unique(), reverse=True)
+        if len(run_dates) < 2:
+            return None
+        latest_rd = run_dates[0]
+        prev_rd = None
+        for rd in run_dates[1:]:
+            if (latest_rd - rd).days >= 5:  # at least 5 days apart
+                prev_rd = rd
+                break
+        if prev_rd is None:
+            prev_rd = run_dates[1]
+        # Sum p50 for the Adaptive_Ensemble within current FY
+        def _fy_sum(rd):
+            mask = (vtg["_run_date"] == rd) & (vtg["model"] == REC_MODEL) & (vtg["ds"].dt.year == _Q_YEAR)
+            return float(vtg[mask]["p50"].fillna(0).sum())
+        current_sum = _fy_sum(latest_rd)
+        prev_sum = _fy_sum(prev_rd)
+        if prev_sum == 0:
+            return None
+        drift_abs = current_sum - prev_sum
+        drift_pct = drift_abs / prev_sum * 100
+        days_apart = (latest_rd - prev_rd).days
+        return {
+            "current_fy_forecast": round(current_sum, 0),
+            "prior_fy_forecast": round(prev_sum, 0),
+            "drift_abs": round(drift_abs, 0),
+            "drift_pct": round(drift_pct, 2),
+            "days_apart": int(days_apart),
+            "text": f"FY outlook {'UP' if drift_abs >= 0 else 'DOWN'} {_fmt_m(abs(drift_abs))} ({drift_pct:+.1f}%) vs {days_apart} days ago."
+        }
+    except Exception as e:
+        print(f"  WARN vintage_drift enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_driver_actions(product_key):
+    """4. Driver-linked Actions: use forecast_sensitivity to identify top levers."""
+    try:
+        sens = _sens_pdf
+        if sens.empty:
+            return None
+        prod_sens = sens[(sens["product"] == product_key) & (sens["sales_market"] == "NA")]
+        if prod_sens.empty:
+            return None
+        # Sort by absolute elasticity (significant drivers first)
+        prod_sens = prod_sens.copy()
+        prod_sens["abs_elast"] = prod_sens["elasticity_pct"].abs()
+        prod_sens = prod_sens.sort_values("abs_elast", ascending=False)
+        top_drivers = []
+        for _, row in prod_sens.head(3).iterrows():
+            sig = "" if "p=0.0000" in str(row.get("description", "")) else " (not statistically significant)"
+            top_drivers.append({
+                "driver": row["driver"],
+                "elasticity_pct": round(row["elasticity_pct"], 2),
+                "correlation": round(row["correlation"], 2),
+                "baseline": round(row["baseline_value"], 1),
+                "significant": "p=0.0000" in str(row.get("description", "")),
+                "action": f"{row['driver'].replace('_', ' ').title()}: {row['elasticity_pct']:+.2f}% ARR per unit change (r={row['correlation']:.2f}){sig}"
+            })
+        # Primary lever text
+        top = prod_sens.iloc[0]
+        text = f"Top lever: {top['driver'].replace('_', ' ')} (elasticity {top['elasticity_pct']:+.2f}%, correlation {top['correlation']:.2f}). "
+        if top["elasticity_pct"] > 0:
+            text += f"A 10% improvement in {top['driver'].replace('_', ' ')} would add ~{abs(top['elasticity_pct'] * 10):.1f}% to ARR."
+        else:
+            text += f"Each 0.1x increase in {top['driver'].replace('_', ' ')} reduces ARR by ~{abs(top['elasticity_pct']):.2f}%."
+        return {"top_drivers": top_drivers, "text": text}
+    except Exception as e:
+        print(f"  WARN driver_actions enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_regional_alert(product_key):
+    """5. Regional Alert: identify which region is leading/lagging."""
+    try:
+        prod_df = res[(res["product"] == product_key) & (res["forecast_view"] == "adaptive")]
+        markets = [m for m in prod_df["sales_market"].unique() if str(m).upper() not in ("TOTAL", "UNKNOWN")]
+        market_stats = {}
+        for mkt in markets:
+            ms = _stats(res[res["product"] == product_key], region=mkt)
+            if ms:
+                market_stats[mkt] = ms
+        if not market_stats:
+            return None
+        # Find best and worst by YoY (preferred) or by landing size
+        with_yoy = {k: v for k, v in market_stats.items() if v.get("yoy") is not None}
+        if with_yoy:
+            best_mkt = max(with_yoy.items(), key=lambda x: x[1]["yoy"])
+            worst_mkt = min(with_yoy.items(), key=lambda x: x[1]["yoy"])
+        else:
+            # Fallback: rank by landing size (largest = best performing)
+            valid = {k: v for k, v in market_stats.items() if v.get("most_likely") is not None}
+            if not valid:
+                return None
+            best_mkt = max(valid.items(), key=lambda x: x[1]["most_likely"])
+            worst_mkt = min(valid.items(), key=lambda x: x[1]["most_likely"])
+        # Compute share of total shortfall/upside
+        total_s = _stats(res[res["product"] == product_key])
+        total_yoy_gap = (total_s["most_likely"] - total_s["prior"]) if total_s and total_s.get("prior") else 0
+        worst_gap = worst_mkt[1]["most_likely"] - worst_mkt[1].get("prior", worst_mkt[1]["most_likely"]) if worst_mkt[1].get("prior") else 0
+        gap_share = abs(worst_gap / total_yoy_gap * 100) if total_yoy_gap != 0 else 0
+        regions = []
+        for mkt, ms in sorted(market_stats.items(), key=lambda x: x[1].get("yoy") if x[1].get("yoy") is not None else 0):
+            regions.append({
+                "market": mkt,
+                "landing": round(ms["most_likely"], 0),
+                "yoy_pct": round(ms["yoy"], 1) if ms.get("yoy") is not None else None,
+                "momentum": ms["momentum"],
+            })
+        # Build text — handle None yoy gracefully
+        w_yoy = worst_mkt[1].get("yoy")
+        b_yoy = best_mkt[1].get("yoy")
+        if w_yoy is not None:
+            text = f"{worst_mkt[0]} weakest at {w_yoy:+.0f}% YoY"
+            if gap_share > 20:
+                text += f" (driving {gap_share:.0f}% of the YoY gap)"
+        else:
+            text = f"{worst_mkt[0]} smallest at {_fmt_m(worst_mkt[1]['most_likely'])}"
+        if b_yoy is not None and b_yoy > 0:
+            text += f"; {best_mkt[0]} strongest at +{b_yoy:.0f}% YoY."
+        elif b_yoy is not None:
+            text += f"; {best_mkt[0]} best-performing at {b_yoy:+.0f}% YoY."
+        else:
+            text += f"; {best_mkt[0]} largest at {_fmt_m(best_mkt[1]['most_likely'])}."
+        return {"regions": regions, "best_market": best_mkt[0], "worst_market": worst_mkt[0], "text": text}
+    except Exception as e:
+        print(f"  WARN regional_alert enrichment failed for {product_key}: {e}")
+        return None
+
+def _fy_summary_text(fy_stats):
+    """Build the FY summary text string."""
+    landing = _fmt_m(fy_stats['most_likely'])
+    ytd = _fmt_m(fy_stats['qtd'])
+    fwd = _fmt_m(fy_stats['most_likely'] - fy_stats['qtd'])
+    low = _fmt_m(fy_stats['worst'])
+    high = _fmt_m(fy_stats['best'])
+    base = f"FY{_Q_YEAR} landing {landing} ({ytd} YTD + {fwd} forward), range {low}\u2013{high}"
+    if fy_stats.get('yoy') is not None:
+        base += f", {fy_stats['yoy']:+.0f}% vs FY{_Q_YEAR - 1}"
+    return base + "."
+
+def _enrich_fy_summary(product_key):
+    """6. FY-Level Summary: annual landing estimate with YoY."""
+    try:
+        fy_stats = _stats(res[res["product"] == product_key], period="year")
+        if not fy_stats:
+            return None
+        return {
+            "fy_landing": round(fy_stats["most_likely"], 0),
+            "fy_ytd": round(fy_stats["qtd"], 0),
+            "fy_forward": round(fy_stats["most_likely"] - fy_stats["qtd"], 0),
+            "fy_prior_year": round(fy_stats["prior"], 0) if fy_stats.get("prior") else None,
+            "fy_yoy_pct": round(fy_stats["yoy"], 1) if fy_stats.get("yoy") is not None else None,
+            "fy_range_low": round(fy_stats["worst"], 0),
+            "fy_range_high": round(fy_stats["best"], 0),
+            "text": _fy_summary_text(fy_stats)
+        }
+    except Exception as e:
+        print(f"  WARN fy_summary enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_all(product_key):
+    """Run all 6 enrichments for a product. Returns dict of non-None results."""
+    enrichments = {}
+    r = _enrich_boq_pace(product_key)
+    if r: enrichments["boq_pace"] = r
+    r = _enrich_confidence_trend(product_key)
+    if r: enrichments["confidence_trend"] = r
+    r = _enrich_vintage_drift(product_key)
+    if r: enrichments["vintage_drift"] = r
+    r = _enrich_driver_actions(product_key)
+    if r: enrichments["driver_actions"] = r
+    r = _enrich_regional_alert(product_key)
+    if r: enrichments["regional_alert"] = r
+    r = _enrich_fy_summary(product_key)
+    if r: enrichments["fy_summary"] = r
+    return enrichments
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN LOOP — Generate insights with enrichments
+# ══════════════════════════════════════════════════════════════════════════════
+
 rows, stats = [], {}
 for product in sorted(res["product"].dropna().unique()):
     if product == "Total":
@@ -864,7 +1145,10 @@ for product in sorted(res["product"].dropna().unique()):
     if not s:
         continue
     stats[product] = s
+    enrichments = _enrich_all(product)
     payload = _render(s, product)
+    # Merge enrichments into payload (backward compatible — new keys)
+    payload.update(enrichments)
     rows.append((latest_run, product, "ai_insights", json.dumps(payload),
                  s["confidence"], s["momentum"], payload["risk_level"]))
 
@@ -887,7 +1171,24 @@ if stats:
     agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order.get(m, 0))
     agg["confidence"] = round(sum(v["confidence"] for v in stats.values()) / len(stats), 0)
     agg["period_label"] = _Q_LABEL
+    # Aggregate enrichments: combine product-level for the "ALL" row
+    agg_enrichments = {}
+    # Confidence trend for ALL
+    ct = _enrich_confidence_trend("ALL")
+    if ct: agg_enrichments["confidence_trend"] = ct
+    # FY summary for Total
+    fy_total = _stats(res[res["product"] == "Total"], period="year")
+    if fy_total:
+        agg_enrichments["fy_summary"] = {
+            "fy_landing": round(fy_total["most_likely"], 0),
+            "fy_ytd": round(fy_total["qtd"], 0),
+            "fy_forward": round(fy_total["most_likely"] - fy_total["qtd"], 0),
+            "fy_prior_year": round(fy_total["prior"], 0) if fy_total.get("prior") else None,
+            "fy_yoy_pct": round(fy_total["yoy"], 1) if fy_total.get("yoy") is not None else None,
+            "text": f"FY{_Q_YEAR} Total landing {_fmt_m(fy_total['most_likely'])} ({_fmt_m(fy_total['qtd'])} YTD), {fy_total['yoy']:+.0f}% vs FY{_Q_YEAR-1}." if fy_total.get("yoy") is not None else f"FY{_Q_YEAR} landing {_fmt_m(fy_total['most_likely'])}."
+        }
     payload = _render(agg, "Total portfolio", product_stats=stats)
+    payload.update(agg_enrichments)
     rows.append((latest_run, "ALL", "ai_insights", json.dumps(payload),
                  agg["confidence"], agg["momentum"], payload["risk_level"]))
 
