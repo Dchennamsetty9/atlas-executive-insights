@@ -837,10 +837,12 @@ def _render(s, label, product_stats=None):
                      "ACCELERATING": "on an accelerating trajectory",
                      "DECELERATING": "on a decelerating trajectory",
                      "STABLE": "on a stable trajectory"}
+    _mw = _MONTHLY_WAPE.get(label, _MONTHLY_WAPE.get("Total"))
+    _acc_txt = f" Monthly forecast accuracy: {_mw:.1f}% WAPE." if _mw else ""
     narrative = (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
                  f"({_fmt_m(s['qtd'])} realized + forecast), "
                  f"ranging {_fmt_m(s['worst'])} to {_fmt_m(s['best'])}{yoy_txt}. "
-                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.")
+                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.{_acc_txt}")
 
     return {
         "product": label, "run_date": str(latest_run), "period": _pl,
@@ -1084,8 +1086,17 @@ def _enrich_regional_alert(product_key):
         print(f"  WARN regional_alert enrichment failed for {product_key}: {e}")
         return None
 
-def _fy_summary_text(fy_stats):
-    """Build the FY summary text string."""
+# Load monthly WAPE for use in fy_summary narrative
+try:
+    _monthly_wape_df = spark.table(MONTHLY_ACC_TABLE).where(
+        "model = 'Adaptive_Ensemble'"
+    ).select("product", "monthly_wape").toPandas()
+    _MONTHLY_WAPE = dict(zip(_monthly_wape_df["product"], _monthly_wape_df["monthly_wape"]))
+except Exception:
+    _MONTHLY_WAPE = {}
+
+def _fy_summary_text(fy_stats, product_key=None):
+    """Build the FY summary text string, including monthly forecast accuracy."""
     landing = _fmt_m(fy_stats['most_likely'])
     ytd = _fmt_m(fy_stats['qtd'])
     fwd = _fmt_m(fy_stats['most_likely'] - fy_stats['qtd'])
@@ -1094,7 +1105,12 @@ def _fy_summary_text(fy_stats):
     base = f"FY{_Q_YEAR} landing {landing} ({ytd} YTD + {fwd} forward), range {low}\u2013{high}"
     if fy_stats.get('yoy') is not None:
         base += f", {fy_stats['yoy']:+.0f}% vs FY{_Q_YEAR - 1}"
-    return base + "."
+    base += "."
+    # Append monthly accuracy if available
+    mw = _MONTHLY_WAPE.get(product_key) or _MONTHLY_WAPE.get("Total")
+    if mw:
+        base += f" Forecast accuracy: {mw:.1f}% monthly WAPE."
+    return base
 
 def _enrich_fy_summary(product_key):
     """6. FY-Level Summary: annual landing estimate with YoY."""
@@ -1110,7 +1126,7 @@ def _enrich_fy_summary(product_key):
             "fy_yoy_pct": round(fy_stats["yoy"], 1) if fy_stats.get("yoy") is not None else None,
             "fy_range_low": round(fy_stats["worst"], 0),
             "fy_range_high": round(fy_stats["best"], 0),
-            "text": _fy_summary_text(fy_stats)
+            "text": _fy_summary_text(fy_stats, product_key=product_key)
         }
     except Exception as e:
         print(f"  WARN fy_summary enrichment failed for {product_key}: {e}")
