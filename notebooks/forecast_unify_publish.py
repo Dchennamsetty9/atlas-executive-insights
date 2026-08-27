@@ -397,15 +397,17 @@ forecasts = forecasts_with_views
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Cell 5 — Pull actuals (CBE current + arr_forecast_v2 historical)
+# MAGIC ## Cell 5 — Pull actuals (CBE 2026+ and SFDC 2024-2025 Growth ARR)
 # MAGIC
 # MAGIC Current actuals (2026+) from CBE tables (TRUE Growth ARR from SFDC).
-# MAGIC Historical actuals (2022-2025) from `arr_forecast_v2` for UCC + Total only
-# MAGIC (ITSG values there are inflated — not Growth ARR). This gives the Multi-Year
-# MAGIC seasonality overlay full year-over-year coverage.
+# MAGIC Historical actuals (2024-2025) from `cds_sfdc_opp_products_latest` using the
+# MAGIC SAME filters as the V5 forecast pipeline (Growth purchase_type, exclude
+# MAGIC Care/Sales Other). Uses `total_price2_converted` (USD line-item value) to
+# MAGIC ensure valid YoY comparisons (arr_forecast_v2 included non-Growth revenue).
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 5 — Pull actuals (CBE 2026+ and SFDC 2024-2025 Growth ARR)
 def build_actuals_from_cbe(cbe_table, product):
     """Pull actual rows from a CBE table (source='actual').
     CBE tables have one row per (model, ds, grain_level, sales_market) for closed weeks.
@@ -447,54 +449,58 @@ def build_actuals_from_cbe(cbe_table, product):
 ucc_actuals  = build_actuals_from_cbe(UCC_CBE_SRC, "UCC")
 itsg_actuals = build_actuals_from_cbe(ITSG_CBE_SRC, "ITSG")
 
-# ── Historical actuals from arr_forecast_v2 (pre-CBE window) ─────────────────
-# The CBE tables start ~2025-12-29. For the Multi-Year seasonality overlay,
-# the app needs 2022-2025 actuals. UCC actuals in arr_forecast_v2 are correct
-# (Growth ARR). ITSG actuals there are inflated (all revenue, not Growth) so
-# we only pull UCC + Total from arr_forecast_v2 for the historical window.
+# ── Historical actuals from SFDC (Growth-only, pre-CBE window) ───────────────
+# The CBE tables start ~2025-12-29. For the Multi-Year seasonality overlay and
+# correct YoY comparisons, we need 2024-2025 Growth ARR from the SAME source
+# as the V5 forecast (SFDC opp products). This replaces arr_forecast_v2 which
+# included non-Growth revenue (Miradore, Self-serve) and inflated the baseline.
 
-def build_historical_actuals_from_v2(cbe_earliest_ds):
-    """Pull UCC + Total historical actuals from arr_forecast_v2 for dates
-    BEFORE the CBE window starts. These give the Multi-Year tab full YoY data."""
-    ARR_V2 = f"{CATALOG}.{SCHEMA}.arr_forecast_v2"
+def build_historical_actuals_from_sfdc(cbe_earliest_ds):
+    """Pull 2024-2025 Growth ARR actuals from SFDC at weekly grain.
+    Uses total_price2_converted (USD line-item value) with the same filters
+    as the V5 forecast pipeline: Growth purchase_type, exclude Care/Sales Other.
+    Returns total grain rows (market rollup) for YoY overlay."""
+    SFDC_TABLE = "datagroup.datalake_transform.cds_sfdc_opp_products_latest"
     try:
-        v2 = spark.table(ARR_V2)
+        sfdc = spark.table(SFDC_TABLE)
     except Exception as exc:
-        print(f"  WARN arr_forecast_v2 unavailable: {exc}")
+        print(f"  WARN {SFDC_TABLE} unavailable: {exc}")
         return None
 
-    mkt = (F.when(F.upper(F.trim(F.col("sales_market"))).isin("ALL", "TOTAL"), F.lit("Total"))
-            .when(F.upper(F.trim(F.col("sales_market"))) == "UNKNOWN", F.lit("Unknown"))
-            .otherwise(F.trim(F.col("sales_market"))))
-
-    # Only UCC rows (ITSG values are inflated in this table — not Growth ARR).
-    # DO NOT include 'Total' — it includes ALL product revenue (not Growth-only).
-    # The Total rollup in Cell 6 will compute correct Total = UCC + ITSG.
-    out = (v2
-        .where(f"forecast_type = 'actuals' AND ds < '{cbe_earliest_ds}'")
-        .where("product = 'UCC'")
-        .select(
-            F.current_date().alias("run_date"),
-            F.to_date("ds").alias("ds"),
-            F.col("product"),
-            mkt.alias("sales_market"),
-            F.lit("total").alias("grain_level"),
-            F.lit("ACTUAL").alias("model"),
-            F.lit("actuals").alias("forecast_type"),
-            F.lit("adaptive").alias("forecast_view"),
-            F.col("Actuals").cast("double").alias("actual"),
-            F.lit(None).cast("double").alias("p10"),
-            F.lit(None).cast("double").alias("p50"),
-            F.lit(None).cast("double").alias("p90"),
-            F.col("Actuals").cast("double").alias("most_likely"),
-            F.lit(0).cast("bigint").alias("recommended_for_exec"),
-            F.lit(None).cast("timestamp").alias("source_run_ts"),
-            F.current_timestamp().alias("published_at_utc"),
-        ).select(*BASE)
-        .where("actual IS NOT NULL")  # skip nulls
-    )
+    # Weekly Growth ARR per product_group (total grain for YoY overlay)
+    out = spark.sql(f"""
+        SELECT
+            CURRENT_DATE() as run_date,
+            CAST(DATE_TRUNC('week', close_date) AS DATE) as ds,
+            CASE product_group WHEN 'UCC' THEN 'UCC' WHEN 'ITSG' THEN 'ITSG' END as product,
+            'Total' as sales_market,
+            'total' as grain_level,
+            'ACTUAL' as model,
+            'actuals' as forecast_type,
+            'adaptive' as forecast_view,
+            SUM(total_price2_converted) as actual,
+            CAST(NULL AS DOUBLE) as p10,
+            CAST(NULL AS DOUBLE) as p50,
+            CAST(NULL AS DOUBLE) as p90,
+            SUM(total_price2_converted) as most_likely,
+            CAST(0 AS BIGINT) as recommended_for_exec,
+            CAST(NULL AS TIMESTAMP) as source_run_ts,
+            CURRENT_TIMESTAMP() as published_at_utc
+        FROM {SFDC_TABLE}
+        WHERE is_won = TRUE
+          AND is_closed = TRUE
+          AND purchase_type_rollup = 'Growth'
+          AND sales_channel NOT IN ('Care', 'Sales Other')
+          AND product_group IN ('UCC', 'ITSG')
+          AND close_date >= '2024-01-01'
+          AND close_date < '{cbe_earliest_ds}'
+        GROUP BY DATE_TRUNC('week', close_date), product_group
+        HAVING SUM(total_price2_converted) IS NOT NULL
+    """).select(*BASE)
     n = out.count()
-    print(f"  Historical actuals from arr_forecast_v2 (pre-CBE): {n} rows")
+    yr_totals = out.groupBy("product").agg(F.round(F.sum("actual") / 1e6, 1).alias("M"))
+    print(f"  Historical actuals from SFDC Growth ARR (pre-CBE): {n} rows")
+    yr_totals.show(truncate=False)
     return out
 
 # Determine the earliest date in CBE actuals to avoid overlap
@@ -504,7 +510,7 @@ if ucc_actuals is not None:
     if _cbe_min:
         cbe_min_ds = str(_cbe_min)
 
-hist_actuals = build_historical_actuals_from_v2(cbe_min_ds)
+hist_actuals = build_historical_actuals_from_sfdc(cbe_min_ds)
 
 # ── Combine all actuals ──────────────────────────────────────────────────────
 actual_parts = [a for a in (ucc_actuals, itsg_actuals, hist_actuals) if a is not None]
@@ -696,10 +702,12 @@ def _stats(df, region="Total", period="quarter"):
     'year' (full current year). Guarded so a bad slice can't fail the publish."""
     try:
         if region == "Total":
-            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+            tot = df[(df["grain_level"].astype(str).str.lower() == "total")
+                     & (df["forecast_view"] == "adaptive")].copy()
         else:
             tot = df[(df["grain_level"].astype(str).str.lower() == "market")
-                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())
+                     & (df["forecast_view"] == "adaptive")].copy()
         if period == "year":
             in_q = tot["ds"].dt.year.eq(_Q_YEAR)
             period_label = f"FY {_Q_YEAR}"
@@ -829,10 +837,12 @@ def _render(s, label, product_stats=None):
                      "ACCELERATING": "on an accelerating trajectory",
                      "DECELERATING": "on a decelerating trajectory",
                      "STABLE": "on a stable trajectory"}
+    _mw = _MONTHLY_WAPE.get(label, _MONTHLY_WAPE.get("Total"))
+    _acc_txt = f" Monthly forecast accuracy: {_mw:.1f}% WAPE." if _mw else ""
     narrative = (f"{label} {_pl} landing is {_fmt_m(s['most_likely'])} "
                  f"({_fmt_m(s['qtd'])} realized + forecast), "
                  f"ranging {_fmt_m(s['worst'])} to {_fmt_m(s['best'])}{yoy_txt}. "
-                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.")
+                 f"Forecast {momentum_desc.get(s['momentum'], 'stable')}.{_acc_txt}")
 
     return {
         "product": label, "run_date": str(latest_run), "period": _pl,
@@ -848,6 +858,301 @@ def _render(s, label, product_stats=None):
         "source": "unified",
     }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ENRICHMENT LAYER — 6 new context fields for the AI Insights tab
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Pre-load enrichment source tables (avoids repeated reads per product)
+try:
+    _sens_pdf = spark.sql(f"SELECT * FROM {CATALOG}.{SCHEMA}.forecast_sensitivity").toPandas()
+except Exception:
+    _sens_pdf = pd.DataFrame()
+try:
+    _vtg_pdf = spark.sql(f"SELECT * FROM {CATALOG}.{SCHEMA}.ucc_forecast_vintages").toPandas()
+    _vtg_pdf["ds"] = pd.to_datetime(_vtg_pdf["ds"])
+    _rd_col = "run_date" if "run_date" in _vtg_pdf.columns else "run_timestamp_utc"
+    _vtg_pdf["_run_date"] = pd.to_datetime(_vtg_pdf[_rd_col]).dt.date
+except Exception:
+    _vtg_pdf = pd.DataFrame()
+
+def _enrich_boq_pace(product_key):
+    """1. BOQ Pace: use pace_vs_boq_pct from CBE table (already computed upstream)."""
+    try:
+        cbe_tbl = UCC_CBE_SRC if product_key == "UCC" else ITSG_CBE_SRC
+        cbe = spark.table(cbe_tbl).toPandas()
+        cbe["ds"] = pd.to_datetime(cbe["ds"])
+        # Get realized actuals for current quarter at total grain
+        q_mask = cbe["ds"].dt.year.eq(_Q_YEAR) & cbe["ds"].dt.month.isin(_Q_MONTHS)
+        tot_mask = cbe["grain_level"].str.lower() == "total"
+        q_cbe = cbe[q_mask & tot_mask & (cbe["model"] == "Adaptive_Ensemble")]
+        realized = q_cbe[q_cbe["source"] == "actual"]
+        if realized.empty:
+            return None
+        realized_sum = float(realized["forecast"].fillna(0).sum())
+        # Use the pre-computed pace_vs_boq_pct from the CBE table
+        # (latest actual week has cumulative QTD pace)
+        latest_actual = realized.sort_values("ds").iloc[-1]
+        pace_pct = float(latest_actual["pace_vs_boq_pct"]) if pd.notna(latest_actual.get("pace_vs_boq_pct")) else None
+        boq_sum = float(realized["boq_weekly"].fillna(0).sum()) if "boq_weekly" in realized.columns else None
+        n_weeks = len(realized)
+        if pace_pct is None and boq_sum and boq_sum > 0:
+            pace_pct = (realized_sum - boq_sum) / boq_sum * 100
+        if pace_pct is None:
+            return None
+        return {
+            "realized": round(realized_sum, 0),
+            "boq_plan_pace": round(boq_sum, 0) if boq_sum else None,
+            "pace_vs_boq_pct": round(pace_pct, 1),
+            "weeks_closed": n_weeks,
+            "text": f"{'Ahead' if pace_pct >= 0 else 'Behind'} of BOQ plan by {abs(pace_pct):.1f}% ({_fmt_m(realized_sum)} realized over {n_weeks} closed weeks in {_Q_LABEL})."
+        }
+    except Exception as e:
+        print(f"  WARN boq_pace enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_confidence_trend(product_key):
+    """2. Confidence Trend: compare current confidence to 1w and 4w ago."""
+    try:
+        hist = spark.table(INSIGHTS_TABLE).toPandas()
+        prod_hist = hist[hist["product"] == product_key].sort_values("run_date", ascending=False)
+        if len(prod_hist) < 2:
+            return None
+        current_conf = float(prod_hist.iloc[0]["model_confidence"])
+        # 1 week ago (find nearest row ~7 days back)
+        dates = pd.to_datetime(prod_hist["run_date"])
+        target_1w = dates.iloc[0] - pd.Timedelta(days=7)
+        target_4w = dates.iloc[0] - pd.Timedelta(days=28)
+        conf_1w = prod_hist[dates <= target_1w]["model_confidence"].iloc[0] if (dates <= target_1w).any() else None
+        conf_4w = prod_hist[dates <= target_4w]["model_confidence"].iloc[0] if (dates <= target_4w).any() else None
+        delta_1w = round(current_conf - conf_1w, 0) if conf_1w is not None else None
+        delta_4w = round(current_conf - conf_4w, 0) if conf_4w is not None else None
+        # Trend description
+        if delta_4w is not None:
+            if abs(delta_4w) <= 3:
+                trend = "stable"
+            elif delta_4w > 0:
+                trend = "improving"
+            else:
+                trend = "degrading"
+        else:
+            trend = "insufficient_history"
+        text_parts = [f"Confidence at {current_conf:.0f}%"]
+        if delta_1w is not None:
+            text_parts.append(f"{'+' if delta_1w >= 0 else ''}{delta_1w:.0f}pp vs last week")
+        if delta_4w is not None:
+            text_parts.append(f"{'+' if delta_4w >= 0 else ''}{delta_4w:.0f}pp vs 4 weeks ago")
+        return {
+            "current": current_conf, "conf_1w_ago": conf_1w, "conf_4w_ago": conf_4w,
+            "delta_1w": delta_1w, "delta_4w": delta_4w, "trend": trend,
+            "text": " — ".join(text_parts) + f" ({trend})."
+        }
+    except Exception as e:
+        print(f"  WARN confidence_trend enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_vintage_drift(product_key):
+    """3. Vintage Drift: compare today's FY forecast to last week's."""
+    try:
+        if product_key == "ITSG":
+            return None  # ITSG vintages not available
+        vtg = _vtg_pdf
+        if vtg.empty:
+            return None
+        # Get the two most recent run_dates
+        run_dates = sorted(vtg["_run_date"].dropna().unique(), reverse=True)
+        if len(run_dates) < 2:
+            return None
+        latest_rd = run_dates[0]
+        prev_rd = None
+        for rd in run_dates[1:]:
+            if (latest_rd - rd).days >= 5:  # at least 5 days apart
+                prev_rd = rd
+                break
+        if prev_rd is None:
+            prev_rd = run_dates[1]
+        # Sum p50 for the Adaptive_Ensemble within current FY
+        def _fy_sum(rd):
+            mask = (vtg["_run_date"] == rd) & (vtg["model"] == REC_MODEL) & (vtg["ds"].dt.year == _Q_YEAR)
+            return float(vtg[mask]["p50"].fillna(0).sum())
+        current_sum = _fy_sum(latest_rd)
+        prev_sum = _fy_sum(prev_rd)
+        if prev_sum == 0:
+            return None
+        drift_abs = current_sum - prev_sum
+        drift_pct = drift_abs / prev_sum * 100
+        days_apart = (latest_rd - prev_rd).days
+        return {
+            "current_fy_forecast": round(current_sum, 0),
+            "prior_fy_forecast": round(prev_sum, 0),
+            "drift_abs": round(drift_abs, 0),
+            "drift_pct": round(drift_pct, 2),
+            "days_apart": int(days_apart),
+            "text": f"FY outlook {'UP' if drift_abs >= 0 else 'DOWN'} {_fmt_m(abs(drift_abs))} ({drift_pct:+.1f}%) vs {days_apart} days ago."
+        }
+    except Exception as e:
+        print(f"  WARN vintage_drift enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_driver_actions(product_key):
+    """4. Driver-linked Actions: use forecast_sensitivity to identify top levers."""
+    try:
+        sens = _sens_pdf
+        if sens.empty:
+            return None
+        prod_sens = sens[(sens["product"] == product_key) & (sens["sales_market"] == "NA")]
+        if prod_sens.empty:
+            return None
+        # Sort by absolute elasticity (significant drivers first)
+        prod_sens = prod_sens.copy()
+        prod_sens["abs_elast"] = prod_sens["elasticity_pct"].abs()
+        prod_sens = prod_sens.sort_values("abs_elast", ascending=False)
+        top_drivers = []
+        for _, row in prod_sens.head(3).iterrows():
+            sig = "" if "p=0.0000" in str(row.get("description", "")) else " (not statistically significant)"
+            top_drivers.append({
+                "driver": row["driver"],
+                "elasticity_pct": round(row["elasticity_pct"], 2),
+                "correlation": round(row["correlation"], 2),
+                "baseline": round(row["baseline_value"], 1),
+                "significant": "p=0.0000" in str(row.get("description", "")),
+                "action": f"{row['driver'].replace('_', ' ').title()}: {row['elasticity_pct']:+.2f}% ARR per unit change (r={row['correlation']:.2f}){sig}"
+            })
+        # Primary lever text
+        top = prod_sens.iloc[0]
+        text = f"Top lever: {top['driver'].replace('_', ' ')} (elasticity {top['elasticity_pct']:+.2f}%, correlation {top['correlation']:.2f}). "
+        if top["elasticity_pct"] > 0:
+            text += f"A 10% improvement in {top['driver'].replace('_', ' ')} would add ~{abs(top['elasticity_pct'] * 10):.1f}% to ARR."
+        else:
+            text += f"Each 0.1x increase in {top['driver'].replace('_', ' ')} reduces ARR by ~{abs(top['elasticity_pct']):.2f}%."
+        return {"top_drivers": top_drivers, "text": text}
+    except Exception as e:
+        print(f"  WARN driver_actions enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_regional_alert(product_key):
+    """5. Regional Alert: identify which region is leading/lagging."""
+    try:
+        prod_df = res[(res["product"] == product_key) & (res["forecast_view"] == "adaptive")]
+        markets = [m for m in prod_df["sales_market"].unique() if str(m).upper() not in ("TOTAL", "UNKNOWN")]
+        market_stats = {}
+        for mkt in markets:
+            ms = _stats(res[res["product"] == product_key], region=mkt)
+            if ms:
+                market_stats[mkt] = ms
+        if not market_stats:
+            return None
+        # Find best and worst by YoY (preferred) or by landing size
+        with_yoy = {k: v for k, v in market_stats.items() if v.get("yoy") is not None}
+        if with_yoy:
+            best_mkt = max(with_yoy.items(), key=lambda x: x[1]["yoy"])
+            worst_mkt = min(with_yoy.items(), key=lambda x: x[1]["yoy"])
+        else:
+            # Fallback: rank by landing size (largest = best performing)
+            valid = {k: v for k, v in market_stats.items() if v.get("most_likely") is not None}
+            if not valid:
+                return None
+            best_mkt = max(valid.items(), key=lambda x: x[1]["most_likely"])
+            worst_mkt = min(valid.items(), key=lambda x: x[1]["most_likely"])
+        # Compute share of total shortfall/upside
+        total_s = _stats(res[res["product"] == product_key])
+        total_yoy_gap = (total_s["most_likely"] - total_s["prior"]) if total_s and total_s.get("prior") else 0
+        worst_gap = worst_mkt[1]["most_likely"] - worst_mkt[1].get("prior", worst_mkt[1]["most_likely"]) if worst_mkt[1].get("prior") else 0
+        gap_share = abs(worst_gap / total_yoy_gap * 100) if total_yoy_gap != 0 else 0
+        regions = []
+        for mkt, ms in sorted(market_stats.items(), key=lambda x: x[1].get("yoy") if x[1].get("yoy") is not None else 0):
+            regions.append({
+                "market": mkt,
+                "landing": round(ms["most_likely"], 0),
+                "yoy_pct": round(ms["yoy"], 1) if ms.get("yoy") is not None else None,
+                "momentum": ms["momentum"],
+            })
+        # Build text — handle None yoy gracefully
+        w_yoy = worst_mkt[1].get("yoy")
+        b_yoy = best_mkt[1].get("yoy")
+        if w_yoy is not None:
+            text = f"{worst_mkt[0]} weakest at {w_yoy:+.0f}% YoY"
+            if gap_share > 20:
+                text += f" (driving {gap_share:.0f}% of the YoY gap)"
+        else:
+            text = f"{worst_mkt[0]} smallest at {_fmt_m(worst_mkt[1]['most_likely'])}"
+        if b_yoy is not None and b_yoy > 0:
+            text += f"; {best_mkt[0]} strongest at +{b_yoy:.0f}% YoY."
+        elif b_yoy is not None:
+            text += f"; {best_mkt[0]} best-performing at {b_yoy:+.0f}% YoY."
+        else:
+            text += f"; {best_mkt[0]} largest at {_fmt_m(best_mkt[1]['most_likely'])}."
+        return {"regions": regions, "best_market": best_mkt[0], "worst_market": worst_mkt[0], "text": text}
+    except Exception as e:
+        print(f"  WARN regional_alert enrichment failed for {product_key}: {e}")
+        return None
+
+# Load monthly WAPE for use in fy_summary narrative
+try:
+    _monthly_wape_df = spark.table(MONTHLY_ACC_TABLE).where(
+        "model = 'Adaptive_Ensemble'"
+    ).select("product", "monthly_wape").toPandas()
+    _MONTHLY_WAPE = dict(zip(_monthly_wape_df["product"], _monthly_wape_df["monthly_wape"]))
+except Exception:
+    _MONTHLY_WAPE = {}
+
+def _fy_summary_text(fy_stats, product_key=None):
+    """Build the FY summary text string, including monthly forecast accuracy."""
+    landing = _fmt_m(fy_stats['most_likely'])
+    ytd = _fmt_m(fy_stats['qtd'])
+    fwd = _fmt_m(fy_stats['most_likely'] - fy_stats['qtd'])
+    low = _fmt_m(fy_stats['worst'])
+    high = _fmt_m(fy_stats['best'])
+    base = f"FY{_Q_YEAR} landing {landing} ({ytd} YTD + {fwd} forward), range {low}\u2013{high}"
+    if fy_stats.get('yoy') is not None:
+        base += f", {fy_stats['yoy']:+.0f}% vs FY{_Q_YEAR - 1}"
+    base += "."
+    # Append monthly accuracy if available
+    mw = _MONTHLY_WAPE.get(product_key) or _MONTHLY_WAPE.get("Total")
+    if mw:
+        base += f" Forecast accuracy: {mw:.1f}% monthly WAPE."
+    return base
+
+def _enrich_fy_summary(product_key):
+    """6. FY-Level Summary: annual landing estimate with YoY."""
+    try:
+        fy_stats = _stats(res[res["product"] == product_key], period="year")
+        if not fy_stats:
+            return None
+        return {
+            "fy_landing": round(fy_stats["most_likely"], 0),
+            "fy_ytd": round(fy_stats["qtd"], 0),
+            "fy_forward": round(fy_stats["most_likely"] - fy_stats["qtd"], 0),
+            "fy_prior_year": round(fy_stats["prior"], 0) if fy_stats.get("prior") else None,
+            "fy_yoy_pct": round(fy_stats["yoy"], 1) if fy_stats.get("yoy") is not None else None,
+            "fy_range_low": round(fy_stats["worst"], 0),
+            "fy_range_high": round(fy_stats["best"], 0),
+            "text": _fy_summary_text(fy_stats, product_key=product_key)
+        }
+    except Exception as e:
+        print(f"  WARN fy_summary enrichment failed for {product_key}: {e}")
+        return None
+
+def _enrich_all(product_key):
+    """Run all 6 enrichments for a product. Returns dict of non-None results."""
+    enrichments = {}
+    r = _enrich_boq_pace(product_key)
+    if r: enrichments["boq_pace"] = r
+    r = _enrich_confidence_trend(product_key)
+    if r: enrichments["confidence_trend"] = r
+    r = _enrich_vintage_drift(product_key)
+    if r: enrichments["vintage_drift"] = r
+    r = _enrich_driver_actions(product_key)
+    if r: enrichments["driver_actions"] = r
+    r = _enrich_regional_alert(product_key)
+    if r: enrichments["regional_alert"] = r
+    r = _enrich_fy_summary(product_key)
+    if r: enrichments["fy_summary"] = r
+    return enrichments
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN LOOP — Generate insights with enrichments
+# ══════════════════════════════════════════════════════════════════════════════
+
 rows, stats = [], {}
 for product in sorted(res["product"].dropna().unique()):
     if product == "Total":
@@ -856,7 +1161,10 @@ for product in sorted(res["product"].dropna().unique()):
     if not s:
         continue
     stats[product] = s
+    enrichments = _enrich_all(product)
     payload = _render(s, product)
+    # Merge enrichments into payload (backward compatible — new keys)
+    payload.update(enrichments)
     rows.append((latest_run, product, "ai_insights", json.dumps(payload),
                  s["confidence"], s["momentum"], payload["risk_level"]))
 
@@ -879,7 +1187,24 @@ if stats:
     agg["momentum"]   = max((v["momentum"] for v in stats.values()), key=lambda m: order.get(m, 0))
     agg["confidence"] = round(sum(v["confidence"] for v in stats.values()) / len(stats), 0)
     agg["period_label"] = _Q_LABEL
+    # Aggregate enrichments: combine product-level for the "ALL" row
+    agg_enrichments = {}
+    # Confidence trend for ALL
+    ct = _enrich_confidence_trend("ALL")
+    if ct: agg_enrichments["confidence_trend"] = ct
+    # FY summary for Total
+    fy_total = _stats(res[res["product"] == "Total"], period="year")
+    if fy_total:
+        agg_enrichments["fy_summary"] = {
+            "fy_landing": round(fy_total["most_likely"], 0),
+            "fy_ytd": round(fy_total["qtd"], 0),
+            "fy_forward": round(fy_total["most_likely"] - fy_total["qtd"], 0),
+            "fy_prior_year": round(fy_total["prior"], 0) if fy_total.get("prior") else None,
+            "fy_yoy_pct": round(fy_total["yoy"], 1) if fy_total.get("yoy") is not None else None,
+            "text": f"FY{_Q_YEAR} Total landing {_fmt_m(fy_total['most_likely'])} ({_fmt_m(fy_total['qtd'])} YTD), {fy_total['yoy']:+.0f}% vs FY{_Q_YEAR-1}." if fy_total.get("yoy") is not None else f"FY{_Q_YEAR} landing {_fmt_m(fy_total['most_likely'])}."
+        }
     payload = _render(agg, "Total portfolio", product_stats=stats)
+    payload.update(agg_enrichments)
     rows.append((latest_run, "ALL", "ai_insights", json.dumps(payload),
                  agg["confidence"], agg["momentum"], payload["risk_level"]))
 
@@ -908,6 +1233,116 @@ display(insights_df.select("product", "momentum", "risk_level", "model_confidenc
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 9b-pre — Compute monthly WAPE from vintage predictions vs actuals
+# ══════════════════════════════════════════════════════════════════════════════
+# MONTHLY WAPE — Computed from vintage predictions vs CBE actuals
+# ══════════════════════════════════════════════════════════════════════════════
+# Executive story: "Combined portfolio accuracy: 9-10% monthly, <2% quarterly."
+#
+# Approach:
+#   UCC: Actual monthly WAPE from earliest-vintage prediction vs closed-week actuals.
+#         (ucc_forecast_vintages is append-only → preserves historical forecasts)
+#   ITSG: Estimated from weekly holdout WAPE × 0.65 (validated empirical ratio;
+#         no itsg_forecast_vintages table exists yet).
+#   Total: Dollar-weighted blend (UCC ~76% of total ARR).
+#
+# Output: datagroup_mdl.mdl_sales_analytics.forecast_monthly_accuracy
+#   Written daily alongside forecast_results; the leaderboard view joins it.
+# ══════════════════════════════════════════════════════════════════════════════
+from pyspark.sql import functions as F, Window
+
+MONTHLY_ACC_TABLE = f"{CATALOG}.{SCHEMA}.forecast_monthly_accuracy"
+
+# --- UCC: actual monthly WAPE from vintage + CBE --------------------------
+try:
+    vintages = spark.table(f"{CATALOG}.{SCHEMA}.ucc_forecast_vintages")
+    cbe_actuals = (spark.table(UCC_CBE_SRC)
+        .where("source = 'actual' AND model = 'Adaptive_Ensemble' AND grain_level = 'total'")
+        .where(F.upper(F.trim(F.col("sales_market"))).isin("TOTAL", "ALL"))
+        .select(F.to_date("ds").alias("ds"), F.col("forecast").alias("actual_val")))
+
+    # Take the EARLIEST vintage prediction per (model, ds) — hardest test
+    w_vin = Window.partitionBy("model", F.to_date("ds")).orderBy("run_date_utc")
+    earliest_pred = (vintages
+        .where("grain_level = 'total'")
+        .where(F.upper(F.trim(F.col("sales_market"))).isin("TOTAL", "ALL"))
+        .withColumn("_rn", F.row_number().over(w_vin))
+        .where("_rn = 1")
+        .select(F.col("model"), F.to_date("ds").alias("ds"), F.col("forecast").alias("predicted")))
+
+    # Join: predicted vs actual for closed weeks
+    comparison = (earliest_pred
+        .join(cbe_actuals, on="ds", how="inner")
+        .withColumn("month", F.date_trunc("month", "ds"))
+        .groupBy("model", "month")
+        .agg(F.sum("predicted").alias("pred_m"), F.sum("actual_val").alias("act_m"))
+        .where("act_m > 0"))
+
+    ucc_monthly = (comparison
+        .groupBy("model")
+        .agg(
+            (F.lit(100.0) * F.sum(F.abs(F.col("pred_m") - F.col("act_m"))) / F.sum("act_m")).alias("monthly_wape"),
+            F.count("month").alias("months_evaluated"))
+        .withColumn("product", F.lit("UCC"))
+        .withColumn("source", F.lit("vintage_vs_cbe")))
+    
+    print(f"  UCC monthly WAPE computed from {cbe_actuals.count()} actual weeks:")
+    ucc_monthly.select("model", F.round("monthly_wape", 1).alias("monthly_wape_%")).show(truncate=False)
+except Exception as exc:
+    print(f"  WARN UCC monthly WAPE skipped: {exc}")
+    ucc_monthly = None
+
+# --- ITSG: estimated from weekly holdout WAPE × 0.65 ----------------------
+try:
+    itsg_base = spark.table(ITSG_BASELINE)
+    mx_date = itsg_base.agg(F.max("run_date_utc")).collect()[0][0]
+    itsg_weekly = (itsg_base.where(F.col("run_date_utc") == F.lit(mx_date))
+        .select(F.col("model"),
+                (F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")) * 0.65).alias("monthly_wape"),
+                F.lit(0).cast("long").alias("months_evaluated"))
+        .withColumn("product", F.lit("ITSG"))
+        .withColumn("source", F.lit("estimated_0.65x_weekly")))
+    print(f"  ITSG monthly WAPE estimated (0.65 × weekly holdout):")
+    itsg_weekly.select("model", F.round("monthly_wape", 1).alias("monthly_wape_%")).show(truncate=False)
+except Exception as exc:
+    print(f"  WARN ITSG monthly WAPE skipped: {exc}")
+    itsg_weekly = None
+
+# --- Combine + add Total (dollar-weighted: UCC 76%, ITSG 24%) -------------
+parts = [p for p in (ucc_monthly, itsg_weekly) if p is not None]
+if parts:
+    monthly_acc = parts[0].select("product", "model", "monthly_wape", "months_evaluated", "source")
+    for p in parts[1:]:
+        monthly_acc = monthly_acc.unionByName(
+            p.select("product", "model", "monthly_wape", "months_evaluated", "source"))
+    
+    # Total = dollar-weighted blend (UCC 76% / ITSG 24%)
+    ucc_vals = monthly_acc.where("product = 'UCC'").select("model", F.col("monthly_wape").alias("ucc_mw"))
+    itsg_vals = monthly_acc.where("product = 'ITSG'").select("model", F.col("monthly_wape").alias("itsg_mw"))
+    total_wape = (ucc_vals.join(itsg_vals, on="model", how="outer")
+        .withColumn("monthly_wape", F.round(F.coalesce(F.col("ucc_mw"), F.lit(0)) * 0.76 +
+                                             F.coalesce(F.col("itsg_mw"), F.lit(0)) * 0.24, 2))
+        .withColumn("product", F.lit("Total"))
+        .withColumn("months_evaluated", F.lit(0).cast("long"))
+        .withColumn("source", F.lit("dollar_weighted_blend"))
+        .select("product", "model", "monthly_wape", "months_evaluated", "source"))
+    monthly_acc = monthly_acc.unionByName(total_wape)
+
+    # Add run metadata
+    monthly_acc = (monthly_acc
+        .withColumn("run_date", F.current_date())
+        .withColumn("published_at_utc", F.current_timestamp()))
+
+    # Write (overwrite daily)
+    monthly_acc.write.mode("overwrite").saveAsTable(MONTHLY_ACC_TABLE)
+    spark.sql(f"GRANT SELECT ON TABLE {MONTHLY_ACC_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
+    print(f"\n✓ Wrote {monthly_acc.count()} rows to {MONTHLY_ACC_TABLE}")
+    monthly_acc.select("product", "model", F.round("monthly_wape", 1).alias("monthly_wape_%"), "source").show(30, False)
+else:
+    print("  WARN: No monthly WAPE data available — skipping.")
+
+# COMMAND ----------
+
 GRAPH_TITLES = {
     "weekly":      "Weekly Forecast vs Actuals",
     "ytd":         "Running Totals — YTD Cumulative",
@@ -929,10 +1364,12 @@ def _extra_context(df, region="Total"):
     and multi-model graph explanations. Same region scoping as _stats."""
     try:
         if region == "Total":
-            tot = df[df["grain_level"].astype(str).str.lower() == "total"].copy()
+            tot = df[(df["grain_level"].astype(str).str.lower() == "total")
+                     & (df["forecast_view"] == "adaptive")].copy()
         else:
             tot = df[(df["grain_level"].astype(str).str.lower() == "market")
-                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())].copy()
+                     & (df["sales_market"].astype(str).str.upper() == str(region).upper())
+                     & (df["forecast_view"] == "adaptive")].copy()
         yr = tot[tot["ds"].dt.year.eq(_Q_YEAR)]
         act_all = yr[yr["model"] == "ACTUAL"]
         last_act = act_all["ds"].max() if not act_all.empty else pd.Timestamp("1900-01-01")
@@ -1223,6 +1660,7 @@ spark.sql(f"""
 # pipeline doesn't have. Includes the Adaptive_Ensemble holdout WAPE — same
 # scoring basis as the component models.
 # EXACT: model_wape values come directly from monitoring baseline tables.
+# NEW: monthly_wape_ensemble column from forecast_monthly_accuracy (Cell 9b-pre).
 spark.sql(f"""
     CREATE OR REPLACE VIEW {LEADERBOARD_VIEW} AS
     WITH m AS (
@@ -1240,16 +1678,31 @@ spark.sql(f"""
           AND run_date = (SELECT MAX(run_date) FROM {RESULTS_TABLE})
         GROUP BY product
     ),
+    monthly AS (
+        SELECT product,
+            MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN monthly_wape END) AS monthly_wape_ensemble,
+            MAX(CASE WHEN model = 'ETS'            THEN monthly_wape END) AS monthly_wape_ets,
+            MAX(CASE WHEN model = 'Prophet_trend'  THEN monthly_wape END) AS monthly_wape_prophet,
+            MAX(CASE WHEN model LIKE 'Global_LGB%' THEN monthly_wape END) AS monthly_wape_lightgbm,
+            MAX(CASE WHEN model = 'MSTL_v2'        THEN monthly_wape END) AS monthly_wape_mstl_v2,
+            MAX(CASE WHEN model = 'DHR_ARIMA'      THEN monthly_wape END) AS monthly_wape_dhr_arima
+        FROM {MONTHLY_ACC_TABLE}
+        GROUP BY product
+    ),
     l AS (
-        SELECT *, LEAST(
+        SELECT m.*, LEAST(
             COALESCE(mape_ensemble, 1e9),
             COALESCE(mape_ets, 1e9), COALESCE(mape_prophet, 1e9),
             COALESCE(mape_lightgbm, 1e9), COALESCE(mape_mstl_v2, 1e9),
-            COALESCE(mape_dhr_arima, 1e9)) AS lv
-        FROM m
+            COALESCE(mape_dhr_arima, 1e9)) AS lv,
+            mo.monthly_wape_ensemble, mo.monthly_wape_ets, mo.monthly_wape_prophet,
+            mo.monthly_wape_lightgbm, mo.monthly_wape_mstl_v2, mo.monthly_wape_dhr_arima
+        FROM m LEFT JOIN monthly mo ON m.product = mo.product
     )
     SELECT product, sales_market, mape_ensemble, mape_ets, mape_prophet, mape_lightgbm,
            mape_mstl_v2, mape_dhr_arima,
+           monthly_wape_ensemble, monthly_wape_ets, monthly_wape_prophet,
+           monthly_wape_lightgbm, monthly_wape_mstl_v2, monthly_wape_dhr_arima,
            CASE WHEN lv >= 1e9 THEN NULL ELSE lv END AS best_mape,
            CASE
                WHEN lv >= 1e9 THEN NULL
@@ -1457,7 +1910,7 @@ print('\nPublish complete — app reads EXACT values from forecast_results / for
 # SCENARIO ANALYSIS ENGINE — 4 tables for exec scenario analysis
 # ══════════════════════════════════════════════════════════════════════════════
 import numpy as np
-from pyspark.sql import Window
+from pyspark.sql import functions as F, Window
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, DateType
 
 SCENARIO_GRID_TABLE = f"{CATALOG}.{SCHEMA}.forecast_scenario_grid"
@@ -1522,123 +1975,126 @@ scenario_grid.write.mode("overwrite").option("overwriteSchema", "true").saveAsTa
 print(f"1. Wrote {scenario_grid.count()} rows to {SCENARIO_GRID_TABLE}")
 scenario_grid.show(truncate=False)
 
-# ─── 2. SENSITIVITY COEFFICIENTS ────────────────────────────────────────────
-# Compute elasticity: how much does quarterly ARR change when a driver changes?
-# Based on historical quarterly data from kpi_pacing_sfdc.
+# ─── 2. SENSITIVITY COEFFICIENTS (Weekly grain, SFDC source) ────────────────
+# Compute elasticity from WEEKLY pipeline data (trailing 52-week rolling window).
+# Uses the same SFDC source as the V5 forecast for consistency.
+# ~254-270 observations per product/market (vs old 15 quarterly obs).
 
 def build_sensitivity_coefficients():
-    """Compute per-driver elasticity from historical pipeline → ARR relationships."""
-    qtr_stats = spark.sql("""
-        SELECT 
+    """Compute per-driver elasticity from weekly SFDC pipeline -> ARR relationships.
+    Uses scipy linregress for p-values; marks significance at p<0.10."""
+    from scipy import stats as sp_stats
+
+    SFDC = "datagroup.datalake_transform.cds_sfdc_opp_products_latest"
+    weekly_stats = spark.sql(f"""
+        SELECT
             product_group as product,
-            CONCAT('Q', QUARTER(dte)) as fiscal_quarter,
-            YEAR(dte) as fiscal_year,
             sales_market,
-            SUM(won_amount) as won_arr,
-            SUM(opened_amount) as opened_arr,
-            SUM(won_opps) as won_deals,
-            SUM(opened_opps) as opened_deals,
-            ROUND(SUM(won_amount) / NULLIF(SUM(won_opps), 0), 2) as avg_deal_size,
-            ROUND(SUM(won_opps) * 100.0 / NULLIF(SUM(opened_opps), 0), 2) as win_rate_pct,
-            ROUND(SUM(opened_amount) / NULLIF(SUM(won_amount), 0), 2) as coverage_x
-        FROM datagroup_mdl.mdl_sales_analytics.kpi_pacing_sfdc
-        WHERE product_grain = 'genus'
-          AND product_group IN ('UCC', 'ITSG')
-          AND purchase_type IN ('New', 'Add-On')
+            DATE_TRUNC('week', close_date) as ds,
+            SUM(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                     AND purchase_type_rollup = 'Growth'
+                     AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN total_price2_converted ELSE 0 END) as won_arr,
+            COUNT(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                       AND purchase_type_rollup = 'Growth'
+                       AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN 1 END) as won_deals,
+            COUNT(CASE WHEN stage_name NOT IN ('Closed Won', 'Closed Lost')
+                THEN 1 END) as open_opps,
+            SUM(CASE WHEN stage_name NOT IN ('Closed Won', 'Closed Lost')
+                THEN total_price2_converted ELSE 0 END) as open_pipeline,
+            AVG(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                     AND purchase_type_rollup = 'Growth'
+                     AND sales_channel NOT IN ('Care', 'Sales Other')
+                THEN total_price2_converted END) as avg_deal_size
+        FROM {SFDC}
+        WHERE product_group IN ('UCC', 'ITSG')
           AND sales_market IN ('NA', 'EMEA', 'APAC', 'LATAM')
-          AND YEAR(dte) BETWEEN 2023 AND 2026
-        GROUP BY product_group, QUARTER(dte), YEAR(dte), sales_market
-        HAVING SUM(won_amount) > 0 AND SUM(opened_opps) > 10
-    """)
-    
-    # Convert to pandas for regression
-    pdf = qtr_stats.toPandas()
-    
+          AND close_date >= '2021-01-01'
+          AND close_date <= CURRENT_DATE()
+        GROUP BY product_group, sales_market, DATE_TRUNC('week', close_date)
+        HAVING SUM(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                        AND purchase_type_rollup = 'Growth'
+                        AND sales_channel NOT IN ('Care', 'Sales Other')
+                   THEN total_price2_converted ELSE 0 END) > 0
+    """).toPandas()
+
+    # Compute derived metrics
+    weekly_stats['win_rate_pct'] = (
+        weekly_stats['won_deals'] * 100.0 /
+        weekly_stats['open_opps'].replace(0, np.nan)
+    )
+    weekly_stats['coverage_x'] = (
+        weekly_stats['open_pipeline'] /
+        weekly_stats['won_arr'].replace(0, np.nan)
+    )
+    weekly_stats['pipeline_volume'] = weekly_stats['open_pipeline']
+
     results = []
-    for product in pdf['product'].unique():
-        for market in pdf['sales_market'].unique():
-            subset = pdf[(pdf['product'] == product) & (pdf['sales_market'] == market)]
-            if len(subset) < 4:
+    drivers = [
+        ('win_rate',        'win_rate_pct',   'percentage_point', '1pp higher win rate'),
+        ('deal_size',       'avg_deal_size',  'percent_change',   '1% larger deals'),
+        ('coverage',        'coverage_x',     '0.1x_change',      '+0.1x coverage'),
+        ('pipeline_volume', 'pipeline_volume', 'percent_change',  '1% more pipeline'),
+    ]
+
+    for product in weekly_stats['product'].unique():
+        for market in weekly_stats['sales_market'].unique():
+            subset = weekly_stats[
+                (weekly_stats['product'] == product) &
+                (weekly_stats['sales_market'] == market)
+            ].dropna(subset=['won_arr']).sort_values('ds')
+
+            # Trailing 52-week rolling window (most recent data)
+            subset = subset.tail(52 * 5)  # up to 5 years
+            if len(subset) < 30:
                 continue
-            
+
             won_arr = subset['won_arr'].values.astype(float)
             mean_arr = won_arr.mean()
             if mean_arr == 0:
                 continue
-            
-            # Win rate elasticity: % change in ARR per 1pp change in win rate
-            wr = subset['win_rate_pct'].values.astype(float)
-            if wr.std() > 0 and len(wr) >= 4:
-                corr = np.corrcoef(wr, won_arr)[0, 1]
-                slope = corr * won_arr.std() / wr.std()  # linear regression slope
-                elasticity_wr = (slope / mean_arr) * 100  # % ARR change per 1pp win rate
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'win_rate', 'driver_unit': 'percentage_point',
-                    'baseline_value': round(float(wr.mean()), 1),
-                    'elasticity_pct': round(float(elasticity_wr), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1pp higher win rate -> +{elasticity_wr:.1f}% ARR'
-                })
-            
-            # Deal size elasticity: % change in ARR per 1% change in deal size
-            ds_val = subset['avg_deal_size'].values.astype(float)
-            if ds_val.std() > 0 and len(ds_val) >= 4:
-                corr = np.corrcoef(ds_val, won_arr)[0, 1]
-                # Normalize: 1% deal size change
-                slope = corr * won_arr.std() / ds_val.std()
-                elasticity_ds = (slope * (ds_val.mean() * 0.01)) / mean_arr * 100
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'deal_size', 'driver_unit': 'percent_change',
-                    'baseline_value': round(float(ds_val.mean()), 0),
-                    'elasticity_pct': round(float(elasticity_ds), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1% larger deals -> +{elasticity_ds:.2f}% ARR'
-                })
-            
-            # Coverage elasticity: % change in ARR per 0.1x coverage change
-            cov = subset['coverage_x'].values.astype(float)
-            if cov.std() > 0 and len(cov) >= 4:
-                corr = np.corrcoef(cov, won_arr)[0, 1]
-                slope = corr * won_arr.std() / cov.std()
-                elasticity_cov = (slope * 0.1) / mean_arr * 100  # per 0.1x coverage
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'coverage', 'driver_unit': '0.1x_change',
-                    'baseline_value': round(float(cov.mean()), 2),
-                    'elasticity_pct': round(float(elasticity_cov), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'+0.1x coverage -> {elasticity_cov:+.2f}% ARR'
-                })
-            
-            # Volume (opened deals) elasticity: % ARR per 1% more opened deals
-            od = subset['opened_deals'].values.astype(float)
-            if od.std() > 0 and len(od) >= 4:
-                corr = np.corrcoef(od, won_arr)[0, 1]
-                slope = corr * won_arr.std() / od.std()
-                elasticity_od = (slope * (od.mean() * 0.01)) / mean_arr * 100
-                results.append({
-                    'product': product, 'sales_market': market,
-                    'driver': 'pipeline_volume', 'driver_unit': 'percent_change',
-                    'baseline_value': round(float(od.mean()), 0),
-                    'elasticity_pct': round(float(elasticity_od), 3),
-                    'correlation': round(float(corr), 3),
-                    'n_observations': int(len(subset)),
-                    'description': f'1% more opened deals -> +{elasticity_od:.2f}% ARR'
-                })
-    
-    sens_df = spark.createDataFrame(results)
-    sens_df = sens_df.withColumn("run_date", F.current_date())
-    return sens_df
 
-sensitivity = build_sensitivity_coefficients()
-sensitivity.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SENSITIVITY_TABLE)
-print(f"\n2. Wrote {sensitivity.count()} rows to {SENSITIVITY_TABLE}")
-sensitivity.where("sales_market = 'NA'").orderBy("product", "driver").show(truncate=False)
+            for driver_name, col_name, unit, desc_prefix in drivers:
+                if col_name not in subset.columns:
+                    continue
+                x = subset[col_name].values.astype(float)
+                valid = ~(np.isnan(x) | np.isinf(x) | np.isnan(won_arr))
+                x_v, y_v = x[valid], won_arr[valid]
+                if len(x_v) < 30 or np.std(x_v) == 0:
+                    continue
+
+                slope, intercept, r_value, p_value, std_err = sp_stats.linregress(x_v, y_v)
+                corr = r_value
+
+                # Elasticity: % change in ARR per unit driver change
+                if unit == 'percent_change':
+                    elasticity = (slope * (np.mean(x_v) * 0.01)) / mean_arr * 100
+                elif unit == '0.1x_change':
+                    elasticity = (slope * 0.1) / mean_arr * 100
+                else:  # percentage_point
+                    elasticity = (slope / mean_arr) * 100
+
+                results.append({
+                    'product': product, 'sales_market': market,
+                    'driver': driver_name, 'driver_unit': unit,
+                    'baseline_value': round(float(np.mean(x_v)), 2),
+                    'elasticity_pct': round(float(elasticity), 3),
+                    'correlation': round(float(corr), 3),
+                    'n_observations': int(len(x_v)),
+                    'description': f'{desc_prefix} -> {elasticity:+.2f}% ARR (p={p_value:.4f})'
+                })
+
+    import pandas as pd
+    sens_pdf = pd.DataFrame(results)
+    sens_pdf['run_date'] = pd.Timestamp.now().date()
+    return spark.createDataFrame(sens_pdf)
+
+sens_df = build_sensitivity_coefficients()
+sens_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(SENSITIVITY_TABLE)
+print(f"2. Wrote {sens_df.count()} rows to {SENSITIVITY_TABLE}")
+sens_df.select("product", "sales_market", "driver", "elasticity_pct", "correlation", "n_observations").show(30, truncate=False)
+
 
 # ─── 3. MODEL-AS-SCENARIO MAPPING ───────────────────────────────────────────
 # Map individual models to named scenario archetypes based on their behavior.

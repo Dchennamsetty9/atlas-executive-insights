@@ -87,7 +87,10 @@
 #   shap           — SHAP TreeExplainer for LightGBM feature importance.
 # ─────────────────────────────────────────────────────────────────────────────
 
-%pip install statsforecast prophet statsmodels holidays lightgbm scipy shap
+# Pin exact versions for reproducibility — aligned with UCC Forecast Foundation V5.
+# statsmodels pinned at 0.14.6 to prevent forecast() index breakage (0.15+ changes
+# prediction-index generation; see DatetimeIndex fix in fit_predict_ets).
+%pip install statsforecast==2.0.3 prophet==1.3.0 statsmodels==0.14.6 holidays==0.72 lightgbm==4.5.0 scipy==1.14.1 shap==0.46.0
 
 # COMMAND ----------
 
@@ -825,9 +828,13 @@ def fit_predict_mstl_v2(train_hist, horizon, season_length=(13, 52), window=FULL
 
 
 def fit_predict_ets(train_hist, horizon, window=FULL_WINDOW, seasonal='mul', damped=True):
-    values = pd.to_numeric(train_hist['y'], errors='coerce').fillna(0.0).tail(min(window, len(train_hist)))
+    tail = train_hist[['ds', 'y']].tail(min(window, len(train_hist))).copy()
+    values = pd.to_numeric(tail['y'], errors='coerce').fillna(0.0)
     if seasonal == 'mul':
         values = values.clip(lower=1.0)   # multiplicative seasonality needs strictly positive values
+    # Attach a proper DatetimeIndex with freq so statsmodels can extend the
+    # prediction index (required since statsmodels 0.14.2+).
+    values.index = pd.DatetimeIndex(tail['ds'].values, freq='W-MON')
     seasonal_periods = 52 if len(values) >= 104 else 13
     fitted = ExponentialSmoothing(
         values, trend='add', damped_trend=damped, seasonal=seasonal,
@@ -1194,11 +1201,15 @@ GLOBAL_FEATURE_COLS = [
     'sales_market',
     'created_lag4', 'created_lag5', 'headcount_lag4', 'win_rate_woq',
     'pipeline_velocity_lag4', 'deal_size_lag1', 'sales_cycle_lag1',
-    'push_ctr_lag1', 'avg_opportunity_age', 'avg_dials_lag4', 'avg_touches_lag4',
+    'push_ctr_lag1', 'opp_age_lag1', 'avg_dials_lag4', 'avg_touches_lag4',
     'mc_actuals_lag4', 'mkt_opened_lag4', 'miradore_lag4', 'plan_gap_lag1', 'partner_pipe_lag4',
     'sales_rep_ramp_ratio', 'y_lag1', 'y_lag4', 'y_lag8', 'y_lag13', 'y_lag26', 'y_lag52',
     'r4w', 'rolling_vol_4w', 'rolling_vol_13w', 'yoy_growth', 'qoq_momentum',
     'us_holiday_binary', 'region_holiday',
+    # NEW: stage-weighted pipeline (from UCC V5 roadmap — 3 features)
+    'stage_weighted_lag4', 'commit_pipeline_lag4', 'commit_ratio_lag4',
+    # NEW: large-deal shock indicators (from UCC V5 roadmap — 3 features)
+    'large_deal_arr_lag1', 'large_deal_flag_lag1', 'large_deal_trailing_4w',
 ]
 BASE_LGB_PARAMS = {
     'objective': 'quantile',
@@ -1284,6 +1295,8 @@ def _engineer_panel_features(panel: pd.DataFrame) -> pd.DataFrame:
     panel['deal_size_lag1'] = grouped['avg_deal_size'].shift(1).fillna(0.0)
     panel['sales_cycle_lag1'] = grouped['avg_sales_cycle'].shift(1).fillna(0.0)
     panel['push_ctr_lag1'] = grouped['avg_push_counter'].shift(1).fillna(0.0)
+    # Fix: avg_opportunity_age shifted to lag-1 (was same-week = leakage)
+    panel['opp_age_lag1'] = grouped['avg_opportunity_age'].shift(1).fillna(0.0)
     panel['avg_dials_lag4'] = grouped['avg_dials'].shift(4).fillna(0.0)
     panel['avg_touches_lag4'] = grouped['avg_touches'].shift(4).fillna(0.0)
     panel['mc_actuals_lag4'] = grouped['authoritative_actuals'].shift(4).fillna(0.0)
@@ -1301,6 +1314,21 @@ def _engineer_panel_features(panel: pd.DataFrame) -> pd.DataFrame:
     _lag13_safe = panel['y_lag13'].replace(0, np.nan)
     panel['qoq_momentum'] = ((panel['y_lag1'] / _lag13_safe) - 1.0).replace([np.inf, -np.inf], np.nan).clip(-3.0, 3.0).fillna(0.0)
     panel['region_holiday'] = compute_region_holiday(panel['ds'], panel['sales_market'])
+    # Ensure enrichment source columns exist (absent in forward-only panels)
+    for _src_col in ['stage_weighted_pipeline', 'commit_pipeline', 'large_deal_arr', 'large_deal_count', 'avg_opportunity_age']:
+        if _src_col not in panel.columns:
+            panel[_src_col] = 0.0
+    # NEW (#3): Stage-weighted pipeline features
+    panel['stage_weighted_lag4'] = grouped['stage_weighted_pipeline'].shift(4).fillna(0.0)
+    panel['commit_pipeline_lag4'] = grouped['commit_pipeline'].shift(4).fillna(0.0)
+    _total_pipe_lag4 = grouped['all_created_arr'].shift(4).replace(0, np.nan)
+    panel['commit_ratio_lag4'] = (panel['commit_pipeline_lag4'] / _total_pipe_lag4).replace([np.inf, -np.inf], np.nan).clip(0, 1).fillna(0.0)
+    # NEW (#4): Large-deal shock indicators
+    panel['large_deal_arr_lag1'] = grouped['large_deal_arr'].shift(1).fillna(0.0)
+    panel['large_deal_flag_lag1'] = (panel['large_deal_arr_lag1'] > 0).astype(float)
+    panel['large_deal_trailing_4w'] = grouped['large_deal_arr'].transform(
+        lambda s: s.shift(1).rolling(4, min_periods=1).sum()
+    ).fillna(0.0)
     # win_rate_woq: shift-safe rolling conversion per slice x week-of-quarter
     panel['win_rate_woq'] = np.nan
     for (_sid, _wk), grp in panel.groupby(['slice_id', 'week_of_qtr']):
@@ -1320,6 +1348,65 @@ def _engineer_panel_features(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
+def _load_stage_weighted_and_large_deal_features() -> pd.DataFrame:
+    """Compute stage-weighted pipeline and large-deal indicators from SFDC.
+    
+    Same features that improved UCC LGB by 2pp WAPE and reduced bias from
+    -12% to -4%. Computed from cds_sfdc_opp_products_latest for ITSG.
+    
+    Returns weekly panel with: ds, sales_market, stage_weighted_pipeline,
+    commit_pipeline, large_deal_arr, large_deal_count.
+    """
+    enrichment = spark.sql(f"""
+    WITH weekly_opps AS (
+        SELECT
+            DATE_TRUNC('week', close_date) AS ds,
+            CASE 
+                WHEN UPPER(TRIM(sales_market)) IN ('AUS', 'AUS/ROW', 'ROW+INDIA', 'INDIA', 'APAC') THEN 'APAC'
+                WHEN UPPER(TRIM(sales_market)) IN ('UNKNOWN', '') OR sales_market IS NULL THEN 'Unknown'
+                ELSE TRIM(sales_market)
+            END AS sales_market,
+            -- Stage-weighted: probability * amount for all OPEN pipeline
+            SUM(CASE WHEN is_closed = FALSE 
+                THEN COALESCE(amount_towards_plan, 0) * COALESCE(probability, 0) / 100.0
+                ELSE 0 END) AS stage_weighted_pipeline,
+            -- Commit pipeline: late-stage deals (probability >= 70%)
+            SUM(CASE WHEN is_closed = FALSE AND COALESCE(probability, 0) >= 70
+                THEN COALESCE(amount_towards_plan, 0) ELSE 0 END) AS commit_pipeline,
+            -- Large-deal ARR: won deals above $50K in the week
+            SUM(CASE WHEN is_won = TRUE AND is_closed = TRUE 
+                     AND COALESCE(amount_towards_plan, 0) >= 50000
+                THEN amount_towards_plan ELSE 0 END) AS large_deal_arr,
+            COUNT(CASE WHEN is_won = TRUE AND is_closed = TRUE
+                       AND COALESCE(amount_towards_plan, 0) >= 50000
+                  THEN 1 END) AS large_deal_count
+        FROM datagroup.datalake_transform.cds_sfdc_opp_products_latest
+        WHERE product_group = 'ITSG'
+          AND purchase_type_rollup = 'Growth'
+          AND sales_channel NOT IN ('Care', 'Sales Other')
+          AND close_date >= '2022-01-01'
+          AND close_date <= '2028-12-31'  -- exclude absurd far-future dates that overflow pandas
+        GROUP BY DATE_TRUNC('week', close_date),
+                 CASE 
+                    WHEN UPPER(TRIM(sales_market)) IN ('AUS', 'AUS/ROW', 'ROW+INDIA', 'INDIA', 'APAC') THEN 'APAC'
+                    WHEN UPPER(TRIM(sales_market)) IN ('UNKNOWN', '') OR sales_market IS NULL THEN 'Unknown'
+                    ELSE TRIM(sales_market)
+                 END
+    )
+    SELECT ds, sales_market, stage_weighted_pipeline, commit_pipeline,
+           large_deal_arr, large_deal_count
+    FROM weekly_opps
+    WHERE ds IS NOT NULL
+    ORDER BY ds, sales_market
+    """).toPandas()
+    enrichment['ds'] = pd.to_datetime(enrichment['ds'])
+    for col in ['stage_weighted_pipeline', 'commit_pipeline', 'large_deal_arr', 'large_deal_count']:
+        enrichment[col] = pd.to_numeric(enrichment[col], errors='coerce').fillna(0.0)
+    print(f"  ITSG enrichment features loaded: {len(enrichment)} rows, "
+          f"{enrichment['ds'].min().date()} to {enrichment['ds'].max().date()}")
+    return enrichment
+
+
 def build_global_panel() -> pd.DataFrame:
     # CHANGED (root-cause fix): spine = COMPLETE week x market grid; target from
     # SFDC ATP; forecast_prophet features left-joined and ffilled per market.
@@ -1328,6 +1415,11 @@ def build_global_panel() -> pd.DataFrame:
     panel[['y', 'deal_count']] = panel[['y', 'deal_count']].fillna(0.0)
     panel = panel.merge(feature_source_all.drop(columns=['fp_actuals_reference']),
                         on=['ds', 'sales_market'], how='left')
+    # NEW: stage-weighted pipeline + large-deal enrichment from SFDC
+    enrichment = _load_stage_weighted_and_large_deal_features()
+    panel = panel.merge(enrichment, on=['ds', 'sales_market'], how='left')
+    for col in ['stage_weighted_pipeline', 'commit_pipeline', 'large_deal_arr', 'large_deal_count']:
+        panel[col] = panel[col].fillna(0.0)
     panel['slice_id'] = PRODUCT_SCOPE + '|' + panel['sales_market']
     panel = panel.sort_values(['slice_id', 'ds']).reset_index(drop=True)
     for col in FP_FEATURE_COLS:
@@ -2954,6 +3046,14 @@ print()
 # For individual models: use holdout relative errors to generate p10/p90
 # For Adaptive_Ensemble: use MC simulation paths (sim_weekly from Step 7B)
 
+# ── Interval calibration target (2026-08-25 recalibration) ──────────────────
+# Previous: 80% nominal (percentile 10/90) gave 100% holdout coverage (too wide).
+# New: 60% nominal (percentile 20/80) targets ~85-90% holdout coverage.
+# Rationale: model accuracy improved ~20pp from training era to 2026 production;
+# tighter bands give narrower, more actionable uncertainty and higher confidence.
+INTERVAL_LO_PCTILE = 80  # was 90 (upper error bound for p10)
+INTERVAL_HI_PCTILE = 20  # was 10 (lower error bound for p90)
+
 def _model_quantile_factors(holdout_preds, model_name):
     """Compute p10/p90 relative factors from holdout residuals for a model."""
     m = holdout_preds[holdout_preds['model'] == model_name].copy()
@@ -2963,8 +3063,8 @@ def _model_quantile_factors(holdout_preds, model_name):
     rel_errors = rel_errors.dropna()
     if len(rel_errors) < 5:
         return 0.7, 1.3
-    p10_factor = 1 - np.percentile(rel_errors, 90)  # p10 = forecast * (1 - upper_error)
-    p90_factor = 1 - np.percentile(rel_errors, 10)  # p90 = forecast * (1 - lower_error)
+    p10_factor = 1 - np.percentile(rel_errors, INTERVAL_LO_PCTILE)  # p10 = forecast * (1 - upper_error)
+    p90_factor = 1 - np.percentile(rel_errors, INTERVAL_HI_PCTILE)  # p90 = forecast * (1 - lower_error)
     return max(0.3, min(p10_factor, 0.95)), max(1.05, min(p90_factor, 2.0))
 
 # Build quantile factors for each model
@@ -2979,9 +3079,10 @@ for m_name in all_model_weekly['model'].unique():
 # Ensemble quantiles from MC simulation (Step 7B)
 try:
     # sim_weekly shape: (10000, n_production_weeks)
-    mc_p10 = np.percentile(sim_weekly, 10, axis=0)
+    # MC percentiles tightened from 10/90 to 15/85 (target ~85% holdout coverage)
+    mc_p10 = np.percentile(sim_weekly, 15, axis=0)
     mc_p50 = np.percentile(sim_weekly, 50, axis=0)
-    mc_p90 = np.percentile(sim_weekly, 90, axis=0)
+    mc_p90 = np.percentile(sim_weekly, 85, axis=0)
     # Map to production weeks
     _mc_weeks = pd.to_datetime(mc_fw['ds'].values) if 'mc_fw' in dir() else future_weeks
     mc_quantile_map = {}
@@ -3125,6 +3226,80 @@ print(f'  {CBE_TABLE}: {len(cbe_out)} rows (actuals + forecast, cumulative QTD, 
 print(f'  Quantiles: p10/p50/p90 (MC-based for Ensemble, residual-based for individual models)')
 print(f'  Pipeline version: {PIPELINE_VERSION}')
 print(f'  Run date: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}')
+
+# COMMAND ----------
+
+# DBTITLE 1,Step 8E — Append to itsg_forecast_vintages (vintage tracking)
+# =============================================================================
+# STEP 8E: APPEND FORECAST VINTAGE (daily drift tracking)
+# =============================================================================
+# PURPOSE: Append the current run's forward forecasts to an append-only
+# vintages table, mirroring UCC's Step 14C. This enables:
+#   - Forecast vs Reality backtesting (what did we predict for now-closed weeks?)
+#   - Vintage drift analysis (how stable are forecasts across daily runs?)
+#   - Model comparison over time
+#
+# TABLE: datagroup_mdl.mdl_sales_analytics.itsg_forecast_vintages
+#   Append-only (no overwrites). Each run adds its full forward prediction set.
+#   Key columns: ds, model, p10, p50, p90, grain_level, sales_market,
+#                run_date_utc, run_timestamp_utc, pipeline_version
+# =============================================================================
+
+from pyspark.sql import functions as F
+
+CATALOG = "datagroup_mdl"
+SCHEMA = "mdl_sales_analytics"
+ITSG_VINTAGES_TABLE = f"{CATALOG}.{SCHEMA}.itsg_forecast_vintages"
+
+try:
+    # Read the itsg_forecast_v5 output we just wrote
+    itsg_v5 = spark.table(f"{CATALOG}.{SCHEMA}.itsg_forecast_v5")
+    
+    # Add vintage metadata columns (consistent with ucc_forecast_vintages schema)
+    vintage_df = (itsg_v5
+        .select(
+            F.col("ds"),
+            F.col("p50"),
+            F.col("p10"),
+            F.col("p90"),
+            F.col("model"),
+            F.col("run_date_utc").cast("string").alias("run_date_utc"),
+            F.col("run_timestamp_utc").cast("string").alias("run_ts_utc"),
+            F.lit("V5").alias("pipeline_version"),
+            F.lit(False).alias("partial_week_dropped"),
+            F.col("forecast"),
+            F.col("grain_level"),
+            F.col("sales_market"),
+            F.col("run_timestamp_utc"),
+            F.col("recommended_for_exec"),
+            F.lit("ITSG_Growth_ARR_Forecasting_v5").alias("notebook_name"),
+            F.lit("V5").alias("notebook_version"),
+            F.lit("ITSG").alias("product_group"),
+            F.lit(f"{CATALOG}.{SCHEMA}.itsg_forecast_v5").alias("source_table"),
+        )
+    )
+    
+    n_rows = vintage_df.count()
+    
+    # Append to vintages table (create if first run)
+    (vintage_df.write
+        .format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .saveAsTable(ITSG_VINTAGES_TABLE)
+    )
+    
+    total_vintages = spark.table(ITSG_VINTAGES_TABLE).count()
+    distinct_dates = (spark.table(ITSG_VINTAGES_TABLE)
+        .select(F.to_date("run_date_utc").alias("rd"))
+        .distinct().count())
+    
+    print(f"\u2713 Appended {n_rows} rows to {ITSG_VINTAGES_TABLE}")
+    print(f"  Total vintages: {total_vintages} rows across {distinct_dates} run dates")
+    
+except Exception as exc:
+    print(f"  WARN: ITSG vintage append failed (non-blocking): {exc}")
+    print(f"  The main outputs (itsg_forecast_v5, itsg_forecast_boq, itsg_forecast_cbe) are unaffected.")
 
 # COMMAND ----------
 
