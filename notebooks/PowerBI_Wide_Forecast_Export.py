@@ -115,6 +115,20 @@ src = (
     .withColumn("Product_group", F.col("product"))
 )
 
+# ============================================================================
+# NORMALIZE: Coalesce blank + literal "Unknown" into single "Unknown" bucket
+# ============================================================================
+before_unknowns = src.filter(
+    F.trim(F.coalesce(F.col("sales_market"), F.lit(""))).isin("", "Unknown")
+).select("sales_market").distinct().collect()
+print(f"Null-like sales_market variants before: {[r[0] for r in before_unknowns]}")
+
+src = src.withColumn("sales_market",
+    F.when(
+        F.trim(F.coalesce(F.col("sales_market"), F.lit(""))).isin("", "Unknown"),
+        F.lit("Unknown")
+    ).otherwise(F.col("sales_market"))
+)
 print(f"Enriched rows: {src.count()}")
 print(f"Sample calendar:")
 display(src.select("ds", "year", "ISOWeek", "quarter", "month", "RelWeekNumber", "WeekLabel", "Product_group").limit(5))
@@ -317,7 +331,7 @@ print(f"Wide rows: {wide.count()}, columns: {len(wide.columns)}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 5b - Conformal recalibration + top-down reconciliation + LGB merge
+# DBTITLE 1,Cell 5b - Conformal recalibration + top-down reconciliation + LGB merge + Grand Total synthesis
 import numpy as np
 from pyspark.sql.types import DoubleType, StringType, StructType, StructField
 
@@ -337,8 +351,9 @@ prophet_abs = (
     src.filter(
         (F.col("model_name") == "Prophet") &
         (F.col("actuals").isNotNull()) &
-        (F.col("forecast_p50").isNotNull()) &
-        (F.col("sales_market") != "Total") & (F.col("product") != "Total")
+        (F.col("forecast_p50").isNotNull())
+        # Total-grain rows included so they get their own conformal bands.
+        # Without this, Total P05/P95 collapse to P50 (zero-width CI).
     )
     .withColumn("abs_residual", F.col("actuals") - F.col("forecast_p50"))
 )
@@ -487,6 +502,65 @@ for q in QUANTILES:
     wide = wide.drop(f"Global_LGB_Q50_ITSG_{q}", f"Global_LGB_Q50_UCC_{q}")
 
 print(f"Merged Global_LGB_Q50 columns (5 quantiles). Dropped 10 redundant ITSG/UCC columns.")
+# ============================================================================
+# D. GRAND TOTAL SYNTHESIS: Sum product-level Total bands
+# ============================================================================
+# Grand Total (product=Total, sales_market=Total) has no Prophet residuals,
+# so conformal factors are NULL → bands collapse to zero-width.
+# Fix: synthesize Grand Total bands as SUM of product-level Total bands.
+# This is conservative (sum of P05s ≤ joint P05) but far better than 0-width.
+
+FINAL_MODELS = ["Adaptive_Ensemble", "DHR_ARIMA", "ETS", "Global_LGB_Q50", "MSTL_v2", "Prophet"]
+
+# Aggregate product-level Total bands into Grand Total
+agg_exprs = []
+for m in FINAL_MODELS:
+    for q in QUANTILES:
+        agg_exprs.append(F.sum(f"{m}_{q}").alias(f"gt_{m}_{q}"))
+
+product_total_bands = (
+    wide.filter((F.col("sales_market") == "Total") & (F.col("product") != "Total"))
+    .groupBy("ds")
+    .agg(*agg_exprs)
+)
+
+wide = wide.join(product_total_bands, on="ds", how="left")
+
+is_grand_total = (F.col("product") == "Total") & (F.col("sales_market") == "Total")
+for m in FINAL_MODELS:
+    for q in QUANTILES:
+        col_name = f"{m}_{q}"
+        wide = wide.withColumn(col_name,
+            F.when(is_grand_total, F.col(f"gt_{col_name}")).otherwise(F.col(col_name))
+        )
+
+# Drop temp columns
+for m in FINAL_MODELS:
+    for q in QUANTILES:
+        wide = wide.drop(f"gt_{m}_{q}")
+
+# Update scenario columns for Grand Total
+wide = (
+    wide
+    .withColumn("worst_case",
+        F.when(is_grand_total, F.col("Adaptive_Ensemble_P05")).otherwise(F.col("worst_case")))
+    .withColumn("best_case",
+        F.when(is_grand_total, F.col("Adaptive_Ensemble_P95")).otherwise(F.col("best_case")))
+    .withColumn("Best_Case_Miradore_Adj",
+        F.col("best_case") + F.coalesce(F.col("miradore_plan"), F.lit(0)))
+    .withColumn("Worst_Case_Miradore_Adj",
+        F.col("worst_case") + F.coalesce(F.col("miradore_plan"), F.lit(0)))
+)
+
+gt_sample = wide.filter(is_grand_total).select("ds", "best_case", "worst_case").orderBy(F.desc("ds")).limit(3).toPandas()
+for _, r in gt_sample.iterrows():
+    print(f"  Grand Total {r['ds']}: worst={r['worst_case']:,.0f}, best={r['best_case']:,.0f}, width={r['best_case']-r['worst_case']:,.0f}")
+
+# NOTE on 7-model facade: ~88% of rows are prophet_proxy (pre-Aug 2026) where
+# ALL models share identical P50 copied from Prophet. Per-model conformal cannot
+# fix this — residuals are identical since P50s are identical. For native V5 rows
+# (~12%), models already have DISTINCT bands via different P50s + shared conformal
+# shift. The facade percentage decreases naturally as V5 data accumulates daily.
 print(f"Final columns: {len(wide.columns)}, rows: {wide.count()}")
 
 # COMMAND ----------
@@ -585,14 +659,21 @@ display(long_fact.limit(5))
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 6b - Write wide + long tables to Delta
+# DBTITLE 1,Cell 6b - Write wide + long tables to Delta + run history
 # MAGIC %sql
-# MAGIC -- Write both wide and long tables to Unity Catalog
+# MAGIC -- Write both wide and long tables to Unity Catalog (latest snapshot)
 # MAGIC CREATE OR REPLACE TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_powerbi_wide AS
 # MAGIC SELECT * FROM _powerbi_wide_staging;
 # MAGIC
 # MAGIC CREATE OR REPLACE TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_long AS
-# MAGIC SELECT * FROM _long_format_staging
+# MAGIC SELECT * FROM _long_format_staging;
+# MAGIC
+# MAGIC -- Run history: create on first run, then append each snapshot
+# MAGIC CREATE TABLE IF NOT EXISTS datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history
+# MAGIC AS SELECT * FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_powerbi_wide WHERE 1=0;
+# MAGIC
+# MAGIC INSERT INTO datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history
+# MAGIC SELECT * FROM _powerbi_wide_staging
 
 # COMMAND ----------
 
