@@ -25,6 +25,11 @@
 # MAGIC | `ucc_forecast_cbe` | 426 | 2026-04-06 to 2027-08-09 | 6 | Current Best Estimate (actuals + forecast), cumulative QTD, pace vs BOQ |
 # MAGIC | `ucc_forecast_vintages` | 17,424 | 2026-07-06 to 2026-12-28 | 6 | Append-only forecast history for vintage tracking |
 # MAGIC | `ucc_forecast_v4` | 792 | 2026-08-03 to 2026-12-28 | 6 | Legacy mirror for backward compatibility |
+# MAGIC
+# MAGIC **2026-08-30: Added Cell 6b — Hierarchical Reconciliation.** Top-down proportional
+# MAGIC scaling ensures market-level forecasts sum exactly to the total-level forecast
+# MAGIC within each product (UCC, ITSG). The "Total" product rollup is then recomputed
+# MAGIC from reconciled values. Method: Athanasopoulos et al. (2009).
 # MAGIC | `itsg_forecast_boq` | 432 | 2026-03-30 to 2027-08-09 | 6 | Rolling 1-year BOQ plan, p10/p50/p90 quantiles, forecast only |
 # MAGIC | `itsg_forecast_cbe` | 432 | 2026-03-30 to 2027-08-09 | 6 | Current Best Estimate (actuals + forecast), cumulative QTD, pace vs BOQ |
 # MAGIC | `itsg_forecast_v4` | 972 | 2026-08-10 to 2027-02-08 | 6 | Legacy mirror for backward compatibility |
@@ -571,6 +576,127 @@ total = (per_product
 results_base = per_product.unionByName(total)
 print(f"Rows incl. Total rollup: {results_base.count()}")
 print(f"  Per-product rows: {per_product.count()}, Total rollup rows: {total.count()}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 6b — Hierarchical Reconciliation
+# MAGIC %md
+# MAGIC ## Cell 6b — Hierarchical Reconciliation (top-down proportional)
+# MAGIC
+# MAGIC Within each product (UCC, ITSG), ensures market-level forecasts sum **exactly**
+# MAGIC to the total-level forecast. The total-level forecast is the anchor — it is
+# MAGIC trained on aggregate data with lower noise. Markets are scaled proportionally
+# MAGIC so they preserve their relative shares while summing to the anchor.
+# MAGIC
+# MAGIC After per-product reconciliation, the cross-product "Total" rollup is
+# MAGIC recomputed from the reconciled values.
+# MAGIC
+# MAGIC **Method:** Athanasopoulos et al. (2009) top-down proportional scaling:
+# MAGIC `scale_factor[q] = total_q / SUM(market_q)` for each quantile column.
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 6b — Hierarchical Reconciliation
+# CELL 6b: HIERARCHICAL RECONCILIATION (TOP-DOWN PROPORTIONAL)
+# =============================================================================
+# Within each product (UCC, ITSG), ensures market-level forecasts sum exactly
+# to the total-level forecast for each (ds, model, forecast_type, forecast_view).
+#
+# The total-level forecast is the anchor — trained on aggregate data with lower
+# noise, it is the more reliable estimate. Market rows are scaled proportionally
+# so they preserve relative shares while summing to the anchor.
+#
+# After per-product reconciliation, the "Total" product rollup (UCC + ITSG) is
+# recomputed from reconciled values.
+#
+# Only applies to forecast rows (model != 'ACTUAL'); actuals pass through unchanged.
+# =============================================================================
+
+from pyspark.sql import Window
+
+# ── Separate actuals from forecasts ──────────────────────────────────────────
+actual_rows = results_base.where(F.col("model") == "ACTUAL")
+fc_rows     = results_base.where(F.col("model") != "ACTUAL")
+
+# Per-product forecast rows only (UCC, ITSG) — Total is recomputed after
+pp_fc  = fc_rows.where(F.upper(F.col("product")) != "TOTAL")
+
+# ── Build scale factors ──────────────────────────────────────────────────────
+RECON_KEY = ["product", "ds", "model", "forecast_type", "forecast_view"]
+
+# Anchor = the total-grain row for each key
+anchor = (pp_fc
+    .where(F.lower(F.col("grain_level")) == "total")
+    .select(*RECON_KEY,
+            F.col("p10").alias("anc_p10"),
+            F.col("p50").alias("anc_p50"),
+            F.col("p90").alias("anc_p90")))
+
+# Sum of market-grain rows per key
+mkt_sum = (pp_fc
+    .where(F.lower(F.col("grain_level")) == "market")
+    .groupBy(*RECON_KEY)
+    .agg(F.sum("p10").alias("sum_p10"),
+         F.sum("p50").alias("sum_p50"),
+         F.sum("p90").alias("sum_p90")))
+
+# Scale factor = anchor / sum_of_markets (1.0 if sum is zero)
+recon = (anchor.join(mkt_sum, RECON_KEY, "inner")
+    .withColumn("sf_p10", F.when(F.col("sum_p10") != 0, F.col("anc_p10") / F.col("sum_p10")).otherwise(1.0))
+    .withColumn("sf_p50", F.when(F.col("sum_p50") != 0, F.col("anc_p50") / F.col("sum_p50")).otherwise(1.0))
+    .withColumn("sf_p90", F.when(F.col("sum_p90") != 0, F.col("anc_p90") / F.col("sum_p90")).otherwise(1.0))
+    .select(*RECON_KEY, "sf_p10", "sf_p50", "sf_p90"))
+
+# ── Apply to market rows ─────────────────────────────────────────────────────
+mkt_rows = pp_fc.where(F.lower(F.col("grain_level")) == "market")
+tot_rows = pp_fc.where(F.lower(F.col("grain_level")) == "total")  # unchanged
+
+mkt_reconciled = (mkt_rows
+    .join(recon, RECON_KEY, "left")
+    .withColumn("p10",        F.round(F.col("p10") * F.coalesce(F.col("sf_p10"), F.lit(1.0)), 2))
+    .withColumn("p50",        F.round(F.col("p50") * F.coalesce(F.col("sf_p50"), F.lit(1.0)), 2))
+    .withColumn("p90",        F.round(F.col("p90") * F.coalesce(F.col("sf_p90"), F.lit(1.0)), 2))
+    .withColumn("most_likely", F.col("p50"))
+    .drop("sf_p10", "sf_p50", "sf_p90"))
+
+# ── Diagnostic: measure adjustment magnitude ─────────────────────────────────
+_diag = (mkt_rows.join(recon, RECON_KEY, "left")
+    .where(F.col("sf_p50").isNotNull())
+    .select(F.abs(F.col("sf_p50") - 1.0).alias("shift_pct")))
+_stats = _diag.agg(
+    F.count("*").alias("n"),
+    F.mean("shift_pct").alias("mean"),
+    F.expr("percentile_approx(shift_pct, 0.5)").alias("median"),
+    F.max("shift_pct").alias("max")).collect()[0]
+
+# ── Reassemble per-product (total-grain unchanged + reconciled market-grain)
+pp_reconciled = tot_rows.unionByName(mkt_reconciled, allowMissingColumns=True)
+
+# ── Recompute "Total" product from reconciled UCC + ITSG ─────────────────────
+total_recomp = (pp_reconciled
+    .groupBy("run_date", "ds", "sales_market", "grain_level", "model",
+             "forecast_type", "forecast_view")
+    .agg(F.sum("actual").alias("actual"),
+         F.sum("p10").alias("p10"),
+         F.sum("p50").alias("p50"),
+         F.sum("p90").alias("p90"),
+         F.sum("most_likely").alias("most_likely"),
+         F.max("recommended_for_exec").alias("recommended_for_exec"))
+    .withColumn("product", F.lit("Total"))
+    .withColumn("source_run_ts", F.lit(None).cast("timestamp"))
+    .withColumn("published_at_utc", F.current_timestamp()))
+
+# ── Final results_base = reconciled per-product + recomputed Total + actuals
+results_base = (pp_reconciled
+    .unionByName(total_recomp, allowMissingColumns=True)
+    .unionByName(actual_rows, allowMissingColumns=True)
+    .select(*BASE))
+
+print(f"Hierarchical reconciliation complete.")
+print(f"  Market adjustments: mean={_stats['mean']*100:.2f}%, "
+      f"median={_stats['median']*100:.2f}%, max={_stats['max']*100:.2f}% "
+      f"({_stats['n']} market rows)")
+print(f"  Rows after reconciliation: {results_base.count()}")
 
 # COMMAND ----------
 
@@ -2511,6 +2637,106 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 15 — Wide-Format Power BI Table
+# MAGIC %md
+# MAGIC ## Cell 15 — Wide-Format Power BI Table (`arr_forecast_wide`)
+# MAGIC
+# MAGIC Pivots `forecast_all_models` so each model's P50 forecast is its own column.
+# MAGIC This is the table to connect from Power BI when you want one row per
+# MAGIC `ds × product × sales_market` with all models side by side.
+# MAGIC
+# MAGIC | Column | Description |
+# MAGIC |--------|-------------|
+# MAGIC | `ds` | Week-start Monday |
+# MAGIC | `product` | UCC, ITSG, or Total |
+# MAGIC | `sales_market` | NA, EMEA, APAC, LATAM, Unknown, or Total |
+# MAGIC | `grain_level` | `market` (individual) or `total` (rollup) |
+# MAGIC | `actuals` | Actual ARR for that week (NULL if future) |
+# MAGIC | `forecast_type` | actuals / forecast |
+# MAGIC | `Adaptive_Ensemble` … `Prophet` | P50 point forecast per model |
+# MAGIC | `*_p10` / `*_p90` | Interval bounds per model |
+
+# COMMAND ----------
+
+# DBTITLE 1,Build arr_forecast_wide pivot table
+# ══════════════════════════════════════════════════════════════════════════════
+# ARR_FORECAST_WIDE — Pivoted table for Power BI (one column per model)
+# ══════════════════════════════════════════════════════════════════════════════
+# Source: forecast_all_models (built in Cell 14)
+# Output: arr_forecast_wide — ds × product × sales_market with model columns
+# ══════════════════════════════════════════════════════════════════════════════
+
+from pyspark.sql import functions as F
+
+WIDE_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_wide"
+
+# Read current forecast_all_models
+all_models = spark.table(ALL_MODELS_TABLE).filter(F.col("is_current") == True)
+
+# --- Grain level assignment ---
+grained = all_models.withColumn(
+    "grain_level",
+    F.when(F.col("sales_market") == "Total", F.lit("total"))
+     .otherwise(F.lit("market"))
+)
+
+# --- Pivot P50 (main forecast) ---
+p50_wide = (
+    grained
+    .groupBy("ds", "product", "sales_market", "grain_level", "forecast_type")
+    .pivot("model_name")
+    .agg(F.first("forecast_p50"))
+)
+
+# --- Pivot P10 (lower bound) ---
+p10_wide = (
+    grained
+    .groupBy("ds", "product", "sales_market")
+    .pivot("model_name")
+    .agg(F.first(F.col("forecast_p50") - F.col("forecast_p50") + F.col("forecast_p05")))
+)
+# Rename p10 columns
+for c in p10_wide.columns:
+    if c not in ("ds", "product", "sales_market"):
+        p10_wide = p10_wide.withColumnRenamed(c, f"{c}_p05")
+
+# --- Pivot P90 (upper bound) ---
+p90_wide = (
+    grained
+    .groupBy("ds", "product", "sales_market")
+    .pivot("model_name")
+    .agg(F.first("forecast_p95"))
+)
+for c in p90_wide.columns:
+    if c not in ("ds", "product", "sales_market"):
+        p90_wide = p90_wide.withColumnRenamed(c, f"{c}_p95")
+
+# --- Actuals (model-independent, take first non-null) ---
+actuals_df = (
+    grained
+    .groupBy("ds", "product", "sales_market")
+    .agg(F.first("actuals", ignorenulls=True).alias("actuals"))
+)
+
+# --- Join all pivots ---
+wide = (
+    p50_wide
+    .join(p10_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(p90_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(actuals_df, on=["ds", "product", "sales_market"], how="left")
+    .withColumn("run_date", F.current_date())
+    .withColumn("published_at_utc", F.current_timestamp())
+)
+
+print(f"Wide-format rows: {wide.count()}")
+print(f"Columns: {sorted(wide.columns)}")
+
+# --- Write ---
+wide.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(WIDE_TABLE)
+print(f"\n✓ Wrote {WIDE_TABLE}")
+
+# COMMAND ----------
+
 # DBTITLE 1,Grants and companion views for Power BI
 # ══════════════════════════════════════════════════════════════════════════════
 # GRANTS + COMPANION VIEWS
@@ -2519,10 +2745,14 @@ else:
 CATALOG = "datagroup_mdl"
 SCHEMA = "mdl_sales_analytics"
 ALL_MODELS_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+WIDE_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_wide"
 APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
 
 spark.sql(f"GRANT SELECT ON TABLE {ALL_MODELS_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
 print(f"✓ Granted SELECT on {ALL_MODELS_TABLE} to {APP_SERVICE_PRINCIPAL}")
+
+spark.sql(f"GRANT SELECT ON TABLE {WIDE_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
+print(f"✓ Granted SELECT on {WIDE_TABLE} to {APP_SERVICE_PRINCIPAL}")
 
 spark.sql(f"""
 CREATE OR REPLACE VIEW {CATALOG}.{SCHEMA}.v_forecast_all_models_current AS
