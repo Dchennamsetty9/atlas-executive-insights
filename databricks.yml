@@ -360,13 +360,13 @@ resources:
       tasks:
         - task_key: ucc_forecast_v5
           notebook_task:
-            notebook_path: /Users/dileep.chennamsetty@goto.com/UCC Forecast Foundation V5
+            notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/UCC_Forecast_Foundation_V5
             source: WORKSPACE
           timeout_seconds: 3600   # 1h — typical run ~8-10 min
 
         - task_key: itsg_forecast_v5
           notebook_task:
-            notebook_path: /Users/dileep.chennamsetty@goto.com/ITSG_Growth_ARR_Forecasting_v5
+            notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/ITSG_Growth_ARR_Forecasting_v5
             source: WORKSPACE
           timeout_seconds: 3600   # 1h — typical run ~8-10 min
 

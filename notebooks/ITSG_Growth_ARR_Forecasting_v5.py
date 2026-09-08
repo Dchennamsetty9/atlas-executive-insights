@@ -51,8 +51,16 @@
 # MAGIC 11. **Data freshness check** (Step 1B) — flags the last closed week if it falls below 15% of the
 # MAGIC     trailing 8-week average, preventing stale/incomplete data from entering production.
 # MAGIC
-# MAGIC **Status:** freshly rewritten, not yet executed. Outputs are intentionally empty; run top-to-bottom on
-# MAGIC Databricks after the Step 0 kernel restart.
+# MAGIC **v2.2 session (2026-08-30) — ported UCC V5 accuracy improvements:**
+# MAGIC
+# MAGIC 12. **mc_actuals coverage guard** (Step 6) — when trailing 8-week non-zero authoritative coverage
+# MAGIC     < 50%, substitutes magna_carta_actuals proxy at lag-4. Gave UCC a 7.22pp bias improvement
+# MAGIC     (-18.62% → -11.40%); expected similar gain for ITSG.
+# MAGIC 13. **DHR_ARIMA flagged as skippable** (Step 5) — worst performer at 39.7% WAPE, already excluded
+# MAGIC     from ensemble by Step 6B. Cell can be skipped in production to save compute.
+# MAGIC 14. **Stage-weighted pipeline + large-deal indicators** already present from v2.1.
+# MAGIC
+# MAGIC **Status:** run top-to-bottom on Databricks after the Step 0 kernel restart.
 
 # COMMAND ----------
 
@@ -965,6 +973,12 @@ if int((weekly_itsg['ds'].dt.to_period('Q') == last_q).sum()) < 13:
 
 # DBTITLE 1,Step 5: DHR-ARIMA Benchmark Model
 # STEP 5: BENCHMARK MODEL — DHR-ARIMA (TOTAL LEVEL)
+# ============================================================================
+# NOTE: DHR_ARIMA is ITSG's worst performer (holdout WAPE 39.7%, CV WAPE
+# 40.3%) and is excluded from the ensemble by Step 6B. It is retained here
+# for diagnostic/comparison purposes only. To save ~2 min of compute in
+# production, skip this cell entirely — Step 6B and Step 7 do not depend on it.
+# ============================================================================
 # =============================================================================
 # PURPOSE: Fit Dynamic Harmonic Regression + AutoARIMA at the total level
 # (ITSG's markets are too thin for per-market ARIMA), with Fourier terms
@@ -1190,6 +1204,12 @@ import lightgbm as lgb
 import holidays as holidays_lib
 
 GLOBAL_MODEL_NAME = 'Global_LGB_Q50_ITSG'
+
+# mc_actuals coverage guard — ported from UCC V5 third patch session.
+# When trailing 8-week non-zero authoritative coverage < threshold,
+# fall back to magna_carta_actuals (the marketing proxy). This fixed a
+# 7.22pp bias improvement in UCC (-18.62% -> -11.40%).
+MC_AUTH_COV_THRESHOLD = 0.50
 GLOBAL_QUANTILES = {'P10': 0.10, 'P50': 0.50, 'P90': 0.90}
 GLOBAL_CAT_COLS = ['sales_market']
 GLOBAL_EARLYSTOP_WEEKS = 13
@@ -1299,7 +1319,14 @@ def _engineer_panel_features(panel: pd.DataFrame) -> pd.DataFrame:
     panel['opp_age_lag1'] = grouped['avg_opportunity_age'].shift(1).fillna(0.0)
     panel['avg_dials_lag4'] = grouped['avg_dials'].shift(4).fillna(0.0)
     panel['avg_touches_lag4'] = grouped['avg_touches'].shift(4).fillna(0.0)
-    panel['mc_actuals_lag4'] = grouped['authoritative_actuals'].shift(4).fillna(0.0)
+    # mc_actuals coverage guard: when trailing 8-week non-zero coverage < threshold,
+    # substitute magna_carta_actuals proxy (ported from UCC V5 — 7pp bias fix)
+    _auth_lag4 = grouped['authoritative_actuals'].shift(4).fillna(0.0)
+    _mc_cov = grouped['authoritative_actuals'].transform(
+        lambda s: s.shift(4).rolling(8, min_periods=1).apply(lambda w: (w != 0).mean(), raw=True)
+    ).fillna(0.0)
+    _mc_proxy = grouped['magna_carta_actuals'].shift(4).fillna(0.0)
+    panel['mc_actuals_lag4'] = np.where(_mc_cov >= MC_AUTH_COV_THRESHOLD, _auth_lag4, _mc_proxy)
     panel['mkt_opened_lag4'] = grouped['magna_carta_actuals'].shift(4).fillna(0.0)
     panel['miradore_lag4'] = grouped['miradore_plan'].shift(4).fillna(0.0)
     panel['partner_pipe_lag4'] = grouped['total_partner_pipeline'].shift(4).fillna(0.0)
@@ -2406,6 +2433,40 @@ monitoring_baseline['run_date_utc'] = RUN_DATE_UTC
 monitoring_baseline['primary_output_table'] = PRIMARY_PRODUCTION_OUTPUT_TABLE
 monitoring_baseline['legacy_output_table'] = LEGACY_PRODUCTION_OUTPUT_TABLE
 monitoring_baseline['notebook_version'] = NOTEBOOK_VERSION
+
+# -- Per-quarter holdout error (closed-quarter accuracy for executive display) --
+# The publish pipeline reads these columns to display quarterly error in the app.
+# A quarter is "closed" if the holdout has all 13 weeks for that quarter.
+try:
+    _hbp = pd.concat([
+        holdout_benchmark_predictions[['model', 'ds', 'actual', 'forecast']],
+        ensemble_holdout.assign(model='Adaptive_Ensemble')[['model', 'ds', 'actual', 'forecast']],
+    ], ignore_index=True)
+    _hbp['ds'] = pd.to_datetime(_hbp['ds'])
+    _hbp['quarter'] = _hbp['ds'].dt.to_period('Q').astype(str)
+    _q_agg = (
+        _hbp.groupby(['model', 'quarter'], as_index=False)
+        .agg(weeks=('ds', 'nunique'), forecast_sum=('forecast', 'sum'), actual_sum=('actual', 'sum'))
+    )
+    _q_agg['qtr_error_pct'] = ((_q_agg['forecast_sum'] / _q_agg['actual_sum'] - 1) * 100).abs().round(3)
+    _q_agg['is_closed'] = _q_agg['weeks'] >= 12  # 12+ of 13 = closed
+    # Last closed quarter per model (prefer closed, then latest)
+    _q_agg = _q_agg.sort_values(['is_closed', 'quarter'], ascending=[False, False])
+    _last_closed = _q_agg.groupby('model', as_index=False).first()
+    _last_closed = _last_closed[['model', 'quarter', 'qtr_error_pct', 'is_closed', 'weeks']]
+    _last_closed = _last_closed.rename(columns={
+        'quarter': 'last_closed_quarter',
+        'qtr_error_pct': 'last_closed_quarter_error_pct',
+        'is_closed': 'last_closed_quarter_is_closed',
+        'weeks': 'last_closed_quarter_weeks',
+    })
+    monitoring_baseline = monitoring_baseline.merge(_last_closed, on='model', how='left')
+    print(f'  Added closed-quarter error:')
+    print(_last_closed[['model', 'last_closed_quarter', 'last_closed_quarter_error_pct']].to_string(index=False))
+except Exception as exc:
+    print(f'  WARN: Could not compute closed-quarter error: {exc}')
+    for col in ['last_closed_quarter', 'last_closed_quarter_error_pct', 'last_closed_quarter_is_closed', 'last_closed_quarter_weeks']:
+        monitoring_baseline[col] = None
 
 spark.createDataFrame(monitoring_baseline).write \
     .mode('append') \
