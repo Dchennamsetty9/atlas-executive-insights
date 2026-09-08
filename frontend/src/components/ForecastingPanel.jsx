@@ -1833,7 +1833,7 @@ const ForecastingPanel = () => {
   const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy, lb] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
@@ -1845,6 +1845,9 @@ const ForecastingPanel = () => {
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
+      // Leaderboard: model accuracy for the pill badges on every tab.
+      // Without this, pills show hardcoded demo values until the Accuracy tab is visited.
+      apiService.getForecastV2Leaderboard(),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1861,6 +1864,7 @@ const ForecastingPanel = () => {
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+    if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
     {
       const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
