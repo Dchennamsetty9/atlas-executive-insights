@@ -1845,8 +1845,8 @@ const ForecastingPanel = () => {
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-      // Leaderboard: model accuracy for the pill badges on every tab.
-      // Without this, pills show hardcoded demo values until the Accuracy tab is visited.
+      // Leaderboard: fetch model accuracy on initial load so pill badges show live
+      // data on every tab (without this, pills show hardcoded demo values until Accuracy).
       apiService.getForecastV2Leaderboard(),
     ]);
 
