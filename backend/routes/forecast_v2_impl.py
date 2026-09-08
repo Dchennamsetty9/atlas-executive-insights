@@ -3338,7 +3338,8 @@ async def get_accuracy_by_quarter(
 async def get_leaderboard(
     live_mode: bool = Depends(_live_mode_dependency),
 ):
-    """MAPE leaderboard — all product × sales_market slices."""
+    """MAPE leaderboard — all product × sales_market slices.
+    Includes quarterly error from monitoring baselines when available."""
     if not live_mode:
         return _demo("data")
 
@@ -3361,7 +3362,13 @@ async def get_leaderboard(
             AVG(CAST({mstl_col} AS DOUBLE)) AS mape_mstl_v2,
             AVG(CAST({dhr_col} AS DOUBLE)) AS mape_dhr_arima,
             AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
-            MAX(best_model) AS best_model
+            MAX(best_model) AS best_model,
+            AVG(CAST(quarterly_wape_ensemble AS DOUBLE)) AS qtr_ensemble,
+            AVG(CAST(quarterly_wape_ets AS DOUBLE)) AS qtr_ets,
+            AVG(CAST(quarterly_wape_prophet AS DOUBLE)) AS qtr_prophet,
+            AVG(CAST(quarterly_wape_lightgbm AS DOUBLE)) AS qtr_lightgbm,
+            AVG(CAST(quarterly_wape_mstl_v2 AS DOUBLE)) AS qtr_mstl_v2,
+            AVG(CAST(quarterly_wape_dhr_arima AS DOUBLE)) AS qtr_dhr_arima
         FROM {LB_TABLE}
         WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
         GROUP BY product, {_normalized_market_expr('sales_market')}
@@ -3376,15 +3383,15 @@ async def get_leaderboard(
     data = [{
         "product":        str(r.get("product") or ""),
         "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
-        # Holdout-scored ensemble WAPE when the unify view provides it; the
-        # realized-MAPE computation below only fills slices where this is null.
-        **({"Ensemble": round(_f(r.get("mape_ensemble")), 1)}
-           if _f(r.get("mape_ensemble"), 0) > 0 else {}),
-        "ETS":            _f(r.get("mape_ets"),       999),
-        "Prophet":        _f(r.get("mape_prophet"),   999),
-        "LightGBM":       _f(r.get("mape_lightgbm"),  999),
-        "MSTL_v2":        _f(r.get("mape_mstl_v2"),   999),
-        "DHR_ARIMA":      _f(r.get("mape_dhr_arima"),  999),
+        # Quarterly error (closed-quarter accuracy) preferred for model badge;
+        # falls back to weekly holdout WAPE when quarterly is not yet available.
+        **({"Ensemble": round(_f(r.get("qtr_ensemble") or r.get("mape_ensemble")), 1)}
+           if _f(r.get("qtr_ensemble") or r.get("mape_ensemble"), 0) > 0 else {}),
+        "ETS":            _f(r.get("qtr_ets")       or r.get("mape_ets"),       999),
+        "Prophet":        _f(r.get("qtr_prophet")   or r.get("mape_prophet"),   999),
+        "LightGBM":       _f(r.get("qtr_lightgbm")  or r.get("mape_lightgbm"),  999),
+        "MSTL_v2":        _f(r.get("qtr_mstl_v2")   or r.get("mape_mstl_v2"),   999),
+        "DHR_ARIMA":      _f(r.get("qtr_dhr_arima") or r.get("mape_dhr_arima"),  999),
         # Chronos intentionally omitted — not in model suite, NULL in live data
         "best_mape":      _f(r.get("best_mape"),       999),
         "best_model":     str(r.get("best_model") or ""),

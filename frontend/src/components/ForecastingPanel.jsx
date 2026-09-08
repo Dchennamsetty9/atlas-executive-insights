@@ -2020,16 +2020,22 @@ const ForecastingPanel = () => {
   const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
 
 
-  // Per-model MAPE for pill badges (Total/All slice)
+  // Per-model accuracy for pill badges — now uses quarterly error (closed-quarter
+  // accuracy) when available, falling back to weekly holdout WAPE. The backend
+  // leaderboard endpoint prefers quarterly_wape_* over mape_* columns.
+  // Filter to the selected product first so UCC/ITSG show their own accuracy.
   const modelMapes = useMemo(() => {
-    const totalRow = (leaderboardView || []).find(r =>
+    const productRow = (leaderboardView || []).find(r =>
+      (r.product === selectedProduct || (!selectedProduct && (r.product === 'Total' || r.product === 'All'))) &&
+      (r.sales_market === 'Total' || r.sales_market === 'All')
+    ) || (leaderboardView || []).find(r =>
       (r.product === 'Total' || r.product === 'All') &&
       (r.sales_market === 'Total' || r.sales_market === 'All')
     );
-    return totalRow
-      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, MSTL_v2: totalRow.MSTL_v2, DHR_ARIMA: totalRow.DHR_ARIMA, Ensemble: totalRow.Ensemble }
+    return productRow
+      ? { ETS: productRow.ETS, Prophet: productRow.Prophet, LightGBM: productRow.LightGBM, MSTL_v2: productRow.MSTL_v2, DHR_ARIMA: productRow.DHR_ARIMA, Ensemble: productRow.Ensemble }
       : {};
-  }, [leaderboardView]);
+  }, [leaderboardView, selectedProduct]);
 
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 

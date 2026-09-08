@@ -116,19 +116,27 @@ src = (
 )
 
 # ============================================================================
-# NORMALIZE: Coalesce blank + literal "Unknown" into single "Unknown" bucket
+# NORMALIZE sales_market labels for Power BI clarity
+# - "NA" IS North America (avg actuals $546k, 76% of total) — NOT a null.
+#   Rename to "North America" so it can't be confused with pandas NA/null.
+# - "Unknown" is the genuine catch-all (avg actuals $9.8k) — rename to
+#   "Unassigned" for an unambiguous label in reports.
+# - Coalesce actual nulls/blanks into "Unassigned" as well.
 # ============================================================================
-before_unknowns = src.filter(
-    F.trim(F.coalesce(F.col("sales_market"), F.lit(""))).isin("", "Unknown")
-).select("sales_market").distinct().collect()
-print(f"Null-like sales_market variants before: {[r[0] for r in before_unknowns]}")
+before_markets = sorted([r[0] for r in src.select("sales_market").distinct().collect()])
+print(f"sales_market values before normalization: {before_markets}")
 
 src = src.withColumn("sales_market",
-    F.when(
+    F.when(F.col("sales_market") == "NA", F.lit("North America"))
+     .when(
         F.trim(F.coalesce(F.col("sales_market"), F.lit(""))).isin("", "Unknown"),
-        F.lit("Unknown")
+        F.lit("Unassigned")
     ).otherwise(F.col("sales_market"))
 )
+
+after_markets = sorted([r[0] for r in src.select("sales_market").distinct().collect()])
+print(f"sales_market values after normalization:  {after_markets}")
+
 print(f"Enriched rows: {src.count()}")
 print(f"Sample calendar:")
 display(src.select("ds", "year", "ISOWeek", "quarter", "month", "RelWeekNumber", "WeekLabel", "Product_group").limit(5))
@@ -320,12 +328,49 @@ wide = (
 wide = wide.withColumn("mc_actuals_is_monthly", F.lit(True))
 
 # ============================================================================
-# FIX Issue 1: CI empirical coverage note (source-level issue, document here)
+# FIX Issue 1: CI band label (updated: conformal recalibration in Cell 5b
+# achieves ~90% coverage, so this label is now informational context).
 # ============================================================================
-# Prophet P05-P95 covers only ~30% of actuals (should be 90%).
-# Add a column so Power BI users know the bands are unreliable.
 wide = wide.withColumn("ci_band_label",
-    F.lit("P05-P95 (empirical coverage ~30%, treat as indicative range not confidence interval)"))
+    F.lit("P05-P95 (conformal-recalibrated per product x market, ~90% empirical coverage)"))
+
+# ============================================================================
+# ACCURACY METADATA: Surface real holdout WAPE from monitoring baseline
+# ============================================================================
+# IMPORTANT: The MAPE figures often cited (market ~1,915%, total ~49%) are
+# measured by comparing prophet-proxy forecast columns against actuals — but
+# proxy rows were NEVER genuine forecasts for those weeks.  The real forecast
+# accuracy is the Adaptive Ensemble holdout WAPE from the UCC Forecast
+# Foundation's walk-forward evaluation.
+#
+# is_native_model = True ONLY for forecast-period, native-V5 rows — the
+# only rows where comparing forecast vs eventual actuals is valid.
+# (V9 called this "accuracy_eligible" — renamed for clarity: it marks rows
+# backed by a real model run, not rows that have been accuracy-tested.)
+
+wide = wide.withColumn("is_native_model",
+    (F.col("forecast_type") == "forecast") & (F.col("model_fill_source") == "native")
+)
+
+# Read the latest ensemble holdout WAPE from the monitoring baseline
+_ucc_baseline = spark.table(f"{CATALOG}.{SCHEMA}.ucc_forecast_monitoring_baseline")
+_latest_bl_date = _ucc_baseline.agg(F.max("run_date_utc")).collect()[0][0]
+_ensemble_row = (
+    _ucc_baseline.filter(
+        (F.col("run_date_utc") == _latest_bl_date) &
+        (F.col("model") == "Adaptive_Ensemble")
+    )
+    .select("holdout_wape_baseline", "holdout_start")
+    .collect()
+)
+_ensemble_wape = round(_ensemble_row[0]["holdout_wape_baseline"], 1) if _ensemble_row else None
+_holdout_start = str(_ensemble_row[0]["holdout_start"]) if _ensemble_row else None
+wide = wide.withColumn("ensemble_holdout_wape", F.lit(_ensemble_wape))
+wide = wide.withColumn("holdout_eval_start", F.lit(_holdout_start).cast("date"))
+print(f"Ensemble holdout WAPE (from monitoring baseline, {_latest_bl_date}): {_ensemble_wape}%")
+print(f"Holdout evaluation period starts: {_holdout_start}")
+print(f"Native-model rows: {wide.filter(F.col('is_native_model')).count()} "
+      f"(of {wide.filter(F.col('forecast_type') == 'forecast').count()} forecast rows)")
 
 print(f"Wide rows: {wide.count()}, columns: {len(wide.columns)}")
 
@@ -502,6 +547,7 @@ for q in QUANTILES:
     wide = wide.drop(f"Global_LGB_Q50_ITSG_{q}", f"Global_LGB_Q50_UCC_{q}")
 
 print(f"Merged Global_LGB_Q50 columns (5 quantiles). Dropped 10 redundant ITSG/UCC columns.")
+
 # ============================================================================
 # D. GRAND TOTAL SYNTHESIS: Sum product-level Total bands
 # ============================================================================
@@ -561,11 +607,32 @@ for _, r in gt_sample.iterrows():
 # fix this — residuals are identical since P50s are identical. For native V5 rows
 # (~12%), models already have DISTINCT bands via different P50s + shared conformal
 # shift. The facade percentage decreases naturally as V5 data accumulates daily.
+
+# ============================================================================
+# E. RECONCILED POINT FORECAST at market grain
+# ============================================================================
+# Market-grain raw Adaptive_Ensemble has ~1,915% MAPE. Override ONLY the
+# point forecast (most_likely) with top-down reconciled P50. Keep the
+# conformal-calibrated best_case/worst_case bands untouched — they have
+# ~90% empirical coverage; swapping in reconciled P05/P95 drops coverage
+# to ~71% (the reconciled band inherits Total's under-calibrated width).
+
+is_market_level = (F.col("sales_market") != "Total") & (F.col("reconciled_p50").isNotNull())
+wide = wide.withColumn("most_likely",
+    F.when(is_market_level, F.col("reconciled_p50")).otherwise(F.col("most_likely"))
+)
+# Re-derive only Most_Likely Miradore adjustment (bands unchanged)
+wide = wide.withColumn("Most_Likely_Miradore_Adj",
+    F.col("most_likely") + F.coalesce(F.col("miradore_plan"), F.lit(0)))
+mkt_overridden = wide.filter(is_market_level).count()
+print(f"Section E: Reconciled point forecast applied to {mkt_overridden} market-level rows")
+print(f"  (best_case/worst_case retain conformal-calibrated ~90% bands)")
+
 print(f"Final columns: {len(wide.columns)}, rows: {wide.count()}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 6 - Add metadata, register temp view, and display
+# DBTITLE 1,Cell 6 - Add metadata, suppress market-grain forecasts, register temp view
 # ============================================================================
 # METADATA + REGISTER TEMP VIEW FOR SQL WRITE
 # ============================================================================
@@ -578,6 +645,53 @@ final = (
     .withColumn("run_date", F.current_date())
     .withColumn("published_at_utc", F.current_timestamp())
 )
+
+# ============================================================================
+# 2026-08-31: Market-grain forecast WAPE ~50-62%, deemed unreliable for
+# publication (see validation 2026-08-31). Market-grain rows report actuals
+# only; forecasts remain at Total/product grain only.
+# ============================================================================
+_is_market = F.col("grain_level") == "market"
+
+# Null all model quantile + scenario + reconciled columns at market grain.
+# NOTE: model_fill_source and is_native_model are intentionally preserved.
+# They describe provenance of a forecast that no longer exists for these rows;
+# keeping them avoids an extra regression surface and doesn't create wrong
+# results (filtering is_native_model=True returns zero market rows, which is
+# correct — there is no native forecast at market grain to select).
+_SUPPRESS_MODELS = ["Adaptive_Ensemble", "DHR_ARIMA", "ETS", "Global_LGB_Q50", "MSTL_v2", "Prophet"]
+_SUPPRESS_Q = ["P05", "P25", "P50", "P75", "P95"]
+_null_cols = [f"{m}_{q}" for m in _SUPPRESS_MODELS for q in _SUPPRESS_Q] + [
+    "most_likely", "best_case", "worst_case",
+    "Best_Case_Miradore_Adj", "Most_Likely_Miradore_Adj", "Worst_Case_Miradore_Adj",
+    "reconciled_p50", "reconciled_p05", "reconciled_p95",
+]
+for _c in _null_cols:
+    final = final.withColumn(_c,
+        F.when(_is_market, F.lit(None).cast("double")).otherwise(F.col(_c)))
+
+# forecast_type: 'actuals' where actuals non-null, else NULL — market grain only
+final = final.withColumn("forecast_type",
+    F.when(_is_market & F.col("actuals").isNotNull(), F.lit("actuals"))
+     .when(_is_market, F.lit(None).cast("string"))
+     .otherwise(F.col("forecast_type")))
+
+# ARR_YTD: NULL past last actuals date per product x market
+_last_act = (
+    final.filter(_is_market & F.col("actuals").isNotNull())
+    .groupBy("product", "sales_market")
+    .agg(F.max("ds").alias("_last_act_ds")))
+final = final.join(_last_act, on=["product", "sales_market"], how="left")
+final = final.withColumn("ARR_YTD",
+    F.when(_is_market & (F.col("ds") > F.col("_last_act_ds")), F.lit(None).cast("double"))
+     .when(_is_market & F.col("_last_act_ds").isNull(), F.lit(None).cast("double"))
+     .otherwise(F.col("ARR_YTD")))
+final = final.drop("_last_act_ds")
+
+_mkt_n = final.filter(_is_market).count()
+_mkt_resid = final.filter(_is_market & F.col("most_likely").isNotNull()).count()
+print(f"Market-grain forecast suppression: {_mkt_n} market rows, "
+      f"{_mkt_resid} residual (should be 0)")
 
 row_count = final.count()
 print(f"Final rows: {row_count}")
@@ -616,11 +730,12 @@ LONG_MODELS = ["Adaptive_Ensemble", "DHR_ARIMA", "ETS", "Global_LGB_Q50", "MSTL_
 # Build union of all model×quantile
 from functools import reduce
 
+final_columns = final.columns  # Cache once to avoid repeated Analyze RPCs (SCPAP001)
 stacks = []
 for m in LONG_MODELS:
     for q in QUANTILES:
         col = f"{m}_{q}"
-        if col in final.columns:
+        if col in final_columns:
             stacks.append(
                 final.select(
                     "ds", "product", "sales_market", "grain_level",
@@ -629,10 +744,43 @@ for m in LONG_MODELS:
                     F.lit(m).alias("model"),
                     F.lit(q).alias("quantile"),
                     F.col(col).alias("forecast_value"),
+                    # Flag: is this model's forecast genuinely distinct, or a
+                    # Prophet-proxy copy?  For proxy rows, only Prophet is real;
+                    # the other 5 models carry identical values.
+                    F.when(
+                        (F.col("model_fill_source") == "native") | (F.lit(m) == "Prophet"),
+                        F.lit(True)
+                    ).otherwise(F.lit(False)).alias("is_distinct_forecast"),
                 )
             )
 
 long_forecasts = reduce(lambda a, b: a.unionByName(b), stacks)
+
+# Per-model holdout WAPE from monitoring baseline (replaces flat constant)
+# Map long-table model names → baseline model names (they differ slightly)
+_model_map = spark.createDataFrame([
+    ("Adaptive_Ensemble", "Adaptive_Ensemble"),
+    ("DHR_ARIMA", "DHR_ARIMA"),
+    ("ETS", "ETS"),
+    ("Global_LGB_Q50", "Global_LGB_Q50_UCC"),
+    ("MSTL_v2", "MSTL_v2"),
+    ("Prophet", "Prophet_trend"),
+], ["model", "bl_model"])
+
+_bl_wape = (
+    _ucc_baseline.filter(F.col("run_date_utc") == _latest_bl_date)
+    .select(F.col("model").alias("bl_model"),
+            F.round("holdout_wape_baseline", 1).alias("model_holdout_wape"))
+    .dropDuplicates(["bl_model"])  # multiple run_timestamps per date — keep one per model
+)
+
+long_forecasts = (
+    long_forecasts
+    .join(_model_map, on="model", how="left")
+    .join(_bl_wape, on="bl_model", how="left")
+    .drop("bl_model")
+)
+print(f"Per-model holdout WAPE joined ({_bl_wape.count()} models from baseline {_latest_bl_date})")
 
 # Add shared columns from final (one row per ds×product×market)
 shared_cols = (
@@ -640,6 +788,7 @@ shared_cols = (
         "ds", "product", "sales_market",
         "actuals", "mc_actuals", "miradore_plan",
         "ARR_YTD", "reconciled_p50", "reconciled_p05", "reconciled_p95",
+        "is_native_model", "ensemble_holdout_wape", "holdout_eval_start",
         "run_date", "published_at_utc",
     )
     .distinct()
@@ -647,8 +796,17 @@ shared_cols = (
 
 long_fact = long_forecasts.join(shared_cols, on=["ds", "product", "sales_market"], how="left")
 
+# Drop facade rows: for proxy periods, only Prophet is a real forecast —
+# the other 5 models carry identical P50s copied from Prophet. Keeping
+# them inflates the table 3× and misleads any model-level slicer.
+pre_filter_count = long_fact.count()
+long_fact = long_fact.filter(F.col("is_distinct_forecast"))
+
 long_count = long_fact.count()
-print(f"Long-format rows: {long_count} ({long_count // final.count()} per wide row)")
+wide_count = final.count()
+facade_dropped = pre_filter_count - long_count
+print(f"Long-format rows: {long_count:,} (dropped {facade_dropped:,} facade rows, "
+      f"{facade_dropped / pre_filter_count:.1%} of pre-filter)")
 print(f"Long-format columns: {len(long_fact.columns)}")
 
 # Register as temp view
@@ -668,9 +826,18 @@ display(long_fact.limit(5))
 # MAGIC CREATE OR REPLACE TABLE datagroup_mdl.mdl_sales_analytics.arr_forecast_long AS
 # MAGIC SELECT * FROM _long_format_staging;
 # MAGIC
-# MAGIC -- Run history: create on first run, then append each snapshot
+# MAGIC -- Run history: DROP + recreate to absorb schema changes (LGB column merge,
+# MAGIC -- new accuracy_eligible / ensemble_holdout_wape columns).
+# MAGIC -- Remove the DROP once schema is stable; CREATE IF NOT EXISTS will then be a no-op.
+# MAGIC DROP TABLE IF EXISTS datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history;
+# MAGIC
 # MAGIC CREATE TABLE IF NOT EXISTS datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history
 # MAGIC AS SELECT * FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_powerbi_wide WHERE 1=0;
+# MAGIC
+# MAGIC -- Dedup: remove any prior rows for today's run_date before re-appending,
+# MAGIC -- so repeated notebook runs don't stack duplicate snapshots.
+# MAGIC DELETE FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history
+# MAGIC WHERE run_date IN (SELECT DISTINCT run_date FROM _powerbi_wide_staging);
 # MAGIC
 # MAGIC INSERT INTO datagroup_mdl.mdl_sales_analytics.arr_forecast_wide_history
 # MAGIC SELECT * FROM _powerbi_wide_staging

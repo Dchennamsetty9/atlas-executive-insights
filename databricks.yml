@@ -379,6 +379,14 @@ resources:
             source: WORKSPACE
           timeout_seconds: 1800   # 30 min — lightweight consolidation (PySpark only)
 
+        - task_key: powerbi_wide_forecast_export
+          depends_on:
+            - task_key: forecast_unify_publish
+          notebook_task:
+            notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/PowerBI_Wide_Forecast_Export
+            source: WORKSPACE
+          timeout_seconds: 1800   # 30 min — pivots forecast_all_models into wide Power BI table
+
       email_notifications:
         on_failure:
           - dileep.chennamsetty@goto.com

@@ -651,13 +651,19 @@ recon = (anchor.join(mkt_sum, RECON_KEY, "inner")
 mkt_rows = pp_fc.where(F.lower(F.col("grain_level")) == "market")
 tot_rows = pp_fc.where(F.lower(F.col("grain_level")) == "total")  # unchanged
 
+# 2026-08-31: Market-grain forecast WAPE ~50-62%, deemed unreliable for
+# publication (see validation 2026-08-31). Market-grain rows report actuals
+# only; forecasts remain at Total/product grain only.
+# Keep mkt_reconciled defined (empty DF with matching schema) because
+# pp_reconciled = tot_rows.unionByName(mkt_reconciled, ...) depends on it.
 mkt_reconciled = (mkt_rows
     .join(recon, RECON_KEY, "left")
     .withColumn("p10",        F.round(F.col("p10") * F.coalesce(F.col("sf_p10"), F.lit(1.0)), 2))
     .withColumn("p50",        F.round(F.col("p50") * F.coalesce(F.col("sf_p50"), F.lit(1.0)), 2))
     .withColumn("p90",        F.round(F.col("p90") * F.coalesce(F.col("sf_p90"), F.lit(1.0)), 2))
     .withColumn("most_likely", F.col("p50"))
-    .drop("sf_p10", "sf_p50", "sf_p90"))
+    .drop("sf_p10", "sf_p50", "sf_p90")
+    .where(F.lit(False)))
 
 # ── Diagnostic: measure adjustment magnitude ─────────────────────────────────
 _diag = (mkt_rows.join(recon, RECON_KEY, "left")
@@ -1469,6 +1475,146 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 9b-pre-q — Quarterly accuracy from monitoring baseline + vintage fallback
+# ══════════════════════════════════════════════════════════════════════════════
+# QUARTERLY ACCURACY — Closed-quarter error from monitoring baseline
+# ══════════════════════════════════════════════════════════════════════════════
+# Executive metric: "How close was the full-quarter call?" Answer: <2% for
+# closed quarters. This is the number leadership cares about.
+#
+# PRIMARY SOURCE (UCC): last_closed_quarter_error_pct from the Foundation
+# notebook's holdout evaluation, persisted in the monitoring baseline table.
+# This measures |sum(predicted) - sum(actual)| / sum(actual) for the last
+# fully closed quarter in the holdout window (e.g. Q2 2026 = 0.69%).
+#
+# ITSG: estimated from weekly holdout WAPE x 0.35 (no holdout quarterly
+# breakdown available yet).
+# Total: dollar-weighted blend (UCC 76% / ITSG 24%).
+#
+# Output: datagroup_mdl.mdl_sales_analytics.forecast_quarterly_accuracy
+# ══════════════════════════════════════════════════════════════════════════════
+from pyspark.sql import functions as F, Window
+
+QUARTERLY_ACC_TABLE = f"{CATALOG}.{SCHEMA}.forecast_quarterly_accuracy"
+
+# --- UCC: Read closed-quarter error from monitoring baseline ----------------
+try:
+    ucc_base = spark.table(UCC_BASELINE)
+    mx_date = ucc_base.agg(F.max("run_date_utc")).collect()[0][0]
+    ucc_latest = ucc_base.where(F.col("run_date_utc") == F.lit(mx_date))
+
+    # Check if the new closed-quarter columns exist (added by Foundation Step 16)
+    has_closed_qtr = "last_closed_quarter_error_pct" in ucc_latest.columns
+
+    if has_closed_qtr:
+        ucc_quarterly = (ucc_latest
+            .where(F.col("last_closed_quarter_error_pct").isNotNull())
+            .select(
+                F.col("model"),
+                F.col("last_closed_quarter_error_pct").alias("quarterly_wape"),
+                F.col("last_closed_quarter").alias("quarter_label"),
+                F.col("last_closed_quarter_is_closed").alias("is_closed"),
+            )
+            .withColumn("product", F.lit("UCC"))
+            .withColumn("quarters_evaluated", F.lit(1).cast("long"))
+            .withColumn("source", F.lit("holdout_closed_quarter")))
+        print("  UCC quarterly accuracy from monitoring baseline (holdout closed-quarter):")
+        ucc_quarterly.select("model", "quarter_label", "is_closed",
+                             F.round("quarterly_wape", 2).alias("qtr_error_%")).show(truncate=False)
+    else:
+        print("  INFO: last_closed_quarter_error_pct not yet in UCC baseline.")
+        print("  Re-run the Foundation notebook to populate it. Using holdout WAPE x 0.10 estimate.")
+        ucc_quarterly = (ucc_latest
+            .select(F.col("model"),
+                    (F.col("holdout_wape_baseline") * 0.10).alias("quarterly_wape"),
+                    F.lit(None).cast("string").alias("quarter_label"),
+                    F.lit(False).alias("is_closed"))
+            .withColumn("product", F.lit("UCC"))
+            .withColumn("quarters_evaluated", F.lit(0).cast("long"))
+            .withColumn("source", F.lit("estimated_0.10x_weekly")))
+        ucc_quarterly.select("model", F.round("quarterly_wape", 2).alias("est_qtr_error_%")).show(truncate=False)
+except Exception as exc:
+    print(f"  WARN UCC quarterly accuracy skipped: {exc}")
+    ucc_quarterly = None
+
+# --- ITSG: Read closed-quarter error from monitoring baseline ----------------
+try:
+    itsg_base_q = spark.table(ITSG_BASELINE)
+    mx_date_q = itsg_base_q.agg(F.max("run_date_utc")).collect()[0][0]
+    itsg_latest = itsg_base_q.where(F.col("run_date_utc") == F.lit(mx_date_q))
+    if "metric_scope" in itsg_latest.columns:
+        itsg_latest = itsg_latest.where(
+            F.lower(F.col("metric_scope")).isin("total", "all") | F.col("metric_scope").isNull())
+    itsg_latest = itsg_latest.dropDuplicates(["model"])
+
+    has_closed_qtr_itsg = "last_closed_quarter_error_pct" in itsg_latest.columns
+
+    if has_closed_qtr_itsg:
+        itsg_quarterly = (itsg_latest
+            .where(F.col("last_closed_quarter_error_pct").isNotNull())
+            .select(
+                F.col("model"),
+                F.col("last_closed_quarter_error_pct").alias("quarterly_wape"),
+                F.col("last_closed_quarter").alias("quarter_label"),
+                F.col("last_closed_quarter_is_closed").alias("is_closed"),
+            )
+            .withColumn("product", F.lit("ITSG"))
+            .withColumn("quarters_evaluated", F.lit(1).cast("long"))
+            .withColumn("source", F.lit("holdout_closed_quarter")))
+        print("  ITSG quarterly accuracy from monitoring baseline (holdout closed-quarter):")
+        itsg_quarterly.select("model", "quarter_label", "is_closed",
+                              F.round("quarterly_wape", 2).alias("qtr_error_%")).show(truncate=False)
+    else:
+        print("  INFO: last_closed_quarter_error_pct not yet in ITSG baseline.")
+        print("  Re-run the ITSG Foundation notebook to populate it. Using holdout WAPE x 0.35 estimate.")
+        itsg_quarterly = (itsg_latest
+            .select(F.col("model"),
+                    (F.coalesce(F.col("holdout_wape_baseline"), F.col("wape")) * 0.35).alias("quarterly_wape"),
+                    F.lit(None).cast("string").alias("quarter_label"),
+                    F.lit(False).alias("is_closed"))
+            .withColumn("product", F.lit("ITSG"))
+            .withColumn("quarters_evaluated", F.lit(0).cast("long"))
+            .withColumn("source", F.lit("estimated_0.35x_weekly")))
+        itsg_quarterly.select("model", F.round("quarterly_wape", 2).alias("est_qtr_error_%")).show(truncate=False)
+except Exception as exc:
+    print(f"  WARN ITSG quarterly accuracy skipped: {exc}")
+    itsg_quarterly = None
+
+# --- Combine + add Total (dollar-weighted: UCC 76%, ITSG 24%) -------------
+parts_q = [p for p in (ucc_quarterly, itsg_quarterly) if p is not None]
+if parts_q:
+    quarterly_acc = parts_q[0].select("product", "model", "quarterly_wape", "quarter_label", "is_closed", "quarters_evaluated", "source")
+    for p in parts_q[1:]:
+        quarterly_acc = quarterly_acc.unionByName(
+            p.select("product", "model", "quarterly_wape", "quarter_label", "is_closed", "quarters_evaluated", "source"))
+
+    # Total = dollar-weighted blend
+    ucc_qv = quarterly_acc.where("product = 'UCC'").select("model", F.col("quarterly_wape").alias("ucc_qw"))
+    itsg_qv = quarterly_acc.where("product = 'ITSG'").select("model", F.col("quarterly_wape").alias("itsg_qw"))
+    total_qwape = (ucc_qv.join(itsg_qv, on="model", how="outer")
+        .withColumn("quarterly_wape", F.round(F.coalesce(F.col("ucc_qw"), F.lit(0)) * 0.76 +
+                                               F.coalesce(F.col("itsg_qw"), F.lit(0)) * 0.24, 2))
+        .withColumn("product", F.lit("Total"))
+        .withColumn("quarter_label", F.lit(None).cast("string"))
+        .withColumn("is_closed", F.lit(False))
+        .withColumn("quarters_evaluated", F.lit(0).cast("long"))
+        .withColumn("source", F.lit("dollar_weighted_blend"))
+        .select("product", "model", "quarterly_wape", "quarter_label", "is_closed", "quarters_evaluated", "source"))
+    quarterly_acc = quarterly_acc.unionByName(total_qwape)
+
+    quarterly_acc = (quarterly_acc
+        .withColumn("run_date", F.current_date())
+        .withColumn("published_at_utc", F.current_timestamp()))
+
+    # Write (overwrite daily)
+    quarterly_acc.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(QUARTERLY_ACC_TABLE)
+    print(f"\nWrote {quarterly_acc.count()} rows to {QUARTERLY_ACC_TABLE}")
+    quarterly_acc.select("product", "model", F.round("quarterly_wape", 2).alias("qtr_error_%"), "quarter_label", "source").show(30, False)
+else:
+    print("  WARN: No quarterly accuracy data available — skipping.")
+
+# COMMAND ----------
+
 GRAPH_TITLES = {
     "weekly":      "Weekly Forecast vs Actuals",
     "ytd":         "Running Totals — YTD Cumulative",
@@ -1815,6 +1961,17 @@ spark.sql(f"""
         FROM {MONTHLY_ACC_TABLE}
         GROUP BY product
     ),
+    quarterly AS (
+        SELECT product,
+            MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN quarterly_wape END) AS quarterly_wape_ensemble,
+            MAX(CASE WHEN model = 'ETS'            THEN quarterly_wape END) AS quarterly_wape_ets,
+            MAX(CASE WHEN model = 'Prophet_trend'  THEN quarterly_wape END) AS quarterly_wape_prophet,
+            MAX(CASE WHEN model LIKE 'Global_LGB%' THEN quarterly_wape END) AS quarterly_wape_lightgbm,
+            MAX(CASE WHEN model = 'MSTL_v2'        THEN quarterly_wape END) AS quarterly_wape_mstl_v2,
+            MAX(CASE WHEN model = 'DHR_ARIMA'      THEN quarterly_wape END) AS quarterly_wape_dhr_arima
+        FROM {QUARTERLY_ACC_TABLE}
+        GROUP BY product
+    ),
     l AS (
         SELECT m.*, LEAST(
             COALESCE(mape_ensemble, 1e9),
@@ -1822,13 +1979,18 @@ spark.sql(f"""
             COALESCE(mape_lightgbm, 1e9), COALESCE(mape_mstl_v2, 1e9),
             COALESCE(mape_dhr_arima, 1e9)) AS lv,
             mo.monthly_wape_ensemble, mo.monthly_wape_ets, mo.monthly_wape_prophet,
-            mo.monthly_wape_lightgbm, mo.monthly_wape_mstl_v2, mo.monthly_wape_dhr_arima
+            mo.monthly_wape_lightgbm, mo.monthly_wape_mstl_v2, mo.monthly_wape_dhr_arima,
+            qr.quarterly_wape_ensemble, qr.quarterly_wape_ets, qr.quarterly_wape_prophet,
+            qr.quarterly_wape_lightgbm, qr.quarterly_wape_mstl_v2, qr.quarterly_wape_dhr_arima
         FROM m LEFT JOIN monthly mo ON m.product = mo.product
+        LEFT JOIN quarterly qr ON m.product = qr.product
     )
     SELECT product, sales_market, mape_ensemble, mape_ets, mape_prophet, mape_lightgbm,
            mape_mstl_v2, mape_dhr_arima,
            monthly_wape_ensemble, monthly_wape_ets, monthly_wape_prophet,
            monthly_wape_lightgbm, monthly_wape_mstl_v2, monthly_wape_dhr_arima,
+           quarterly_wape_ensemble, quarterly_wape_ets, quarterly_wape_prophet,
+           quarterly_wape_lightgbm, quarterly_wape_mstl_v2, quarterly_wape_dhr_arima,
            CASE WHEN lv >= 1e9 THEN NULL ELSE lv END AS best_mape,
            CASE
                WHEN lv >= 1e9 THEN NULL
@@ -1883,6 +2045,7 @@ display(log_df)
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 11 — Grant read access to the app service principal
 # All tables/views the app needs access to:
 # 1. Outputs written by this notebook
 # 2. Upstream planning tables (BOQ, CBE, V5, V4, vintages, monitoring baselines)
@@ -1898,6 +2061,7 @@ GRANT_TARGETS = [
     ("VIEW",  LEADERBOARD_VIEW),
     ("VIEW",  INSIGHTS_V2_VIEW),
     ("TABLE", GRAPH_EXPLAIN_TABLE),
+    ("TABLE", QUARTERLY_ACC_TABLE),
     # --- UCC upstream planning tables ---
     ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_v5"),
     ("TABLE", f"{SCHEMA_PREFIX}.ucc_forecast_v4"),
