@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from auth import require_authenticated_user
 from services.databricks_connection import execute_query, token_available
 from services.user_preferences_service import user_prefs_service
+from routes.forecast_backtest import RETAINED_MODELS, build_backtest_query, backtest_response
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,9 @@ async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str
     """Small in-process TTL cache for repeated identical read queries."""
     from routes import forecast_v2 as forecast_v2_pkg
 
-    if CACHE_TTL_SECONDS <= 0:
+    # Accuracy publication checks must see the latest successful daily write, not
+    # the deployment's 24-hour forecast cache. This also avoids cross-user reuse.
+    if endpoint in ("/leaderboard", "/leaderboard/columns") or CACHE_TTL_SECONDS <= 0:
         return await asyncio.to_thread(forecast_v2_pkg.execute_query, sql)
 
     key = _cache_key(endpoint, sql, **params)
@@ -2353,155 +2356,35 @@ async def get_backtest(
     sales_market: Optional[str] = None,
     live_mode: bool = Depends(_live_mode_dependency),
 ):
-    """
-    Forecast-vs-Reality trust view.
-
-    arr_forecast_v2 retains every weekly run (delete-then-append per run_date),
-    so for each week that has since closed as an actual we can look up what the
-    model predicted `horizon_weeks` beforehand. Returns per-week pairs plus
-    summary stats:
-      coverage_pct — share of weeks where the actual landed inside the P10–P90
-                     band (should approach ~80% if intervals are calibrated)
-      mape_pct     — mean absolute % error of the point forecast at this horizon
-      bias_pct     — signed mean % error (positive = systematic over-forecast)
-    """
+    """Score only same-product, total-grain retained publications at the selected horizon."""
     model = _validate_model(model)
+    effective_product = str(_selected_product(product, product_line)).strip().upper()
+    effective_product = "Total" if effective_product in ("ALL", "TOTAL") else effective_product
+    market = _normalize_market_value(sales_market)
+    market = "Total" if market.upper() in ("ALL", "TOTAL") else market
+    if effective_product not in ("UCC", "ITSG", "Total"):
+        raise HTTPException(status_code=400, detail="Invalid backtest product")
+    scope = dict(product=effective_product, market=market, model=model, horizon_weeks=horizon_weeks)
     if not live_mode:
-        rows = _demo_backtest_rows(horizon_weeks)
-        return {"source": "demo", "model": model, "horizon_weeks": horizon_weeks,
-                "rows": rows, "summary": _backtest_summary(rows)}
-
-    lo_days = (horizon_weeks - 1) * 7 + 1
-    hi_days = horizon_weeks * 7
-
-    # Preferred source: the UCC accuracy-history table, which retains real
-    # forecast-vs-actual vintages (unlike forecast_results, which only starts
-    # accumulating from its first run). UCC-only / no geo, so used for UCC/Total;
-    # ITSG falls through to the vintage-reconstruction path below.
-    effective_product = _selected_product(product, product_line)
-    if effective_product in ("UCC", "Total"):
-        acc_model = _ACC_MODEL.get(model, "Adaptive_Ensemble")
-        acc_sql = f"""
-            WITH h AS (
-                SELECT CAST(ds AS DATE) AS ds,
-                       CAST(run_date_utc AS DATE) AS run_date,
-                       CAST(p50 AS DOUBLE) AS predicted,
-                       CAST(p10 AS DOUBLE) AS worst,
-                       CAST(p90 AS DOUBLE) AS best,
-                       CAST(actual AS DOUBLE) AS actual,
-                       -- Pick the TOTAL-level row: the accuracy-history table
-                       -- contains mixed grain (market + total rows, no grain
-                       -- column), so we use p50 DESC as tiebreaker — the total
-                       -- is always the largest forecast value.
-                       ROW_NUMBER() OVER (
-                           PARTITION BY CAST(ds AS DATE)
-                           ORDER BY CAST(run_date_utc AS DATE) DESC,
-                                    CAST(p50 AS DOUBLE) DESC
-                       ) AS rn
-                FROM {UCC_ACCURACY_TABLE}
-                WHERE model = '{acc_model}' AND actual IS NOT NULL
-                  AND DATEDIFF(CAST(ds AS DATE), CAST(run_date_utc AS DATE))
-                      BETWEEN {lo_days} AND {hi_days}
-            )
-            SELECT CAST(ds AS STRING) AS ds, CAST(run_date AS STRING) AS run_date,
-                   predicted, worst, best, actual
-            FROM h WHERE rn = 1 ORDER BY ds
-        """
-        try:
-            acc_raw = await asyncio.to_thread(execute_query, acc_sql)
-        except Exception as exc:
-            logger.warning("[forecast/backtest] accuracy-history query failed: %s", exc)
-            acc_raw = None
-        if acc_raw:
-            rows = [{
-                "ds": r.get("ds"), "run_date": r.get("run_date"),
-                "predicted": _f(r.get("predicted")), "worst": _f(r.get("worst")),
-                "best": _f(r.get("best")), "actual": _f(r.get("actual")),
-            } for r in acc_raw]
-            return {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
-                    "basis": "accuracy_history", "rows": rows,
-                    "summary": _backtest_summary(rows)}
-        # else: no rows for this product/horizon → fall through to reconstruction
-
-    source = _model_source(model)
-    value_col = source["most_likely_col"]
-    pf = _product_filter(product, product_line)
-    gf = _geo_filter(sales_market)
-
-    sql = f"""
-        WITH actuals AS (
-            SELECT CAST(ds AS DATE) AS ds,
-                   MAX(CAST(Actuals AS DOUBLE)) AS actual
-            FROM {FC_TABLE}
-            WHERE forecast_type = 'actuals'
-              AND {_latest_run()}
-              AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
-              {pf} {gf}
-            GROUP BY CAST(ds AS DATE)
-        ),
-        fc AS (
-            SELECT CAST(ds AS DATE) AS ds,
-                   CAST(run_date AS DATE) AS run_date,
-                   CAST({value_col} AS DOUBLE) AS predicted,
-                   CAST(Worst_Case AS DOUBLE) AS worst,
-                   CAST(Best_Case AS DOUBLE) AS best,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY CAST(ds AS DATE)
-                       ORDER BY CAST(run_date AS DATE) DESC
-                   ) AS rn
-            FROM {FC_TABLE}
-            WHERE forecast_type IN ('rolling', 'roy')
-              AND DATEDIFF(CAST(ds AS DATE), CAST(run_date AS DATE))
-                  BETWEEN {lo_days} AND {hi_days}
-              {pf} {gf}
-        )
-        SELECT CAST(f.ds AS STRING) AS ds,
-               CAST(f.run_date AS STRING) AS run_date,
-               f.predicted, f.worst, f.best, a.actual
-        FROM fc f
-        JOIN actuals a ON f.ds = a.ds
-        WHERE f.rn = 1
-        ORDER BY f.ds
-    """
-
+        return backtest_response(**scope, reason="source_unavailable")
+    if effective_product == "Total":
+        return backtest_response(**scope, reason="combined_history_unverified")
+    if market != "Total":
+        return backtest_response(**scope, reason="region_history_unverified")
+    if model not in RETAINED_MODELS:
+        return backtest_response(**scope, reason="model_history_unverified")
+    prefix = effective_product.lower()
+    vintages = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_vintages`"
+    actuals = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_cbe`"
+    sql = build_backtest_query(vintages, actuals, effective_product, model, horizon_weeks)
     try:
-        rows_raw = await _cached_query(sql, endpoint="/backtest", model=model, forecast_type="rolling", product=_selected_product(product, product_line), geo=_normalize_market_value(sales_market), year=None, quarter=None, horizon_weeks=horizon_weeks)
+        # No shared cache: preserve caller identity and never reuse another scope's pairs.
+        raw_rows = await asyncio.to_thread(execute_query, sql)
     except Exception as exc:
-        logger.warning("[forecast/backtest] query failed: %s", exc)
-        rows = _demo_backtest_rows(horizon_weeks)
-        return {"source": "demo", "error": str(exc), "model": model,
-                "horizon_weeks": horizon_weeks,
-                "rows": rows, "summary": _backtest_summary(rows)}
-
-    rows = [
-        {
-            "ds": r.get("ds"),
-            "run_date": r.get("run_date"),
-            "predicted": _f(r.get("predicted")),
-            "worst": _f(r.get("worst")),
-            "best": _f(r.get("best")),
-            "actual": _f(r.get("actual")),
-        }
-        for r in (rows_raw or [])
-    ]
-
-    source_detail = None
-    if not rows:
-        fallback_rows = await _backtest_rows_from_accuracy_history(
-            horizon_weeks=horizon_weeks,
-            model=model,
-            product=product,
-            product_line=product_line,
-            sales_market=sales_market,
-        )
-        if fallback_rows:
-            rows = fallback_rows
-            source_detail = ACCURACY_HISTORY_TABLE_NAME
-
-    response = {"source": "live", "model": model, "horizon_weeks": horizon_weeks,
-                "rows": rows, "summary": _backtest_summary(rows)}
-    if source_detail:
-        response["source_detail"] = source_detail
+        logger.warning("[forecast/backtest] retained source query failed: %s", exc)
+        return backtest_response(**scope, reason="source_query_failed")
+    response = backtest_response(**scope, raw_rows=raw_rows or [])
+    response["source_detail"] = f"{prefix}_forecast_vintages + {prefix}_forecast_cbe"
     return response
 
 
@@ -3334,6 +3217,22 @@ async def get_accuracy_by_quarter(
 
 
 # ── GET /leaderboard ────────────────────────────────────────────────────────────
+_BADGE_MODELS = {
+    "Ensemble": "ensemble", "ETS": "ets", "Prophet": "prophet",
+    "LightGBM": "lightgbm", "MSTL_v2": "mstl_v2", "DHR_ARIMA": "dhr_arima",
+}
+
+
+def _leaderboard_error_values(row):
+    """Expose published quarterly values separately; zero is a valid error."""
+    quarterly = {label: _f(row.get(f"qtr_{key}"), None) for label, key in _BADGE_MODELS.items()}
+    values = {label: value if value is not None else _f(row.get(f"mape_{_BADGE_MODELS[label]}"), 999)
+              for label, value in quarterly.items()}
+    if values["Ensemble"] == 999:
+        values.pop("Ensemble")
+    return {**values, "quarterly_errors": quarterly}
+
+
 @router.get("/leaderboard")
 async def get_leaderboard(
     live_mode: bool = Depends(_live_mode_dependency),
@@ -3363,12 +3262,12 @@ async def get_leaderboard(
             AVG(CAST({dhr_col} AS DOUBLE)) AS mape_dhr_arima,
             AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
             MAX(best_model) AS best_model,
-            AVG(CAST(quarterly_wape_ensemble AS DOUBLE)) AS qtr_ensemble,
-            AVG(CAST(quarterly_wape_ets AS DOUBLE)) AS qtr_ets,
-            AVG(CAST(quarterly_wape_prophet AS DOUBLE)) AS qtr_prophet,
-            AVG(CAST(quarterly_wape_lightgbm AS DOUBLE)) AS qtr_lightgbm,
-            AVG(CAST(quarterly_wape_mstl_v2 AS DOUBLE)) AS qtr_mstl_v2,
-            AVG(CAST(quarterly_wape_dhr_arima AS DOUBLE)) AS qtr_dhr_arima
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_ensemble')} AS DOUBLE)) AS qtr_ensemble,
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_ets')} AS DOUBLE)) AS qtr_ets,
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_prophet')} AS DOUBLE)) AS qtr_prophet,
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_lightgbm')} AS DOUBLE)) AS qtr_lightgbm,
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_mstl_v2')} AS DOUBLE)) AS qtr_mstl_v2,
+            AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_dhr_arima')} AS DOUBLE)) AS qtr_dhr_arima
         FROM {LB_TABLE}
         WHERE run_date = (SELECT MAX(run_date) FROM {LB_TABLE})
         GROUP BY product, {_normalized_market_expr('sales_market')}
@@ -3383,15 +3282,7 @@ async def get_leaderboard(
     data = [{
         "product":        str(r.get("product") or ""),
         "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
-        # Quarterly error (closed-quarter accuracy) preferred for model badge;
-        # falls back to weekly holdout WAPE when quarterly is not yet available.
-        **({"Ensemble": round(_f(r.get("qtr_ensemble") or r.get("mape_ensemble")), 1)}
-           if _f(r.get("qtr_ensemble") or r.get("mape_ensemble"), 0) > 0 else {}),
-        "ETS":            _f(r.get("qtr_ets")       or r.get("mape_ets"),       999),
-        "Prophet":        _f(r.get("qtr_prophet")   or r.get("mape_prophet"),   999),
-        "LightGBM":       _f(r.get("qtr_lightgbm")  or r.get("mape_lightgbm"),  999),
-        "MSTL_v2":        _f(r.get("qtr_mstl_v2")   or r.get("mape_mstl_v2"),   999),
-        "DHR_ARIMA":      _f(r.get("qtr_dhr_arima") or r.get("mape_dhr_arima"),  999),
+                **_leaderboard_error_values(r),
         # Chronos intentionally omitted — not in model suite, NULL in live data
         "best_mape":      _f(r.get("best_mape"),       999),
         "best_model":     str(r.get("best_model") or ""),

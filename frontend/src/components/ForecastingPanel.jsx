@@ -17,6 +17,8 @@ import {
 } from 'recharts';
 import { apiService } from '../services/api';
 import { exportCardPng } from '../utils/chartExport';
+import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
+import { subscribePublicationRefresh } from './forecast/publicationRefresh';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
 class TabErrorBoundary extends Component {
@@ -721,67 +723,6 @@ const QuarterlyBarChartView = ({ qtrs, year }) => {
   );
 };
 
-// ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
-const QuarterlyMapeMatrix = ({ data }) => {
-  if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
-  const { quarters, models } = data;
-  const nWeeks = data.n_weeks || [];
-  const isDemo = data.source === 'demo';
-  const colorFor = v => {
-    if (v == null) return '#334155';
-    if (v < 15) return '#10b981';
-    if (v < 25) return '#f59e0b';
-    return '#ef4444';
-  };
-  const th = { padding: '6px 14px', fontSize: 10, fontWeight: 700, color: '#475569',
-               textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center',
-               borderBottom: '1px solid rgba(255,255,255,0.08)' };
-  const td = { padding: '7px 14px', fontSize: 12, textAlign: 'center',
-               borderBottom: '1px solid rgba(255,255,255,0.04)' };
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, alignItems: 'center' }}>
-        <span><span style={{ color:'#10b981' }}>●</span> &lt;15% strong</span>
-        <span><span style={{ color:'#f59e0b' }}>●</span> 15–25% moderate</span>
-        <span><span style={{ color:'#ef4444' }}>●</span> &gt;25% weak</span>
-        {isDemo && (
-          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-                         color: '#f59e0b', background: 'rgba(245,158,11,0.08)',
-                         border: '1px solid rgba(245,158,11,0.25)' }}>DEMO DATA</span>
-        )}
-        <abbr title={`sMAPE = Symmetric MAPE. Lower is better. ${data.basis ? `Basis: ${data.basis}.` : 'Measures forecast error for each past quarter.'}`}
-              style={{ marginLeft:'auto', color:'#475569', cursor:'help', textDecoration:'none', fontSize:9 }}>What is this? ⓘ</abbr>
-      </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th style={{ ...th, textAlign: 'left', width: 110 }}>Model</th>
-            {quarters.map((q, i) => (
-              <th key={q} style={th} title={nWeeks[i] ? `${nWeeks[i]} scored week(s)` : undefined}>
-                {q}{nWeeks[i] ? <span style={{ display:'block', fontSize:8, color:'#334155', fontWeight:400, textTransform:'none' }}>{nWeeks[i]} wks</span> : null}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {models.map((m, i) => (
-            <tr key={m.model} style={{ background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
-              <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 600 }}>
-                {m.model === 'Ensemble' ? <span>Ensemble <span style={{ color:'#10b981', fontSize:9 }}>★</span></span> : m.model}
-              </td>
-              {m.values.map((v, j) => (
-                <td key={j} style={{ ...td, color: colorFor(v), fontWeight: v != null ? 700 : 400 }}>
-                  {v != null ? `${v.toFixed(1)}%` : '—'}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
 const MonthlyTable = ({ months }) => {
   const quarters = [...new Set((months || []).map(m => m.quarter))].sort();
   const byQtr = {};
@@ -1268,43 +1209,45 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
 // ── Backtest: Forecast vs Reality (trust view) — /api/forecast/v2/backtest ────
 const HORIZONS = [1, 4, 8, 13];
 
-const BacktestSection = ({ model, prodLine, salesMarket }) => {
+const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
   const [horizon, setHorizon] = useState(4);
-  const [data, setData]       = useState(null);
-  const [btLoading, setBtLoading] = useState(false);
-  const [btError, setBtError]     = useState(null);
+  const [result, setResult] = useState(null);
+  const requestKey = `${backtestRequestKey(backtestScope(prodLine, salesMarket, model, horizon))}:${refreshVersion}`;
+  const current = result?.key === requestKey ? result : null;
+  const data = current?.data;
+  const btLoading = current === null;
+  const btError = current?.error;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setBtLoading(true); setBtError(null);
       try {
         const res = await apiService.getForecastV2Backtest(
           horizon, model,
           prodLine !== 'All' ? prodLine : null,
           salesMarket && salesMarket !== 'All' ? salesMarket : null,
         );
-        if (!cancelled) setData(res);
+        if (!backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, horizon))) {
+          throw new Error('Backtest response did not match the selected product, region, model, and horizon.');
+        }
+        if (!cancelled) setResult({ key: requestKey, data: res });
       } catch (e) {
-        if (!cancelled) setBtError(e.message || 'Failed to load backtest');
-      } finally {
-        if (!cancelled) setBtLoading(false);
+        if (!cancelled) setResult({ key: requestKey, error: e.message || 'Failed to load backtest' });
       }
     })();
     return () => { cancelled = true; };
-  }, [horizon, model, prodLine, salesMarket]);
+  }, [horizon, model, prodLine, salesMarket, requestKey]);
 
-  const rows = (data?.rows || []).map(r => ({
+  const isLive = data?.source === 'live' && data?.available === true;
+  const rows = (isLive ? data.rows || [] : []).map(r => ({
     ...r,
     bandFloor: r.worst,
     bandRange: (r.best != null && r.worst != null) ? Math.max(0, r.best - r.worst) : null,
   }));
   const s = data?.summary || {};
-  const isLive = data?.source === 'live';
 
-  // Coverage semantics: band is P10–P90 → calibrated intervals catch ~80% of actuals
-  const covColor = s.coverage_pct == null ? '#64748b'
-    : s.coverage_pct >= 70 ? '#10b981' : s.coverage_pct >= 50 ? '#f59e0b' : '#ef4444';
+  // Observed coverage is descriptive; published bounds have no assumed calibration target.
+  const covColor = s.coverage_pct == null ? '#64748b' : '#93c5fd';
   const biasStr = s.bias_pct == null ? '—'
     : `${s.bias_pct > 0 ? '+' : ''}${s.bias_pct}% ${s.bias_pct > 0 ? '(over-forecast)' : s.bias_pct < 0 ? '(under-forecast)' : ''}`;
 
@@ -1317,19 +1260,19 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProductLine={prodLine} explainRegion={salesMarket}>
+    <CardWrap downloadName="forecast_vs_reality">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
                        color: isLive ? '#10b981' : '#f59e0b',
                        background: isLive ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
                        border: `1px solid ${isLive ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.2)'}` }}>
-          {isLive ? 'LIVE' : 'DEMO'}
+          {btLoading ? 'LOADING' : isLive ? 'MATCHED HISTORY' : 'UNAVAILABLE'}
         </span>
       </div>
       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
-        Each point compares the forecast made <b style={{ color: '#94a3b8' }}>{horizon} week{horizon > 1 ? 's' : ''} in advance</b> against
-        the actual that later closed. Band coverage should approach ~80% if the P10–P90 intervals are calibrated.
+        Latest retained forecast published <b style={{ color: '#94a3b8' }}>{(horizon - 1) * 7 + 1}–{horizon * 7} days before the target week</b>,
+        compared with the latest published actual for that closed week. Same product and total grain only.
       </div>
 
       {/* Horizon pills */}
@@ -1353,21 +1296,41 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
       )}
 
       {btLoading ? <Skeleton height={260} /> : rows.length === 0 && !btError ? (
-        <EmptyState message="No retained forecast-vs-actual history at this horizon for the current selection" />
+        <EmptyState message={data?.message || 'No verified retained forecast-vs-actual history for the current selection'} />
       ) : rows.length > 0 && (
         <>
+          {(data.small_sample || data.rejected_pairs > 0) && <div role="status" style={{ fontSize: 11, color: '#fbbf24', marginBottom: 12 }}>
+            {data.small_sample ? `Small sample: ${rows.length} closed week${rows.length === 1 ? '' : 's'}. These results do not establish long-run model accuracy. ` : ''}
+            {data.rejected_pairs > 0 ? `${data.rejected_pairs} ambiguous or invalid pair(s) excluded.` : ''}
+          </div>}
           {/* Stat chips */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
             {chip('Weeks scored', s.weeks_scored ?? '—', '#f1f5f9')}
-            {chip('Band coverage (target ~80%)', s.coverage_pct != null ? `${s.coverage_pct}%` : '—', covColor)}
+            {chip('Observed band coverage', s.coverage_pct != null ? `${s.coverage_pct}%` : '—', covColor)}
             {chip(`MAPE @ ${horizon}wk`, s.mape_pct != null ? `${s.mape_pct}%` : '—', s.mape_pct != null ? mapeColor(s.mape_pct) : '#64748b')}
             {chip('Bias', biasStr, s.bias_pct == null ? '#64748b' : Math.abs(s.bias_pct) < 5 ? '#10b981' : '#f59e0b')}
           </div>
+          <details style={{ fontSize: 11, color: '#94a3b8', marginBottom: 14 }}>
+            <summary style={{ cursor: 'pointer' }}>Scored weeks and methodology</summary>
+            <p>Source: {data.source_detail} · Model: {data.source_model}. Latest actuals may include revisions.
+              {' '}MAPE/bias use {s.mape_weeks_scored} nonzero-actual week(s); coverage uses {s.band_weeks_scored} week(s) with valid published bounds.
+              {' '}No nominal 80% coverage is assumed. This weekly backtest is separate from the quarterly-error summary above.</p>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+                <thead><tr>{['Target week (UTC)', 'Published (UTC)', 'Lead days', 'Forecast', 'Actual'].map(label => <th key={label} style={{ padding: 6 }}>{label}</th>)}</tr></thead>
+                <tbody>{rows.map(row => <tr key={row.ds}>
+                  <td style={{ padding: 6 }}>{row.ds}</td><td style={{ padding: 6 }}>{row.origin_ts}</td><td style={{ padding: 6 }}>{row.lead_days}</td>
+                  <td style={{ padding: 6 }}>{row.predicted.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: 6 }}>{row.actual.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </details>
 
           <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span><span style={{ color: '#f59e0b' }}>─</span> Actual (closed)</span>
-            <span><span style={{ color: '#e2e8f0' }}>- -</span> Predicted {horizon}wk prior</span>
-            <span style={{ color: '#3b82f6' }}>▒ Predicted 80% band</span>
+            <span><span style={{ color: '#e2e8f0' }}>- -</span> Retained forecast ({(horizon - 1) * 7 + 1}–{horizon * 7} days ahead)</span>
+            <span style={{ color: '#3b82f6' }}>▒ Published historical bounds</span>
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={rows} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
@@ -1378,17 +1341,18 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis dataKey="ds" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }}
+              <XAxis dataKey="ds" tickFormatter={backtestDate} tick={{ fill: '#475569', fontSize: 10 }}
                      axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
+              <YAxis tickFormatter={v => v === 0 ? '$0' : fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
                      axisLine={false} tickLine={false} width={78}
                      label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
-              <Tooltip content={<DarkTip />} />
+                <Tooltip labelFormatter={backtestDate} formatter={(value, name) => [typeof value === 'number' ? value.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '—', name]}
+                     contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
               <Area type="monotone" dataKey="bandFloor" stackId="bt" stroke="none" fill="transparent"
-                    legendType="none" connectNulls dot={false} name="P10" />
+                  legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published lower bound" />
               <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill="url(#btBandFill)"
-                    legendType="none" connectNulls dot={false} name="P10–P90 range" />
-              <Line type="monotone" dataKey="predicted" name={`Predicted (${horizon}wk prior)`} stroke="#e2e8f0"
+                  legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published bound span" />
+                <Line type="monotone" dataKey="predicted" name={`Forecast (${(horizon - 1) * 7 + 1}–${horizon * 7} days ahead)`} stroke="#e2e8f0"
                     strokeWidth={2} strokeDasharray="6 4" dot={{ r: 2.5, fill: '#e2e8f0' }} connectNulls />
               <Line type="monotone" dataKey="actual" name="Actual" stroke="#f59e0b"
                     strokeWidth={2.5} dot={{ r: 3, fill: '#f59e0b' }} connectNulls />
@@ -1759,6 +1723,10 @@ const _historicalAccuracy = (accuracyByQtr) => {
 };
 
 const ForecastingPanel = () => {
+  const [publicationVersion, setPublicationVersion] = useState(0);
+  const [accuracyCheckedAt, setAccuracyCheckedAt] = useState(null);
+  const [accuracyRefreshError, setAccuracyRefreshError] = useState(null);
+  useEffect(() => subscribePublicationRefresh(() => setPublicationVersion(value => value + 1)), []);
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
   const [prodLine,    setProdLine]    = useState('All');
@@ -1777,18 +1745,25 @@ const ForecastingPanel = () => {
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
-  const [accuracyByQtr, setAccuracyByQtr] = useState({
-    source: 'demo',
-    quarters: ['Q1 2025', 'Q2 2025', 'Q3 2025', 'Q4 2025', 'Q1 2026', 'Q2 2026'],
-    models: [
-      { model: 'Ensemble',  values: [18.2, 16.4, 21.1, 14.8, 17.3, 19.6] },
-      { model: 'Prophet',   values: [22.1, 19.8, 24.3, 18.2, 21.0, 23.5] },
-      { model: 'ETS',       values: [25.4, 21.3, 27.8, 20.1, 24.2, 26.1] },
-      { model: 'LightGBM',  values: [20.3, 18.1, 22.6, 16.9, 19.8, 21.4] },
-      { model: 'MSTL',      values: [23.7, 20.4, 25.9, 19.3, 22.5, 24.8] },
-      { model: 'DHR-ARIMA', values: [26.8, 23.2, 29.1, 21.7, 25.6, 27.9] },
-    ],
-  });
+  useEffect(() => {
+    let cancelled = false;
+    apiService.getForecastV2Leaderboard().then(response => {
+      if (cancelled) return;
+      if (response?.source !== 'live' || !Array.isArray(response.data)) {
+        setLeaderboard([]);
+        setAccuracyRefreshError('Published accuracy is unavailable; retrying automatically.');
+        return;
+      }
+      setLeaderboard(response.data);
+      setAccuracyCheckedAt(new Date().toISOString());
+      setAccuracyRefreshError(null);
+    }).catch(() => {
+      if (cancelled) return;
+      setLeaderboard([]);
+      setAccuracyRefreshError('Could not refresh published accuracy; retrying automatically.');
+    });
+    return () => { cancelled = true; };
+  }, [publicationVersion]);
   const [yearRows,    setYearRows]    = useState(null);   // full-year rolling+roy for quarterly bars
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
@@ -1797,7 +1772,6 @@ const ForecastingPanel = () => {
   const [riskRadar,   setRiskRadar]   = useState([]);
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
-  const [trust,       setTrust]       = useState(null);   // band-coverage stats (backtest @4wk)
   const [runDelta,    setRunDelta]    = useState(null);   // what changed since last run
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
@@ -1833,7 +1807,7 @@ const ForecastingPanel = () => {
   const apiQuarter = selectedQuarter;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy, lb] = await Promise.allSettled([
+    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy] = await Promise.allSettled([
       apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
       apiService.getForecastV2Models(),
@@ -1845,9 +1819,6 @@ const ForecastingPanel = () => {
       // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
       apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
       apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-      // Leaderboard: fetch model accuracy on initial load so pill badges show live
-      // data on every tab (without this, pills show hardcoded demo values until Accuracy).
-      apiService.getForecastV2Leaderboard(),
     ]);
 
     if (wk.status === 'fulfilled') {
@@ -1864,7 +1835,6 @@ const ForecastingPanel = () => {
     if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
     if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
     if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-    if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
     {
       const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
       const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
@@ -1907,14 +1877,7 @@ const ForecastingPanel = () => {
         ]);
         if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
       } else if (targetTab === 'Accuracy') {
-        const [lb, bt, aqtr] = await Promise.allSettled([
-          apiService.getForecastV2Leaderboard(),
-          apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-          apiService.getForecastV2AccuracyByQuarter(activePl),
-        ]);
-        if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
-        if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
-        if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
+        // Accuracy reads have their own publication-refresh lifecycle.
       } else if (targetTab === 'Plan Tracking') {
         await fetchOverviewData();
         const [bridge] = await Promise.allSettled([
@@ -1984,6 +1947,7 @@ const ForecastingPanel = () => {
   }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter, fetchTabData]);
 
   const refreshCurrentTab = useCallback(() => {
+    setPublicationVersion(value => value + 1);
     fetchTabData(tab, { force: true });
   }, [tab, fetchTabData]);
 
@@ -2021,25 +1985,14 @@ const ForecastingPanel = () => {
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
   const historicalData = isDemo ? null : historicalMeta;
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
-  const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
-
-
-  // Per-model accuracy for pill badges — now uses quarterly error (closed-quarter
-  // accuracy) when available, falling back to weekly holdout WAPE. The backend
-  // leaderboard endpoint prefers quarterly_wape_* over mape_* columns.
-  // Filter to the selected product first so UCC/ITSG show their own accuracy.
+  // Pills and the quarterly summary use published values only, never demo or weekly fallback.
   const modelMapes = useMemo(() => {
-    const productRow = (leaderboardView || []).find(r =>
-      (r.product === selectedProduct || (!selectedProduct && (r.product === 'Total' || r.product === 'All'))) &&
-      (r.sales_market === 'Total' || r.sales_market === 'All')
-    ) || (leaderboardView || []).find(r =>
-      (r.product === 'Total' || r.product === 'All') &&
+    const productRow = (leaderboard || []).find(r =>
+      (r.product === prodLine || (prodLine === 'All' && (r.product === 'Total' || r.product === 'All'))) &&
       (r.sales_market === 'Total' || r.sales_market === 'All')
     );
-    return productRow
-      ? { ETS: productRow.ETS, Prophet: productRow.Prophet, LightGBM: productRow.LightGBM, MSTL_v2: productRow.MSTL_v2, DHR_ARIMA: productRow.DHR_ARIMA, Ensemble: productRow.Ensemble }
-      : {};
-  }, [leaderboardView, selectedProduct]);
+    return productRow?.quarterly_errors ?? {};
+  }, [leaderboard, prodLine]);
 
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 
@@ -2204,10 +2157,10 @@ const ForecastingPanel = () => {
             <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
               Ensemble ★
               <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
-              {modelMapes.Ensemble != null && modelMapes.Ensemble < 100 && (
+              {modelMapes.Ensemble != null && Number.isFinite(Number(modelMapes.Ensemble)) && (
                 <span style={{ fontSize: 9, color: model === 'ensemble' ? mapeColor(modelMapes.Ensemble) : '#475569',
                                background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                  {Number(modelMapes.Ensemble).toFixed(1)}%
+                  Qtr {Number(modelMapes.Ensemble).toFixed(1)}%
                 </span>
               )}
             </button>
@@ -2222,10 +2175,10 @@ const ForecastingPanel = () => {
                 return (
                   <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
                     {meta.label}
-                    {mape != null && mape < 100 && (
+                    {mape != null && Number.isFinite(Number(mape)) && (
                       <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
                                      background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                        {Number(mape).toFixed(1)}%
+                        Qtr {Number(mape).toFixed(1)}%
                       </span>
                     )}
                   </button>
@@ -2627,21 +2580,32 @@ const ForecastingPanel = () => {
 
           {tab === 'Accuracy' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Quarterly MAPE Matrix — primary view */}
-              <CardWrap explainKey="accuracy" explainProductLine={prodLine}>
-                <SectionTitle>Forecast Accuracy by Quarter — Model Comparison</SectionTitle>
-                <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
-                  Each cell shows the{' '}
-                  <abbr title="sMAPE = Symmetric Mean Absolute Percentage Error. Computed from weeks where both forecast and actual are known. Lower = better." style={{ cursor:'help', borderBottom:'1px dotted #475569', textDecoration:'none' }}>sMAPE</abbr>
-                  {' '}for that model against closed actuals in each backtested quarter —
-                  using each week's first-published forecast (one vintage per week, no re-forecast averaging).
-                  The current quarter appears as "(QTD)" and scores only its elapsed weeks; recorded forecast
-                  history begins mid-June 2026, so earlier quarters appear as they close.
+              <CardWrap>
+                <SectionTitle>Published quarterly error · {prodLine === 'All' ? 'All products' : prodLine}</SectionTitle>
+                <p style={{ color: accuracyRefreshError ? '#fbbf24' : '#64748b', fontSize: 11, marginBottom: 12 }}>
+                  {accuracyRefreshError || `Auto-checks every 5 minutes while visible · ${accuracyCheckedAt ? `Last checked ${new Date(accuracyCheckedAt).toLocaleString()}` : 'Checking publication…'}`}
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+                  {MODELS.map(key => {
+                    const value = modelMapes[MODEL_LB_KEY[key]];
+                    const available = value != null && Number.isFinite(Number(value));
+                    return <div key={key} style={{ padding: 12, borderRadius: 8, border: '1px solid #ffffff12' }}>
+                      <div style={{ color: '#94a3b8', fontSize: 11 }}>{MODEL_KEY_META[key].label}</div>
+                      <div style={{ color: available ? mapeColor(value) : '#94a3b8', fontSize: 22, fontWeight: 700 }}>
+                        {available ? `${Number(value).toFixed(1)}%` : '—'}
+                      </div>
+                    </div>;
+                  })}
                 </div>
-                {loading ? <Skeleton height={200} /> : <QuarterlyMapeMatrix data={accuracyByQtr} />}
+                <details style={{ marginTop: 10, color: '#64748b', fontSize: 11 }}>
+                  <summary style={{ cursor: 'pointer' }}>Quarterly error basis</summary>
+                  Latest published values for the selected product across all regions, not the selected period.
+                  The publisher may supply estimates or weighted blends; these are not automatically verified closed-quarter errors.
+                  Missing quarterly values show —, without substituting weekly or demo values.
+                </details>
               </CardWrap>
               {/* Backtest chart — secondary context */}
-              <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
+              <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
             </div>
           )}
 

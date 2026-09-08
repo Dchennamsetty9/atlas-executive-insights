@@ -29,6 +29,78 @@ sys.modules["services.user_preferences_service"] = fake_prefs
 from routes import forecast_v2_impl as impl  # noqa: E402
 
 
+def test_quarterly_badges_preserve_zero_and_published_precision():
+    values = impl._leaderboard_error_values({
+        "qtr_ensemble": 0, "mape_ensemble": 17.8,
+        "qtr_ets": 8.745, "mape_ets": 28,
+    })
+    assert values["Ensemble"] == 0
+    assert values["quarterly_errors"]["Ensemble"] == 0
+    assert values["quarterly_errors"]["ETS"] == 8.745
+
+
+def test_weekly_fallback_is_not_exposed_as_quarterly_error():
+    values = impl._leaderboard_error_values({"mape_ets": 28})
+    assert values["ETS"] == 28
+    assert values["quarterly_errors"]["ETS"] is None
+    assert all(value is None for value in values["quarterly_errors"].values())
+    assert "Ensemble" not in values
+
+
+def test_backtest_unsupported_scopes_never_query_or_substitute_history(monkeypatch):
+    def forbidden_query(_sql):
+        raise AssertionError("Unsupported scopes must not query a different product or model")
+    monkeypatch.setattr(impl, "execute_query", forbidden_query)
+    for product, market, model, live, expected in [
+        (None, None, "ensemble", True, "combined_history_unverified"),
+        ("UCC", "NA", "ensemble", True, "region_history_unverified"),
+        ("ITSG", None, "prophet", True, "model_history_unverified"),
+        ("UCC", None, "ensemble", False, "source_unavailable"),
+    ]:
+        result = asyncio.run(impl.get_backtest(horizon_weeks=4, model=model,
+            product_line=product, sales_market=market, live_mode=live))
+        assert result["source"] == "unavailable" and result["rows"] == []
+        assert result["reason"] == expected
+
+
+def test_backtest_itsg_uses_only_itsg_sources_and_no_empty_fallback(monkeypatch):
+    queries = []
+    monkeypatch.setattr(impl, "execute_query", lambda sql: queries.append(sql) or [])
+    result = asyncio.run(impl.get_backtest(horizon_weeks=4, model="ensemble",
+        product_line="ITSG", live_mode=True))
+    assert len(queries) == 1
+    assert "itsg_forecast_vintages" in queries[0] and "itsg_forecast_cbe" in queries[0]
+    assert "ucc_" not in queries[0] and "accuracy_history" not in queries[0]
+    assert result["reason"] == "no_matched_history" and result["rows"] == []
+
+
+def test_backtest_query_error_returns_no_demo_or_raw_error(monkeypatch):
+    def failed_query(_sql):
+        raise RuntimeError("private SQL details")
+    monkeypatch.setattr(impl, "execute_query", failed_query)
+    result = asyncio.run(impl.get_backtest(horizon_weeks=4, model="ensemble",
+        product_line="UCC", live_mode=True))
+    assert result["reason"] == "source_query_failed" and result["rows"] == []
+    assert "private SQL" not in str(result)
+
+
+def test_accuracy_reads_bypass_daily_cache_for_new_publications(monkeypatch):
+    from routes import forecast_v2 as package
+    calls = []
+    def query(sql):
+        calls.append(sql)
+        return [{"publication": len(calls)}]
+    monkeypatch.setattr(package, "execute_query", query)
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 86400)
+    monkeypatch.setattr(impl, "_QUERY_CACHE", {})
+    for endpoint in ("/leaderboard", "/leaderboard/columns"):
+        first = asyncio.run(impl._cached_query("SELECT 1", endpoint=endpoint))
+        second = asyncio.run(impl._cached_query("SELECT 1", endpoint=endpoint))
+        assert first != second  # A newly published run is visible without a restart.
+    assert len(calls) == 4
+    assert impl._QUERY_CACHE == {}
+
+
 def test_rolling_next_year_filter_is_quarter_anchored():
     filt = impl._rolling_next_year_filter()
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in filt
