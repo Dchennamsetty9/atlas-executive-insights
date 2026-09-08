@@ -3857,7 +3857,76 @@ print(f"\nPersisted monitoring baseline table: {MONITORING_BASELINE_TABLE}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Pipeline Documentation: Data Sources, Column Glossary & How Each Step Improves the Forecast
+# DBTITLE 1,Final Summary — FY2026 Q1–Q4 Actuals vs Forecast (All Models)
+# =============================================================================
+# FINAL SUMMARY TABLE: FY2026 Q1–Q4 ACTUALS vs FORECAST (ALL MODELS)
+# =============================================================================
+# This cell produces the definitive comparison table for team review.
+# Q1 & Q2 are closed (actuals available). Q3 & Q4 are forward forecasts from
+# the Adaptive Ensemble Monte Carlo simulation (P10/P50/P90).
+# =============================================================================
+
+import pandas as pd
+import numpy as np
+
+# --- Closed quarters: actuals vs each model -----------------------------------
+closed_q = quarterly_model_forecasts[quarterly_model_forecasts['weeks'] == 13].copy()
+closed_q = closed_q[['model', 'quarter', 'actual_arr_m', 'forecast_arr_m', 'pct_error']].copy()
+closed_q.columns = ['Model', 'Quarter', 'Actual ($M)', 'Forecast ($M)', 'Error %']
+
+# Add Adaptive Ensemble for closed quarters
+ens_q1 = ensemble_holdout_history[ensemble_holdout_history['ds'].dt.to_period('Q').astype(str) == '2026Q1']
+ens_q2 = ensemble_holdout_history[ensemble_holdout_history['ds'].dt.to_period('Q').astype(str) == '2026Q2']
+
+for q_label, q_df in [('2026Q1', ens_q1), ('2026Q2', ens_q2)]:
+    if not q_df.empty:
+        act = q_df['actual'].sum() / 1e6
+        fcast = q_df['p50'].sum() / 1e6
+        err = round(100 * (fcast - act) / act, 2) if act > 0 else np.nan
+        closed_q = pd.concat([closed_q, pd.DataFrame([{
+            'Model': 'Adaptive_Ensemble', 'Quarter': q_label,
+            'Actual ($M)': round(act, 3), 'Forecast ($M)': round(fcast, 3), 'Error %': err
+        }])], ignore_index=True)
+
+closed_q = closed_q.sort_values(['Quarter', 'Error %'], key=lambda x: x.abs() if x.name == 'Error %' else x)
+
+# --- Forward quarters: Monte Carlo P10/P50/P90 --------------------------------
+forward_q = mc_quarterly_distribution.copy()  # from Step 14B
+forward_q = forward_q[['quarter', 'weeks_simulated', 'p10_m', 'p50_m', 'p90_m']].copy()
+forward_q.columns = ['Quarter', 'Weeks', 'P10 ($M)', 'P50 ($M)', 'P90 ($M)']
+
+# --- Display -------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("   FY2026 UCC GROWTH ARR — QUARTERLY ACTUALS vs FORECAST (FINAL)")
+print("=" * 80)
+
+print("\n\u2501\u2501 CLOSED QUARTERS (Actuals Available) \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501")
+print("Best model per quarter (lowest |Error %|) shown at top.\n")
+display(closed_q)
+
+print("\n\u2501\u2501 FORWARD QUARTERS (Monte Carlo Ensemble Forecast) \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501")
+print("Based on 10,000 block-bootstrap paths from holdout residuals.\n")
+display(forward_q)
+
+# --- Full year summary ---------------------------------------------------------
+fy_closed = float(actual_quarterly_2026[actual_quarterly_2026['complete'] == 'yes']['actual_arr'].sum()) / 1e6
+print(f"\n\u2501\u2501 FY2026 FULL-YEAR OUTLOOK \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501")
+print(f"  Closed actuals (Q1+Q2)  : ${fy_closed:.3f}M")
+print(f"  Forward P50 (Q3+Q4)     : ${forward_q['P50 ($M)'].sum():.3f}M")
+print(f"  FY2026 P50 total        : ${fy_closed + forward_q['P50 ($M)'].sum():.3f}M")
+print(f"  FY2026 P10–P90 range    : ${mc_fy_distribution.iloc[0]['p10_m']:.2f}M – ${mc_fy_distribution.iloc[0]['p90_m']:.2f}M")
+def _prob_str(threshold):
+    rows = mc_threshold_table[mc_threshold_table['threshold_m'] == threshold]['prob_at_least_pct']
+    return f"{rows.iloc[0]:.0f}" if not rows.empty else "N/A"
+
+print(f"\n  P(FY2026 \u2265 $57M) = {_prob_str(57.0)}%")
+print(f"  P(FY2026 \u2265 $58M) = {_prob_str(58.0)}%")
+print(f"  P(FY2026 \u2265 $59M) = {_prob_str(59.0)}%")
+print("\n" + "=" * 80)
+
+# COMMAND ----------
+
+# DBTITLE 1,V5 Accuracy Roadmap and Pipeline Documentation
 # MAGIC %md
 # MAGIC
 # MAGIC # UCC Forecast Foundation — Full Pipeline Documentation
