@@ -19,6 +19,8 @@ import { apiService } from '../services/api';
 import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
+import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
+import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
 class TabErrorBoundary extends Component {
@@ -1209,9 +1211,9 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
 // ── Backtest: Forecast vs Reality (trust view) — /api/forecast/v2/backtest ────
 const HORIZONS = [1, 4, 8, 13];
 
-const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
-  const [horizon, setHorizon] = useState(4);
+const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion, horizon, setHorizon, comparison }) => {
   const [result, setResult] = useState(null);
+  const [shortHistory, setShortHistory] = useState(null);
   const requestKey = `${backtestRequestKey(backtestScope(prodLine, salesMarket, model, horizon))}:${refreshVersion}`;
   const current = result?.key === requestKey ? result : null;
   const data = current?.data;
@@ -1230,13 +1232,26 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
         if (!backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, horizon))) {
           throw new Error('Backtest response did not match the selected product, region, model, and horizon.');
         }
-        if (!cancelled) setResult({ key: requestKey, data: res });
+        if (!cancelled) setResult({ key: requestKey, data: res, checkedAt: new Date().toISOString() });
       } catch (e) {
-        if (!cancelled) setResult({ key: requestKey, error: e.message || 'Failed to load backtest' });
+        if (!cancelled) setResult({ key: requestKey, error: e.message || 'Failed to load backtest', checkedAt: new Date().toISOString() });
       }
     })();
     return () => { cancelled = true; };
   }, [horizon, model, prodLine, salesMarket, requestKey]);
+
+  // Only offer "available" short history after verifying it for this exact product/model/refresh.
+  useEffect(() => {
+    if (data?.reason !== 'no_matched_history' || horizon === 1) return;
+    let cancelled = false;
+    apiService.getForecastV2Backtest(1, model, prodLine, salesMarket && salesMarket !== 'All' ? salesMarket : null)
+      .then(res => {
+        const available = backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, 1)) &&
+          res.source === 'live' && res.available === true && res.rows?.length > 0;
+        if (!cancelled) setShortHistory({ key: requestKey, available });
+      }).catch(() => { if (!cancelled) setShortHistory({ key: requestKey, available: false }); });
+    return () => { cancelled = true; };
+  }, [data?.reason, horizon, model, prodLine, salesMarket, requestKey]);
 
   const isLive = data?.source === 'live' && data?.available === true;
   const rows = (isLive ? data.rows || [] : []).map(r => ({
@@ -1245,6 +1260,8 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
     bandRange: (r.best != null && r.worst != null) ? Math.max(0, r.best - r.worst) : null,
   }));
   const s = data?.summary || {};
+  const freshness = backtestFreshness(rows);
+  const bandId = `btBandFill-${prodLine}`;
 
   // Observed coverage is descriptive; published bounds have no assumed calibration target.
   const covColor = s.coverage_pct == null ? '#64748b' : '#93c5fd';
@@ -1260,9 +1277,9 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
+    <CardWrap downloadName={`forecast_vs_reality_${prodLine}`}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, paddingRight: 32 }}>
+        <SectionTitle>{comparison ? `${prodLine} · Forecast vs Reality` : `Forecast vs Reality · ${prodLine} — What We Predicted, What Happened`}</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
                        color: isLive ? '#10b981' : '#f59e0b',
                        background: isLive ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
@@ -1275,28 +1292,26 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
         compared with the latest published actual for that closed week. Same product and total grain only.
       </div>
 
-      {/* Horizon pills */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 10, color: '#475569', marginRight: 4 }}>Forecast horizon:</span>
-        {HORIZONS.map(h => (
-          <button key={h} onClick={() => setHorizon(h)}
-            style={{ padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                     border: `1px solid ${horizon === h ? '#3b82f6' : 'rgba(255,255,255,0.08)'}`,
-                     background: horizon === h ? 'rgba(59,130,246,0.12)' : 'rgba(255,255,255,0.03)',
-                     color: horizon === h ? '#93c5fd' : '#475569' }}>
-            {h} wk ahead
-          </button>
-        ))}
-      </div>
+      <p style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>
+        {current?.checkedAt ? `Last checked ${new Date(current.checkedAt).toLocaleString()}` : 'Checking retained history…'}
+        {rows.length > 0 && <><br />Latest publication among scored pairs — forecast (UTC): {freshness.forecast}; actual run date: {freshness.actual}.</>}
+      </p>
 
       {btError && (
         <div style={{ padding: '14px', borderRadius: 8, color: '#ef4444', background: 'rgba(239,68,68,0.06)', fontSize: 12 }}>
-          ⚠ {btError}
+          ⚠ Could not load verified history. Refresh to retry; no previous or demo results are shown.
         </div>
       )}
 
       {btLoading ? <Skeleton height={260} /> : rows.length === 0 && !btError ? (
-        <EmptyState message={data?.message || 'No verified retained forecast-vs-actual history for the current selection'} />
+        <div role="status" style={{ padding: '28px 16px', borderRadius: 10, background: 'rgba(148,163,184,0.04)' }}>
+          <p style={{ fontSize: 13, color: '#cbd5e1', fontWeight: 600 }}>{data?.message || 'No verified retained forecast-vs-actual history for the current selection'}</p>
+          <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 10 }}>{backtestGuidance(data?.reason)}</p>
+          {shortHistory?.key === requestKey && shortHistory.available && <button onClick={() => setHorizon(1)}
+            style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8, border: '1px solid #3b82f6', background: '#172554', color: '#bfdbfe', cursor: 'pointer' }}>
+            View available 1-week history{comparison ? ' (both panels)' : ''}
+          </button>}
+        </div>
       ) : rows.length > 0 && (
         <>
           {(data.small_sample || data.rejected_pairs > 0) && <div role="status" style={{ fontSize: 11, color: '#fbbf24', marginBottom: 12 }}>
@@ -1335,7 +1350,7 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={rows} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="btBandFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={bandId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.20} />
                   <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.04} />
                 </linearGradient>
@@ -1350,7 +1365,7 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
                      contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
               <Area type="monotone" dataKey="bandFloor" stackId="bt" stroke="none" fill="transparent"
                   legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published lower bound" />
-              <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill="url(#btBandFill)"
+              <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill={`url(#${bandId})`}
                   legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published bound span" />
                 <Line type="monotone" dataKey="predicted" name={`Forecast (${(horizon - 1) * 7 + 1}–${horizon * 7} days ahead)`} stroke="#e2e8f0"
                     strokeWidth={2} strokeDasharray="6 4" dot={{ r: 2.5, fill: '#e2e8f0' }} connectNulls />
@@ -1365,6 +1380,28 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion }) => {
 };
 
 // ── Model Lab: per-model P10/P50/P90 from V5 notebook tables ──────────────────
+const BacktestComparison = ({ model, prodLine, salesMarket, refreshVersion }) => {
+  const [horizon, setHorizon] = useState(4);
+  const products = accuracyProducts(prodLine);
+  return <section aria-label="Forecast vs Reality comparison">
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '4px 0 14px' }}>
+      <span style={{ color: '#94a3b8', fontSize: 12 }}>Forecast horizon{products.length > 1 ? ' · shared across both products' : ''}:</span>
+      {HORIZONS.map(h => <button key={h} onClick={() => setHorizon(h)} aria-pressed={horizon === h}
+        style={{ padding: '6px 12px', borderRadius: 999, cursor: 'pointer', fontSize: 12,
+          border: `1px solid ${horizon === h ? '#3b82f6' : '#ffffff20'}`, background: horizon === h ? '#172554' : 'transparent', color: horizon === h ? '#bfdbfe' : '#94a3b8' }}>
+        {h} wk ahead
+      </button>)}
+    </div>
+    {products.length > 1 && <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>UCC and ITSG are scored separately at the same horizon. Available weeks may differ; neither errors nor uncertainty bands are combined.</p>}
+    <div style={{ display: 'grid', gridTemplateColumns: products.length > 1 ? 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))' : 'minmax(0, 1fr)', gap: 16 }}>
+      {products.map(product => <div key={product} style={{ minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere' }}>
+        <BacktestSection model={model} prodLine={product} salesMarket={salesMarket} refreshVersion={refreshVersion}
+          horizon={horizon} setHorizon={setHorizon} comparison={products.length > 1} />
+      </div>)}
+    </div>
+  </section>;
+};
+
 // Module-level pill style (the main panel has its own identical local copy;
 // module-level components like ModelLabSection can't see that closure).
 const pillStyle = (active, color) => ({
@@ -1985,15 +2022,6 @@ const ForecastingPanel = () => {
   const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
   const historicalData = isDemo ? null : historicalMeta;
   const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
-  // Pills and the quarterly summary use published values only, never demo or weekly fallback.
-  const modelMapes = useMemo(() => {
-    const productRow = (leaderboard || []).find(r =>
-      (r.product === prodLine || (prodLine === 'All' && (r.product === 'Total' || r.product === 'All'))) &&
-      (r.sales_market === 'Total' || r.sales_market === 'All')
-    );
-    return productRow?.quarterly_errors ?? {};
-  }, [leaderboard, prodLine]);
-
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 
   const simulatedScenario = useMemo(() => {
@@ -2157,12 +2185,10 @@ const ForecastingPanel = () => {
             <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
               Ensemble ★
               <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
-              {modelMapes.Ensemble != null && Number.isFinite(Number(modelMapes.Ensemble)) && (
-                <span style={{ fontSize: 9, color: model === 'ensemble' ? mapeColor(modelMapes.Ensemble) : '#475569',
+                <span style={{ fontSize: 9, color: '#94a3b8',
                                background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                  Qtr {Number(modelMapes.Ensemble).toFixed(1)}%
+                  {quarterlyPill(leaderboard, prodLine, 'Ensemble')}
                 </span>
-              )}
             </button>
             {/* Symmetric hover: expands on hover/click, collapses when the pointer
                 leaves the group. Stays pinned open while a non-ensemble model is
@@ -2171,16 +2197,13 @@ const ForecastingPanel = () => {
               MODELS.filter(m => m !== 'ensemble').map(m => {
                 const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
                 const lbKey = MODEL_LB_KEY[m];
-                const mape  = lbKey ? modelMapes[lbKey] : null;
                 return (
                   <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
                     {meta.label}
-                    {mape != null && Number.isFinite(Number(mape)) && (
-                      <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
+                      <span style={{ fontSize: 9, color: '#94a3b8',
                                      background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                        Qtr {Number(mape).toFixed(1)}%
+                        {quarterlyPill(leaderboard, prodLine, lbKey)}
                       </span>
-                    )}
                   </button>
                 );
               })
@@ -2581,22 +2604,11 @@ const ForecastingPanel = () => {
           {tab === 'Accuracy' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
-                <SectionTitle>Published quarterly error · {prodLine === 'All' ? 'All products' : prodLine}</SectionTitle>
+                <SectionTitle>{prodLine === 'All' ? 'Published quarterly error by product' : `Published quarterly error · ${prodLine}`}</SectionTitle>
                 <p style={{ color: accuracyRefreshError ? '#fbbf24' : '#64748b', fontSize: 11, marginBottom: 12 }}>
                   {accuracyRefreshError || `Auto-checks every 5 minutes while visible · ${accuracyCheckedAt ? `Last checked ${new Date(accuracyCheckedAt).toLocaleString()}` : 'Checking publication…'}`}
                 </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-                  {MODELS.map(key => {
-                    const value = modelMapes[MODEL_LB_KEY[key]];
-                    const available = value != null && Number.isFinite(Number(value));
-                    return <div key={key} style={{ padding: 12, borderRadius: 8, border: '1px solid #ffffff12' }}>
-                      <div style={{ color: '#94a3b8', fontSize: 11 }}>{MODEL_KEY_META[key].label}</div>
-                      <div style={{ color: available ? mapeColor(value) : '#94a3b8', fontSize: 22, fontWeight: 700 }}>
-                        {available ? `${Number(value).toFixed(1)}%` : '—'}
-                      </div>
-                    </div>;
-                  })}
-                </div>
+                <QuarterlyAccuracySummary rows={leaderboard} product={prodLine} models={MODELS} modelKeys={MODEL_LB_KEY} modelMeta={MODEL_KEY_META} color={mapeColor} />
                 <details style={{ marginTop: 10, color: '#64748b', fontSize: 11 }}>
                   <summary style={{ cursor: 'pointer' }}>Quarterly error basis</summary>
                   Latest published values for the selected product across all regions, not the selected period.
@@ -2605,7 +2617,7 @@ const ForecastingPanel = () => {
                 </details>
               </CardWrap>
               {/* Backtest chart — secondary context */}
-              <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
+              <BacktestComparison model={model} prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
             </div>
           )}
 

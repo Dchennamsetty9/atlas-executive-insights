@@ -101,6 +101,27 @@ def test_accuracy_reads_bypass_daily_cache_for_new_publications(monkeypatch):
     assert impl._QUERY_CACHE == {}
 
 
+def test_leaderboard_exposes_source_publication_without_inventing_missing_dates(monkeypatch):
+    queries = []
+    async def columns():
+        return set()
+    async def query(sql, **kwargs):
+        queries.append(sql)
+        if kwargs.get("metric") == "ensemble_realized_mape":
+            return []
+        return [
+            {"product": "UCC", "sales_market": "Total", "publication_date": "2026-09-08", "qtr_ensemble": 0.826},
+            {"product": "ITSG", "sales_market": "Total", "qtr_ensemble": 12.52},
+        ]
+    monkeypatch.setattr(impl, "_lb_columns", columns)
+    monkeypatch.setattr(impl, "_cached_query", query)
+    result = asyncio.run(impl.get_leaderboard(live_mode=True))
+    assert "MAX(CAST(run_date AS STRING)) AS publication_date" in queries[0]
+    assert result["data"][0]["publication_date"] == "2026-09-08"
+    assert result["data"][1]["publication_date"] is None
+    assert result["data"][0]["quarterly_errors"]["Ensemble"] == 0.826
+
+
 def test_rolling_next_year_filter_is_quarter_anchored():
     filt = impl._rolling_next_year_filter()
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in filt

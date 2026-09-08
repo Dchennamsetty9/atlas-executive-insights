@@ -43,7 +43,19 @@ when closed actuals and a matching earlier publication exist at the selected hor
 - Missing/invalid bounds do not erase point forecasts and are excluded from coverage.
 - Zero actuals remain visible but are excluded from percentage-error denominators.
 - Small samples are flagged. Observed bound coverage is not a calibration guarantee.
-- All-products, unsupported regions/models, and insufficient history show unavailable.
+- All Products displays UCC and ITSG quarterly errors side by side, including on
+  the model pills. No combined percentage is synthesized from product errors.
+- Forecast vs Reality displays separate product panels with a shared horizon under
+  All Products. One product's missing history does not hide the other's chart.
+- A shorter-history action appears only after a successful, scope-matched 1-week
+  history check; clicking explicitly changes the shared horizon for both panels.
+- Unsupported regions/models, insufficient history, invalid pairs and read failures
+  have distinct guidance. A daily run is not promised to resolve these conditions.
+- Leaderboard source publication (run date) is shown separately from the browser's
+  last check. Missing source dates remain explicitly unavailable. Backtest source
+  dates are the latest publications among scored pairs, not the newest table run.
+- Published quarterly error and weekly retained backtest MAPE have different bases.
+  The UI explains this distinction without implying either is a substitute.
 
 ## Validation limits
 

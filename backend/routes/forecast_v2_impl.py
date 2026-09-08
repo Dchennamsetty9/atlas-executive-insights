@@ -3262,6 +3262,7 @@ async def get_leaderboard(
             AVG(CAST({dhr_col} AS DOUBLE)) AS mape_dhr_arima,
             AVG(CAST(best_mape AS DOUBLE)) AS best_mape,
             MAX(best_model) AS best_model,
+            MAX(CAST(run_date AS STRING)) AS publication_date,
             AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_ensemble')} AS DOUBLE)) AS qtr_ensemble,
             AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_ets')} AS DOUBLE)) AS qtr_ets,
             AVG(CAST({_pick_lb_column(lb_cols, 'quarterly_wape_prophet')} AS DOUBLE)) AS qtr_prophet,
@@ -3283,6 +3284,7 @@ async def get_leaderboard(
         "product":        str(r.get("product") or ""),
         "sales_market":   _normalize_market_value(str(r.get("sales_market") or "")),
                 **_leaderboard_error_values(r),
+        "publication_date": str(r["publication_date"]) if r.get("publication_date") is not None else None,
         # Chronos intentionally omitted — not in model suite, NULL in live data
         "best_mape":      _f(r.get("best_mape"),       999),
         "best_model":     str(r.get("best_model") or ""),
