@@ -182,8 +182,15 @@ FY_END_DATE = "2026-12-28"   # last Monday of FY2026 (auto-roll: update annually
 
 # Canonical unified schema (long format — one row per model per week per scenario).
 BASE = ["run_date", "ds", "product", "sales_market", "grain_level", "model",
-        "forecast_type", "forecast_view", "actual", "p10", "p50", "p90", "most_likely",
+        "forecast_type", "forecast_view", "actual",
+        "p10", "p20", "p30", "p40", "p50", "p60", "p70", "p80", "p90",
+        "most_likely",
         "recommended_for_exec", "source_run_ts", "published_at_utc"]
+
+# Intermediate quantile columns (p20-p80) added 2026-09-11.
+# UCC V5 has full p10-p90; ITSG V5 still has p10/p50/p90 only (p20-p80 = NULL
+# from normalize_forecast's auto-fill). ITSG CBE/BOQ have the full fan.
+INTERMEDIATE_QUANTILES = ["p20", "p30", "p40", "p60", "p70", "p80"]
 COLS = BASE + ["model_wape", "model_mape"]   # accuracy joined on at the end
 
 print(f"Publishing → {RESULTS_TABLE}, {INSIGHTS_TABLE}")
@@ -440,7 +447,13 @@ def build_actuals_from_cbe(cbe_table, product):
             F.lit("adaptive").alias("forecast_view"),
             F.col("forecast").cast("double").alias("actual"),
             F.lit(None).cast("double").alias("p10"),
+            F.lit(None).cast("double").alias("p20"),
+            F.lit(None).cast("double").alias("p30"),
+            F.lit(None).cast("double").alias("p40"),
             F.lit(None).cast("double").alias("p50"),
+            F.lit(None).cast("double").alias("p60"),
+            F.lit(None).cast("double").alias("p70"),
+            F.lit(None).cast("double").alias("p80"),
             F.lit(None).cast("double").alias("p90"),
             F.col("forecast").cast("double").alias("most_likely"),
             F.lit(0).cast("bigint").alias("recommended_for_exec"),
@@ -485,7 +498,13 @@ def build_historical_actuals_from_sfdc(cbe_earliest_ds):
             'adaptive' as forecast_view,
             SUM(total_price2_converted) as actual,
             CAST(NULL AS DOUBLE) as p10,
+            CAST(NULL AS DOUBLE) as p20,
+            CAST(NULL AS DOUBLE) as p30,
+            CAST(NULL AS DOUBLE) as p40,
             CAST(NULL AS DOUBLE) as p50,
+            CAST(NULL AS DOUBLE) as p60,
+            CAST(NULL AS DOUBLE) as p70,
+            CAST(NULL AS DOUBLE) as p80,
             CAST(NULL AS DOUBLE) as p90,
             SUM(total_price2_converted) as most_likely,
             CAST(0 AS BIGINT) as recommended_for_exec,
@@ -563,7 +582,13 @@ total = (per_product
     .groupBy("run_date", "ds", "sales_market", "grain_level", "model", "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
          F.sum("p10").alias("p10"),
+         F.sum("p20").alias("p20"),
+         F.sum("p30").alias("p30"),
+         F.sum("p40").alias("p40"),
          F.sum("p50").alias("p50"),
+         F.sum("p60").alias("p60"),
+         F.sum("p70").alias("p70"),
+         F.sum("p80").alias("p80"),
          F.sum("p90").alias("p90"),
          F.sum("most_likely").alias("most_likely"),
          F.max("recommended_for_exec").alias("recommended_for_exec"))
@@ -684,7 +709,13 @@ total_recomp = (pp_reconciled
              "forecast_type", "forecast_view")
     .agg(F.sum("actual").alias("actual"),
          F.sum("p10").alias("p10"),
+         F.sum("p20").alias("p20"),
+         F.sum("p30").alias("p30"),
+         F.sum("p40").alias("p40"),
          F.sum("p50").alias("p50"),
+         F.sum("p60").alias("p60"),
+         F.sum("p70").alias("p70"),
+         F.sum("p80").alias("p80"),
          F.sum("p90").alias("p90"),
          F.sum("most_likely").alias("most_likely"),
          F.max("recommended_for_exec").alias("recommended_for_exec"))
@@ -1910,6 +1941,12 @@ spark.sql(f"""
         COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END),
                  MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Best_Case,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END)    AS p10,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p20 END)    AS p20,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p30 END)    AS p30,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p40 END)    AS p40,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p60 END)    AS p60,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p70 END)    AS p70,
+        MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p80 END)    AS p80,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END)    AS p90,
         MAX(CASE WHEN model = 'ETS'               THEN p50 END)    AS arr_ets,
         MAX(CASE WHEN model = 'Prophet_trend'     THEN p50 END)    AS arr_prophet,

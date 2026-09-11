@@ -2107,6 +2107,56 @@ production_output = pd.concat([
     market_export[['ds', 'model', 'grain_level', 'sales_market', 'forecast', 'p10', 'p50', 'p90']],
 ], ignore_index=True)
 production_output = enforce_quantile_order(production_output, 'p10', 'p50', 'p90')
+
+# --- Add p20-p80 quantiles (full fan, matching Step 8D calibration) ───────────
+# Holdout-residual factors at each decile, same approach as CBE/BOQ.
+QUANTILES_FULL = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+_INTERVAL_LO = 80  # calibrated percentile for p10 (matches Step 8D)
+_INTERVAL_HI = 20  # calibrated percentile for p90
+
+def _v5_model_factors(holdout_df, model_name):
+    m = holdout_df[holdout_df['model'] == model_name].copy() if 'model' in holdout_df.columns else holdout_df.copy()
+    fallback = {q: (0.7 + (q - 10) * (0.6 / 80)) for q in QUANTILES_FULL}
+    fallback[50] = 1.0
+    if m.empty or 'actual' not in m.columns:
+        return fallback
+    rel_errors = (m['forecast'] - m['actual']) / m['actual'].replace(0, np.nan)
+    rel_errors = rel_errors.dropna()
+    if len(rel_errors) < 5:
+        return fallback
+    factors = {}
+    for q in QUANTILES_FULL:
+        pctile = _INTERVAL_LO - (q - 10) * (_INTERVAL_LO - _INTERVAL_HI) / 80
+        raw = 1 - np.percentile(rel_errors, pctile)
+        if q < 50:
+            factors[q] = max(0.3, min(raw, 0.99))
+        elif q == 50:
+            factors[q] = 1.0
+        else:
+            factors[q] = max(1.01, min(raw, 2.0))
+    return factors
+
+_v5_factors = {}
+for _mn in production_output['model'].unique():
+    if _mn == 'Adaptive_Ensemble':
+        _v5_factors[_mn] = _v5_model_factors(
+            ensemble_holdout.assign(model='Adaptive_Ensemble'), 'Adaptive_Ensemble')
+    else:
+        _v5_factors[_mn] = _v5_model_factors(holdout_benchmark_predictions, _mn)
+
+for q in [20, 30, 40, 60, 70, 80]:
+    col = f'p{q}'
+    production_output[col] = production_output.apply(
+        lambda row, _q=q: max(0, row['forecast'] * _v5_factors.get(row['model'], {}).get(_q, 1.0)),
+        axis=1)
+
+# Enforce full monotonic ordering p10 <= p20 <= ... <= p90
+_qcols = [f'p{q}' for q in QUANTILES_FULL]
+for i in range(1, len(_qcols)):
+    production_output[_qcols[i]] = np.maximum(production_output[_qcols[i]], production_output[_qcols[i-1]])
+
+print(f'  V5 quantiles enriched: p10-p90 (full fan, {len(_v5_factors)} models)')
+
 production_output['product_group'] = PRODUCT_SCOPE
 production_output['run_timestamp_utc'] = RUN_TIMESTAMP_UTC
 production_output['run_date_utc'] = RUN_DATE_UTC
@@ -2123,7 +2173,7 @@ for target_table in [PRIMARY_PRODUCTION_OUTPUT_TABLE, LEGACY_PRODUCTION_OUTPUT_T
 
 app_forecast_export = production_output[[
     'ds', 'product_group', 'model', 'grain_level', 'sales_market',
-    'forecast', 'p10', 'p50', 'p90',
+    'forecast', 'p10', 'p20', 'p30', 'p40', 'p50', 'p60', 'p70', 'p80', 'p90',
     'run_timestamp_utc', 'run_date_utc',
     'notebook_version', 'notebook_name', 'recommended_for_exec', 'source_table'
 ]].copy()
@@ -3083,10 +3133,9 @@ print(f'  Next run after {_current_quarter} closes: window extends to {_target_e
 #   Includes: cumulative_qtd, boq_weekly, boq_cumulative_qtd, pace_vs_boq_pct.
 #   Actuals rows get p10 = p50 = p90 = actual value (no uncertainty on realized).
 #
-# NOTE: ITSG uses p10/p50/p90 only (not full p10-p90 by 10s like UCC) because
-# the series is noisier (~$350K avg weekly, ~30% WAPE) and intermediate quantiles
-# add marginal value at this scale. The MC simulation quantiles are used for the
-# Adaptive_Ensemble; individual models use holdout-residual relative errors.
+# NOTE: ITSG now uses full p10-p90 by 10s quantile fan (matching UCC) for richer
+# uncertainty bands. MC simulation quantiles for Adaptive_Ensemble; individual
+# models use holdout-residual relative-error factors at each decile.
 # =============================================================================
 
 import pandas as pd
@@ -3115,67 +3164,87 @@ print()
 INTERVAL_LO_PCTILE = 80  # was 90 (upper error bound for p10)
 INTERVAL_HI_PCTILE = 20  # was 10 (lower error bound for p90)
 
+# Full quantile fan (matching UCC's p10-p90 by 10s)
+QUANTILES = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+QUANTILE_COLS = [f'p{q}' for q in QUANTILES]
+
 def _model_quantile_factors(holdout_preds, model_name):
-    """Compute p10/p90 relative factors from holdout residuals for a model."""
+    """Compute p10-p90 relative factors from holdout residuals for a model.
+    Calibrated: p10 uses INTERVAL_LO_PCTILE, p90 uses INTERVAL_HI_PCTILE,
+    intermediate quantiles are linearly interpolated between them."""
     m = holdout_preds[holdout_preds['model'] == model_name].copy()
+    fallback = {q: (0.7 + (q - 10) * (0.6 / 80)) for q in QUANTILES}  # linear 0.7-1.3
+    fallback[50] = 1.0
     if m.empty or 'actual' not in m.columns:
-        return 0.7, 1.3  # fallback
+        return fallback
     rel_errors = (m['forecast'] - m['actual']) / m['actual'].replace(0, np.nan)
     rel_errors = rel_errors.dropna()
     if len(rel_errors) < 5:
-        return 0.7, 1.3
-    p10_factor = 1 - np.percentile(rel_errors, INTERVAL_LO_PCTILE)  # p10 = forecast * (1 - upper_error)
-    p90_factor = 1 - np.percentile(rel_errors, INTERVAL_HI_PCTILE)  # p90 = forecast * (1 - lower_error)
-    return max(0.3, min(p10_factor, 0.95)), max(1.05, min(p90_factor, 2.0))
+        return fallback
+    # Calibrated percentile mapping: p10->pctile 80, p90->pctile 20, linear between
+    factors = {}
+    for q in QUANTILES:
+        pctile = INTERVAL_LO_PCTILE - (q - 10) * (INTERVAL_LO_PCTILE - INTERVAL_HI_PCTILE) / 80
+        raw = 1 - np.percentile(rel_errors, pctile)
+        if q < 50:
+            factors[q] = max(0.3, min(raw, 0.99))
+        elif q == 50:
+            factors[q] = 1.0  # p50 = point forecast unchanged
+        else:
+            factors[q] = max(1.01, min(raw, 2.0))
+    return factors
 
 # Build quantile factors for each model
 model_factors = {}
 for m_name in all_model_weekly['model'].unique():
     if m_name == 'Adaptive_Ensemble':
         continue  # handled separately via MC
-    p10_f, p90_f = _model_quantile_factors(holdout_benchmark_predictions, m_name)
-    model_factors[m_name] = (p10_f, p90_f)
-    print(f'  {m_name}: p10_factor={p10_f:.3f}, p90_factor={p90_f:.3f}')
+    factors = _model_quantile_factors(holdout_benchmark_predictions, m_name)
+    model_factors[m_name] = factors
+    print(f'  {m_name}: p10={factors[10]:.3f}, p50={factors[50]:.3f}, p90={factors[90]:.3f}')
 
 # Ensemble quantiles from MC simulation (Step 7B)
 try:
     # sim_weekly shape: (10000, n_production_weeks)
-    # MC percentiles tightened from 10/90 to 15/85 (target ~85% holdout coverage)
-    mc_p10 = np.percentile(sim_weekly, 15, axis=0)
-    mc_p50 = np.percentile(sim_weekly, 50, axis=0)
-    mc_p90 = np.percentile(sim_weekly, 85, axis=0)
-    # Map to production weeks
+    # Calibrated MC percentiles: p10->15th, p20->22.5th, ..., p90->85th
     _mc_weeks = pd.to_datetime(mc_fw['ds'].values) if 'mc_fw' in dir() else future_weeks
-    mc_quantile_map = {}
+    mc_quantile_map = {}  # ds -> {p10: val, p20: val, ..., p90: val}
+    mc_pctiles = {q: 15 + (q - 10) * (70 / 80) for q in QUANTILES}  # p10->15, p90->85
     for i, w in enumerate(_mc_weeks[:sim_weekly.shape[1]]):
-        mc_quantile_map[pd.Timestamp(w)] = (mc_p10[i], mc_p50[i], mc_p90[i])
-    print(f'  Adaptive_Ensemble: MC quantiles from {len(mc_quantile_map)} production weeks')
+        week_quantiles = {}
+        for q in QUANTILES:
+            week_quantiles[q] = float(np.percentile(sim_weekly[:, i], mc_pctiles[q]))
+        mc_quantile_map[pd.Timestamp(w)] = week_quantiles
+    print(f'  Adaptive_Ensemble: MC quantiles (p10-p90) from {len(mc_quantile_map)} production weeks')
     _use_mc = True
 except Exception as e:
     print(f'  Adaptive_Ensemble: MC quantiles unavailable ({e}), using residual fallback')
-    _ens_p10_f, _ens_p90_f = _model_quantile_factors(holdout_benchmark_predictions, 'Adaptive_Ensemble')
-    model_factors['Adaptive_Ensemble'] = (_ens_p10_f, _ens_p90_f)
+    model_factors['Adaptive_Ensemble'] = _model_quantile_factors(holdout_benchmark_predictions, 'Adaptive_Ensemble')
     _use_mc = False
 
 def apply_quantiles(row):
-    """Apply p10/p50/p90 to a forecast row."""
+    """Apply p10-p90 (full fan) to a forecast row."""
     model = row['model']
     fc = row['forecast']
     ds = pd.Timestamp(row['ds'])
+    result = {}
 
     if model == 'Adaptive_Ensemble' and _use_mc and ds in mc_quantile_map:
-        p10, p50, p90 = mc_quantile_map[ds]
-        return pd.Series({'p10': max(0, p10), 'p50': max(0, p50), 'p90': max(0, p90)})
+        wq = mc_quantile_map[ds]
+        for q in QUANTILES:
+            result[f'p{q}'] = max(0, wq[q])
     elif model in model_factors:
-        p10_f, p90_f = model_factors[model]
-        return pd.Series({'p10': max(0, fc * p10_f), 'p50': max(0, fc), 'p90': max(0, fc * p90_f)})
+        factors = model_factors[model]
+        for q in QUANTILES:
+            result[f'p{q}'] = max(0, fc * factors[q])
     else:
-        # Fallback for ensemble without MC
-        if model in model_factors:
-            p10_f, p90_f = model_factors[model]
-        else:
-            p10_f, p90_f = 0.7, 1.3
-        return pd.Series({'p10': max(0, fc * p10_f), 'p50': max(0, fc), 'p90': max(0, fc * p90_f)})
+        # Fallback
+        for q in QUANTILES:
+            factor = 0.7 + (q - 10) * (0.6 / 80)
+            if q == 50:
+                factor = 1.0
+            result[f'p{q}'] = max(0, fc * factor)
+    return pd.Series(result)
 
 print()
 
@@ -3203,8 +3272,8 @@ boq_df['sales_market'] = 'Total'
 boq_df['run_date_utc'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 boq_df['pipeline_version'] = PIPELINE_VERSION
 
-boq_out = boq_df[['model', 'ds', 'quarter', 'forecast', 'p10', 'p50', 'p90',
-                  'fiscal_year', 'source', 'grain_level', 'sales_market',
+boq_out = boq_df[['model', 'ds', 'quarter', 'forecast'] + QUANTILE_COLS +
+                  ['fiscal_year', 'source', 'grain_level', 'sales_market',
                   'run_date_utc', 'pipeline_version']].copy()
 
 # Write BOQ
@@ -3232,13 +3301,12 @@ for m_name in boq_out['model'].unique():
     m_actuals['model'] = m_name
     m_actuals['forecast'] = m_actuals['y']
     m_actuals['source'] = 'actual'
-    m_actuals['p10'] = m_actuals['y']
-    m_actuals['p50'] = m_actuals['y']
-    m_actuals['p90'] = m_actuals['y']
-    cbe_rows.append(m_actuals[['ds', 'model', 'forecast', 'source', 'p10', 'p50', 'p90']])
+    for qc in QUANTILE_COLS:
+        m_actuals[qc] = m_actuals['y']
+    cbe_rows.append(m_actuals[['ds', 'model', 'forecast', 'source'] + QUANTILE_COLS])
 
 # Add forecast rows for open weeks
-fwd_for_cbe = boq_df[boq_df['ds'] > _last_actual_date][['ds', 'model', 'forecast', 'p10', 'p50', 'p90']].copy()
+fwd_for_cbe = boq_df[boq_df['ds'] > _last_actual_date][['ds', 'model', 'forecast'] + QUANTILE_COLS].copy()
 fwd_for_cbe['source'] = 'forecast'
 cbe_rows.append(fwd_for_cbe)
 
@@ -3265,8 +3333,8 @@ cbe_df['pace_vs_boq_pct'] = np.where(
 cbe_df['run_date_utc'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 cbe_df['pipeline_version'] = PIPELINE_VERSION
 
-cbe_out = cbe_df[['ds', 'model', 'forecast', 'source', 'quarter', 'p10', 'p50', 'p90',
-                  'fiscal_year', 'grain_level', 'sales_market', 'cumulative_qtd',
+cbe_out = cbe_df[['ds', 'model', 'forecast', 'source', 'quarter'] + QUANTILE_COLS +
+                  ['fiscal_year', 'grain_level', 'sales_market', 'cumulative_qtd',
                   'boq_weekly', 'boq_cumulative_qtd', 'pace_vs_boq_pct',
                   'run_date_utc', 'pipeline_version']].copy()
 
@@ -3284,7 +3352,7 @@ print('ITSG PLANNING TABLES PERSISTED')
 print('=' * 80)
 print(f'  {BOQ_TABLE}: {len(boq_out)} rows (forecast only, all models, rolling 1yr)')
 print(f'  {CBE_TABLE}: {len(cbe_out)} rows (actuals + forecast, cumulative QTD, pace tracking)')
-print(f'  Quantiles: p10/p50/p90 (MC-based for Ensemble, residual-based for individual models)')
+print(f'  Quantiles: p10-p90 by 10s (MC-based for Ensemble, residual-based for individual models)')
 print(f'  Pipeline version: {PIPELINE_VERSION}')
 print(f'  Run date: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}')
 
