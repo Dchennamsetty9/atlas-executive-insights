@@ -2472,6 +2472,17 @@ const ForecastingPanel = () => {
                 );
               })()}
 
+              {/* Weekly forecast chart — actuals (orange) + fan / forecast (blue) */}
+              <CardWrap downloadName="weekly_forecast" explainKey="weekly" explainProductLine={prodLine}
+                        explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
+                <SectionTitle>
+                  Weekly Forecast — {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : selectedYear}
+                  {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  {salesMarket && salesMarket !== 'All' ? ` · ${salesMarket}` : ''}
+                </SectionTitle>
+                {loading ? <Skeleton height={320} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
+              </CardWrap>
+
               {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
                   truncated by the 13-week window; current quarter stacks
                   realized (orange) + remaining forecast (blue) */}
