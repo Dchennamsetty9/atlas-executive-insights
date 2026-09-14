@@ -298,19 +298,43 @@ const WeeklyChart = ({ rows }) => {
   }, {});
   const qBoundaryDates = Object.entries(qBoundaries).filter(([k]) => k !== 'Q1').map(([k, v]) => ({ label: k, date: v }));
 
-  // Simple data: actuals + forecast line + single uncertainty band
+  // Detect whether the full quantile fan (p20-p80) is available
+  const hasFan = combined.some(r => r.arr_p20 != null);
+
   const data = combined.map(r => {
-    const likely = r.arr_likely ?? null;
-    const worst  = r.arr_worst  ?? null;
-    const best   = r.arr_best   ?? null;
-    return {
+    const p10 = r.arr_worst  ?? null;
+    const p20 = r.arr_p20 ?? null;
+    const p30 = r.arr_p30 ?? null;
+    const p40 = r.arr_p40 ?? null;
+    const p50 = r.arr_likely ?? null;
+    const p60 = r.arr_p60 ?? null;
+    const p70 = r.arr_p70 ?? null;
+    const p80 = r.arr_p80 ?? null;
+    const p90 = r.arr_best   ?? null;
+
+    const entry = {
       date: r.date,
       actual: r.arr_actual ?? null,
-      likely,
-      // Single band: floor + range for stacked area
-      bandFloor: worst,
-      bandRange: (best != null && worst != null) ? Math.max(0, best - worst) : null,
+      likely: p50,
+      p10, p20, p30, p40, p60, p70, p80, p90,
     };
+
+    if (hasFan && p20 != null) {
+      // Full fan chart: 7 stacked bands on top of invisible p10 floor
+      entry.fanBase   = p10;
+      entry.fan_10_20 = Math.max(0, (p20 || 0) - (p10 || 0));
+      entry.fan_20_30 = Math.max(0, (p30 || 0) - (p20 || 0));
+      entry.fan_30_40 = Math.max(0, (p40 || 0) - (p30 || 0));
+      entry.fan_40_60 = Math.max(0, (p60 || 0) - (p40 || 0));
+      entry.fan_60_70 = Math.max(0, (p70 || 0) - (p60 || 0));
+      entry.fan_70_80 = Math.max(0, (p80 || 0) - (p70 || 0));
+      entry.fan_80_90 = Math.max(0, (p90 || 0) - (p80 || 0));
+    } else {
+      // Fallback: single P10–P90 band
+      entry.bandFloor = p10;
+      entry.bandRange = (p90 != null && p10 != null) ? Math.max(0, p90 - p10) : null;
+    }
+    return entry;
   });
 
   const CustomTooltip = ({ active, payload }) => {
@@ -318,15 +342,21 @@ const WeeklyChart = ({ rows }) => {
     const d = payload[0]?.payload || {};
     return (
       <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
-                    padding: '12px 16px', fontSize: 12, minWidth: 160 }}>
+                    padding: '12px 16px', fontSize: 12, minWidth: 180 }}>
         <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{d.date}</div>
         {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 4 }}>● Actual: <b>{fmtM(d.actual)}</b></div>}
-        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 4 }}>● Forecast: <b>{fmtM(d.likely)}</b></div>}
-        {d.bandFloor != null && d.bandRange != null && (
+        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 4 }}>● Forecast (P50): <b>{fmtM(d.likely)}</b></div>}
+        {d.p20 != null ? (
+          <div style={{ fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ color: '#93c5fd' }}>P40–P60: {fmtM(d.p40)} – {fmtM(d.p60)}</div>
+            <div style={{ color: '#60a5fa' }}>P20–P80: {fmtM(d.p20)} – {fmtM(d.p80)}</div>
+            <div style={{ color: '#3b82f6' }}>P10–P90: {fmtM(d.p10)} – {fmtM(d.p90)}</div>
+          </div>
+        ) : (d.bandFloor != null && d.bandRange != null) ? (
           <div style={{ color: '#60a5fa', fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
             Range: {fmtM(d.bandFloor)} – {fmtM(d.bandFloor + d.bandRange)}
           </div>
-        )}
+        ) : null}
       </div>
     );
   };
@@ -360,11 +390,24 @@ const WeeklyChart = ({ rows }) => {
           <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3"
             label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
         ))}
-        {/* Single uncertainty band (P10–P90) */}
-        <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent"
-              legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)"
-              name="Forecast Range" connectNulls dot={false} />
+        {/* Graduated uncertainty fan (P10→P90) — 7 bands with increasing opacity toward P50 */}
+        {hasFan ? (
+          <>
+            <Area type="monotone" dataKey="fanBase" stackId="fan" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_10_20" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_20_30" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_30_40" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_40_60" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.24} legendType="none" connectNulls dot={false} name="P40–P60" />
+            <Area type="monotone" dataKey="fan_60_70" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_70_80" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="fan_80_90" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} name="P10–P90" />
+          </>
+        ) : (
+          <>
+            <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
+            <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)" name="Forecast Range" connectNulls dot={false} />
+          </>
+        )}
         {/* Actuals — solid orange area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />

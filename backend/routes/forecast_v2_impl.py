@@ -384,7 +384,13 @@ def _normalized_forecast_sql(
                 COALESCE(CAST({value_col} AS DOUBLE), 0) AS value,
                 COALESCE(CAST({lower_col} AS DOUBLE), 0) AS lower,
                 COALESCE(CAST({upper_col} AS DOUBLE), 0) AS upper,
-                COALESCE(CAST(Actuals AS DOUBLE), 0) AS actual
+                COALESCE(CAST(Actuals AS DOUBLE), 0) AS actual,
+                CAST(p20 AS DOUBLE) AS p20,
+                CAST(p30 AS DOUBLE) AS p30,
+                CAST(p40 AS DOUBLE) AS p40,
+                CAST(p60 AS DOUBLE) AS p60,
+                CAST(p70 AS DOUBLE) AS p70,
+                CAST(p80 AS DOUBLE) AS p80
             FROM {table}
             WHERE {_latest_run()}
                             AND forecast_type = '{forecast_type}'
@@ -403,7 +409,7 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
         ds = str(row.get("ds") or "")[:10]
         if not ds:
             continue
-        normalized.append({
+        entry = {
             "ds": ds,
             "model": model,
             "forecast_type": str(row.get("forecast_type") or "rolling"),
@@ -411,7 +417,13 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
             "lower": _f(row.get("lower")),
             "upper": _f(row.get("upper")),
             "actual": _f(row.get("actual")),
-        })
+        }
+        # Pass through p20-p80 quantiles when available (fan chart)
+        for q in ("p20", "p30", "p40", "p60", "p70", "p80"):
+            v = row.get(q)
+            if v is not None:
+                entry[q] = _f(v)
+        normalized.append(entry)
     return normalized
 
 
@@ -1355,7 +1367,7 @@ async def get_weekly(
             "arr_worst": None, "arr_likely": None, "arr_best": None,
         })
     for r in forecast_rows:
-        rows.append({
+        _entry = {
             "date":       r["ds"],
             "type":       "forecast",
             "arr_actual": None,
@@ -1363,7 +1375,12 @@ async def get_weekly(
             "arr_likely": r["value"],
             "arr_worst":  r["lower"],
             "arr_best":   r["upper"],
-        })
+        }
+        # Fan chart quantiles (p20-p80)
+        for _q in ("p20", "p30", "p40", "p60", "p70", "p80"):
+            if _q in r:
+                _entry[f"arr_{_q}"] = r[_q]
+        rows.append(_entry)
 
     rows.sort(key=lambda x: x["date"])
     rows = _fill_weekly_gaps(rows, year)  # Fill missing weeks with zero placeholders

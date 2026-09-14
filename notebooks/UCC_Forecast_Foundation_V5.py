@@ -7857,6 +7857,10 @@ app_forecast_export = production_forward_export[[
     'run_timestamp_utc', 'run_date_utc',
     'notebook_version', 'notebook_name', 'recommended_for_exec', 'source_table'
 ]].copy()
+# Include p20-p80 quantiles when available (Adaptive Ensemble MC produces them)
+for _qc in ['p20', 'p30', 'p40', 'p60', 'p70', 'p80']:
+    if _qc in production_forward_export.columns:
+        app_forecast_export[_qc] = production_forward_export[_qc].values
 app_forecast_export['ds'] = pd.to_datetime(app_forecast_export['ds'])
 
 production_all_model_forecasts = production_forward_export.copy()
