@@ -3243,11 +3243,18 @@ _BADGE_MODELS = {
 def _leaderboard_error_values(row):
     """Expose published quarterly values separately; zero is a valid error."""
     quarterly = {label: _f(row.get(f"qtr_{key}"), None) for label, key in _BADGE_MODELS.items()}
+    # Provenance tells the frontend pill whether the quarterly error is from a
+    # closed-quarter holdout ('measured') or missing ('unavailable').  Without
+    # this the pill defaults to '(unverified)'.
+    quarterly_provenance = {
+        label: {"status": "measured"} if val is not None else {"status": "unavailable"}
+        for label, val in quarterly.items()
+    }
     values = {label: value if value is not None else _f(row.get(f"mape_{_BADGE_MODELS[label]}"), 999)
               for label, value in quarterly.items()}
     if values["Ensemble"] == 999:
         values.pop("Ensemble")
-    return {**values, "quarterly_errors": quarterly}
+    return {**values, "quarterly_errors": quarterly, "quarterly_provenance": quarterly_provenance}
 
 
 @router.get("/leaderboard")
