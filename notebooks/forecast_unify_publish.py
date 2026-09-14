@@ -550,6 +550,122 @@ print(f"Rows incl. actuals: {combined.count()}")
 
 # COMMAND ----------
 
+# DBTITLE 1,Verify p20-p80 fan chart data pipeline
+from pyspark.sql import functions as F
+
+print("=" * 80)
+print("CHECK 1: forecast_results_v2compat — p20-p80 for UCC forecast rows")
+print("=" * 80)
+
+compat = spark.table("datagroup_mdl.mdl_sales_analytics.forecast_results_v2compat") \
+    .where(
+        (F.col("product") == "UCC") &
+        (F.col("sales_market") == "Total") &
+        (F.col("forecast_type").isin("rolling", "roy"))
+    ) \
+    .select("ds", "Most_Likely", "Worst_Case", "Best_Case",
+            "p20", "p30", "p40", "p60", "p70", "p80") \
+    .orderBy(F.desc("ds")).limit(5).toPandas()
+
+p20_nulls = compat['p20'].isna().sum()
+print(f"  Sample rows: {len(compat)}")
+print(f"  p20 NULLs: {p20_nulls} / {len(compat)}  →  {'❌ MISSING' if p20_nulls == len(compat) else '✅ POPULATED'}")
+print(compat[['ds', 'Most_Likely', 'p20', 'p40', 'p60', 'p80']].to_string(index=False))
+
+print("\n" + "=" * 80)
+print("CHECK 2: forecast_results_v2compat — p20-p80 for ITSG forecast rows")
+print("=" * 80)
+
+itsg_compat = spark.table("datagroup_mdl.mdl_sales_analytics.forecast_results_v2compat") \
+    .where(
+        (F.col("product") == "ITSG") &
+        (F.col("sales_market") == "Total") &
+        (F.col("forecast_type").isin("rolling", "roy"))
+    ) \
+    .select("ds", "Most_Likely", "p20", "p40", "p60", "p80") \
+    .orderBy(F.desc("ds")).limit(3).toPandas()
+
+itsg_p20 = itsg_compat['p20'].isna().sum()
+print(f"  p20 NULLs: {itsg_p20} / {len(itsg_compat)}  →  {'⚠️ NULL (expected — ITSG V5 has p10/p50/p90 only)' if itsg_p20 == len(itsg_compat) else '✅ POPULATED'}")
+
+print("\n" + "=" * 80)
+print("CHECK 3: arr_forecast_app_latest — schema + UCC p20-p80")
+print("=" * 80)
+
+app_tbl = spark.table("datagroup_mdl.mdl_sales_analytics.arr_forecast_app_latest")
+app_cols = {f.name for f in app_tbl.schema.fields}
+fan_cols = ['p20', 'p30', 'p40', 'p60', 'p70', 'p80']
+missing = [c for c in fan_cols if c not in app_cols]
+print(f"  Table has p20-p80 columns: {'✅ YES' if not missing else '❌ MISSING: ' + str(missing)}")
+
+ucc_app = app_tbl.where(
+    (F.col("product_group") == "UCC") &
+    (F.col("model") == "Adaptive_Ensemble") &
+    (F.col("grain_level") == "total")
+).select("ds", "forecast", "p10", "p20", "p50", "p80", "p90") \
+ .orderBy(F.desc("ds")).limit(3).toPandas()
+
+ucc_p20 = ucc_app['p20'].isna().sum() if 'p20' in ucc_app.columns else len(ucc_app)
+print(f"  UCC Ensemble p20: {'⚠️ NULL (populates on next pipeline run with updated UCC notebook)' if ucc_p20 == len(ucc_app) else '✅ POPULATED'}")
+print(ucc_app.to_string(index=False))
+
+print("\n" + "=" * 80)
+print("CHECK 4: Simulate backend /weekly SQL — does p20-p80 flow to the app?")
+print("=" * 80)
+
+sim = spark.sql("""
+    SELECT
+        CAST(ds AS STRING) AS ds,
+        COALESCE(CAST(Most_Likely AS DOUBLE), 0) AS value,
+        COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS p10,
+        COALESCE(CAST(Best_Case AS DOUBLE), 0) AS p90,
+        CAST(p20 AS DOUBLE) AS p20,
+        CAST(p30 AS DOUBLE) AS p30,
+        CAST(p40 AS DOUBLE) AS p40,
+        CAST(p60 AS DOUBLE) AS p60,
+        CAST(p70 AS DOUBLE) AS p70,
+        CAST(p80 AS DOUBLE) AS p80
+    FROM `datagroup_mdl`.`mdl_sales_analytics`.`forecast_results_v2compat`
+    WHERE run_date = (SELECT MAX(run_date) FROM `datagroup_mdl`.`mdl_sales_analytics`.`forecast_results_v2compat`)
+      AND forecast_type IN ('rolling', 'roy')
+      AND product = 'UCC'
+      AND sales_market = 'Total'
+    ORDER BY ds DESC
+    LIMIT 3
+""").toPandas()
+
+has_fan = sim['p20'].notna().any()
+print(f"  Backend SQL returns p20-p80: {'✅ YES — fan chart will render' if has_fan else '❌ NO — fallback to single band'}")
+print(sim[['ds', 'value', 'p20', 'p40', 'p60', 'p80']].to_string(index=False))
+
+print("\n" + "=" * 80)
+print("CHECK 5: Total product (UCC+ITSG) — fan chart behavior")
+print("=" * 80)
+
+total = spark.table("datagroup_mdl.mdl_sales_analytics.forecast_results_v2compat") \
+    .where(
+        (F.col("product") == "Total") &
+        (F.col("sales_market") == "Total") &
+        (F.col("forecast_type").isin("rolling", "roy"))
+    ) \
+    .select("ds", "p20", "p80") \
+    .orderBy(F.desc("ds")).limit(3).toPandas()
+
+tot_p20 = total['p20'].isna().sum()
+print(f"  Total product p20: {'⚠️ NULL — Total is UCC+ITSG sum; ITSG nulls propagate' if tot_p20 == len(total) else '✅ POPULATED (partial — some weeks have data)'}")
+print(f"  Frontend behavior: {'Single P10-P90 band (fallback)' if tot_p20 == len(total) else 'Graduated fan chart'}")
+
+print("\n" + "=" * 80)
+print("SUMMARY")
+print("=" * 80)
+print(f"  UCC fan chart:   {'✅ Graduated 7-band fan' if has_fan else '❌ Fallback single band'}")
+print(f"  ITSG fan chart:  ⚠️ Fallback single band (p20-p80 NULL in ITSG V5)")
+print(f"  Total fan chart: {'Fallback single band' if tot_p20 == len(total) else 'Graduated fan'}")
+print(f"  App table ready: {'✅' if not missing else '❌'}  (p20-p80 columns exist in arr_forecast_app_latest)")
+print(f"  UCC app export:  {'Will populate on next Tuesday pipeline run' if ucc_p20 == len(ucc_app) else '✅ Already populated'}")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Cell 6 — Total rollup (UCC + ITSG)
 

@@ -390,24 +390,17 @@ const WeeklyChart = ({ rows }) => {
           <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3"
             label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
         ))}
-        {/* Graduated uncertainty fan (P10→P90) — 7 bands with increasing opacity toward P50 */}
-        {hasFan ? (
-          <>
-            <Area type="monotone" dataKey="fanBase" stackId="fan" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_10_20" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_20_30" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_30_40" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_40_60" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.24} legendType="none" connectNulls dot={false} name="P40–P60" />
-            <Area type="monotone" dataKey="fan_60_70" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_70_80" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="fan_80_90" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} name="P10–P90" />
-          </>
-        ) : (
-          <>
-            <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
-            <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)" name="Forecast Range" connectNulls dot={false} />
-          </>
-        )}
+        {/* Graduated uncertainty fan (P10→P90) — flat conditionals (Recharts cannot unwrap fragments) */}
+        {hasFan && <Area type="monotone" dataKey="fanBase" stackId="fan" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_10_20" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_20_30" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_30_40" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_40_60" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.24} legendType="none" connectNulls dot={false} name="P40–P60" />}
+        {hasFan && <Area type="monotone" dataKey="fan_60_70" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_70_80" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_80_90" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} name="P10–P90" />}
+        {!hasFan && <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {!hasFan && <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)" name="Forecast Range" connectNulls dot={false} />}
         {/* Actuals — solid orange area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
