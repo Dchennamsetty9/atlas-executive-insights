@@ -2180,6 +2180,13 @@ app_forecast_export = production_output[[
 app_forecast_export['ds'] = pd.to_datetime(app_forecast_export['ds'])
 app_forecast_sdf = spark.createDataFrame(app_forecast_export)
 if spark.catalog.tableExists(APP_FORECAST_OUTPUT_TABLE):
+    # Schema evolution: add p20-p80 columns if missing (writeTo doesn't support overwriteSchema)
+    _existing_cols = {f.name for f in spark.table(APP_FORECAST_OUTPUT_TABLE).schema.fields}
+    for _q in [20, 30, 40, 60, 70, 80]:
+        _pcol = f'p{_q}'
+        if _pcol not in _existing_cols:
+            spark.sql(f'ALTER TABLE {APP_FORECAST_OUTPUT_TABLE} ADD COLUMNS ({_pcol} DOUBLE)')
+            print(f'  ALTER TABLE: added {_pcol} to {APP_FORECAST_OUTPUT_TABLE}')
     from pyspark.sql import functions as _F
     app_forecast_sdf.writeTo(APP_FORECAST_OUTPUT_TABLE).overwrite(
         _F.col("product_group") == APP_FORECAST_PRODUCT_GROUP
