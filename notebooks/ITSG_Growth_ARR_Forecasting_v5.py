@@ -2221,272 +2221,35 @@ print(f'\nPersisted: {PRIMARY_PRODUCTION_OUTPUT_TABLE} (primary), {LEGACY_PRODUC
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 7A: Hindcast — Retroactive Q1/Q2 2026 Model Predictions
-# STEP 7A: HINDCAST — RETROACTIVE Q1/Q2 2026 MODEL PREDICTIONS
-# =============================================================================
-# PURPOSE: Generate what each V5 model WOULD have predicted for Q1 and Q2 2026
-# had the full ITSG model pipeline been running at the start of those quarters.
-#
-# WHY THIS IS NEEDED:
-#   The V5 pipeline launched mid-2026.  The PowerBI wide export backfills
-#   closed-quarter model columns with Prophet-only values (model_fill_source =
-#   'prophet_proxy'), making all models appear identical for Q1/Q2.
-#   This cell retroactively trains every model at the BOQ cutoff and produces
-#   differentiated forecasts that can replace the proxy values.
-#
-# APPROACH:
-#   Two "hindcast origins" simulate beginning-of-quarter predictions:
-#     Origin 1: 2025-12-28 -> predict Q1 2026 (Jan 5 - Mar 29, 13 weeks)
-#     Origin 2: 2026-03-29 -> predict Q2 2026 (Apr 5 - Jun 28, 13 weeks)
-#
-#   At each origin every retained model is retrained on data up to that date,
-#   then predicts 13 weeks forward.  Results are compared to actual outcomes
-#   and written to itsg_backtest_results.
-#
-# MODELS:
-#   Prophet_trend, MSTL_v2, ETS      -- simple (ds, y) with tuned params
-#   DHR_ARIMA                         -- total-level with external regressors
-#   Global_LGB_Q50_ITSG               -- global panel with recursive prediction
-#   Adaptive_Ensemble                 -- weighted combination via ensemble_weights
-#
-# OUTPUT TABLE (OVERWRITE first run, then hindcast rows live here):
-#   datagroup_mdl.mdl_sales_analytics.itsg_backtest_results
-#
-# RUNTIME: ~10-15 min on serverless (5 models x 2 origins + LGB panel build)
-# =============================================================================
-
-import numpy as np
-import pandas as pd
-
-HINDCAST_ORIGINS = [
-    pd.Timestamp('2025-12-28'),  # Q1 2026 BOQ
-    pd.Timestamp('2026-03-29'),  # Q2 2026 BOQ
-]
-HINDCAST_HORIZON = 13
-HINDCAST_TABLE = 'datagroup_mdl.mdl_sales_analytics.itsg_backtest_results'
-HINDCAST_VERSION = globals().get('NOTEBOOK_VERSION', 'v5_ucc_aligned') + '_hindcast'
-_LGB_MODEL = globals().get('GLOBAL_MODEL_NAME', 'Global_LGB_Q50_ITSG')
-_DHR_MODEL = globals().get('DHR_MODEL_NAME', 'DHR_ARIMA')
-
-hindcast_rows = []
-
-for origin in HINDCAST_ORIGINS:
-    origin_label = origin.date()
-    forecast_weeks = pd.date_range(
-        origin + pd.Timedelta(weeks=1),
-        periods=HINDCAST_HORIZON,
-        freq='W-MON',
-    )
-
-    # Actuals from model_df (total ITSG weekly ARR)
-    actuals_map = dict(zip(model_df['ds'], model_df['y']))
-    actual_arr = np.array([actuals_map.get(w, np.nan) for w in forecast_weeks])
-    q_actual = float(np.nansum(actual_arr))
-
-    print(f"\n{'=' * 72}")
-    print(
-        f"HINDCAST ORIGIN: {origin_label}  ->  "
-        f"{forecast_weeks[0].date()} to {forecast_weeks[-1].date()}"
-    )
-    print(f"Actual quarter total: ${q_actual / 1e6:.2f}M")
-    print('=' * 72)
-
-    all_preds: dict[str, np.ndarray] = {}
-
-    # ---- 1. Simple models: Prophet, MSTL, ETS (tuned params) -----------------
-    train_simple = model_df[model_df['ds'] <= origin][['ds', 'y']].copy()
-    print(f"Training rows (simple models): {len(train_simple)}")
-
-    for name, fn, kwargs in benchmark_model_specs:
-        pred = np.asarray(
-            fn(train_simple, horizon=HINDCAST_HORIZON, **kwargs), dtype=float
-        )
-        all_preds[name] = pred
-
-    # ---- 2. DHR-ARIMA (total level with external regressors) -----------------
-    try:
-        dhr_train = dhr_df[dhr_df['ds'] <= origin][['ds', 'y']].copy()
-        dhr_pred = np.asarray(
-            fit_predict_dhr_arima(
-                dhr_train,
-                horizon=HINDCAST_HORIZON,
-                full_feature_df=dhr_df,
-                **BEST_DHR_PARAMS,
-            ),
-            dtype=float,
-        )
-        all_preds[_DHR_MODEL] = dhr_pred
-    except Exception as exc:
-        print(f"  WARNING: DHR-ARIMA hindcast failed ({exc}); skipping")
-        all_preds[_DHR_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
-
-    # ---- 3. Global LGB (recursive prediction on market panel) ----------------
-    try:
-        # Train on history up to origin
-        hindcast_train_panel = global_panel[global_panel['ds'] <= origin].copy()
-        if len(hindcast_train_panel) >= 40:
-            hindcast_lgb_models, _ = fit_global_quantile_models(
-                hindcast_train_panel, params=BEST_LGB_PARAMS
-            )
-            # Build combined panel: history has actual y, future has NaN y
-            hindcast_full_panel = global_panel.copy()
-            hindcast_full_panel.loc[
-                hindcast_full_panel['ds'] > origin, 'y'
-            ] = np.nan
-            lgb_scored = recursive_lgb_predict(
-                hindcast_lgb_models,
-                hindcast_full_panel,
-                origin + pd.Timedelta(weeks=1),
-                forecast_weeks.max(),
-            )
-            lgb_total = (
-                lgb_scored.groupby('ds', as_index=False)
-                .agg(forecast=('p50', 'sum'))
-            )
-            lgb_arr = (
-                lgb_total.set_index('ds')
-                .reindex(forecast_weeks)['forecast']
-                .fillna(0)
-                .values.astype(float)
-            )
-        else:
-            print(f"  WARNING: LGB panel ({len(hindcast_train_panel)} rows) below minimum; skipping")
-            lgb_arr = np.full(HINDCAST_HORIZON, np.nan)
-        all_preds[_LGB_MODEL] = lgb_arr
-    except Exception as exc:
-        print(f"  WARNING: LGB hindcast failed ({exc}); skipping")
-        all_preds[_LGB_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
-
-    # ---- 4. Adaptive Ensemble (weighted average of components) ----------------
-    ew = ensemble_weights.set_index('model')['ensemble_weight']
-    ensemble_pred = np.zeros(HINDCAST_HORIZON)
-    total_weight = 0.0
-    for m in ew.index:
-        if m in all_preds and np.isfinite(all_preds[m]).all():
-            w = float(ew[m])
-            ensemble_pred += w * all_preds[m]
-            total_weight += w
-    if total_weight > 0:
-        ensemble_pred /= total_weight
-    else:
-        ensemble_pred = np.full(HINDCAST_HORIZON, np.nan)
-    all_preds['Adaptive_Ensemble'] = ensemble_pred
-
-    # ---- Collect rows and print summary --------------------------------------
-    for model_name, pred in all_preds.items():
-        q_forecast = float(np.nansum(pred))
-        pct_err = (
-            100 * (q_forecast - q_actual) / q_actual
-            if q_actual > 0
-            else np.nan
-        )
-        print(
-            f"  {model_name:<25} Q forecast: ${q_forecast / 1e6:.2f}M  "
-            f"(error: {pct_err:+.1f}%)"
-        )
-        for i, (ds_val, fcast) in enumerate(zip(forecast_weeks, pred)):
-            act = actual_arr[i]
-            hindcast_rows.append({
-                'model': model_name,
-                'origin_date': origin_label,
-                'ds': ds_val,
-                'horizon_week': i + 1,
-                'forecast': float(fcast),
-                'actual': float(act) if np.isfinite(act) else None,
-                'pipeline_version': HINDCAST_VERSION,
-                'error': (
-                    float(fcast - act) if np.isfinite(act) else None
-                ),
-                'rel_error': (
-                    float((fcast - act) / act)
-                    if np.isfinite(act) and abs(act) > 1e-9
-                    else None
-                ),
-            })
-
-# ---- Persist to Delta (create table on first run) ----------------------------
-hindcast_df = pd.DataFrame(hindcast_rows)
-hindcast_df['ds'] = pd.to_datetime(hindcast_df['ds'])
-
-hindcast_sdf = spark.createDataFrame(hindcast_df)
-hindcast_sdf.write.mode('overwrite').option('overwriteSchema', 'true').saveAsTable(HINDCAST_TABLE)
-
-print(f"\n{'=' * 72}")
-print(f"HINDCAST RESULTS WRITTEN TO {HINDCAST_TABLE}")
-print(f"{'=' * 72}")
-print(f"Rows written: {len(hindcast_df)}")
-print(f"Models: {sorted(hindcast_df['model'].unique().tolist())}")
-print(f"Origins: {sorted(str(o) for o in hindcast_df['origin_date'].unique())}")
-
-# ---- Quarterly summary comparison --------------------------------------------
-hindcast_df['quarter'] = hindcast_df['ds'].dt.to_period('Q').astype(str)
-quarterly_hindcast = (
-    hindcast_df.groupby(['quarter', 'model'], as_index=False)
-    .agg(
-        forecast_M=('forecast', lambda s: round(s.sum() / 1e6, 2)),
-        actual_M=('actual', lambda s: round(s.sum() / 1e6, 2)),
-    )
-)
-quarterly_hindcast['error_pct'] = round(
-    100
-    * (quarterly_hindcast['forecast_M'] - quarterly_hindcast['actual_M'])
-    / quarterly_hindcast['actual_M'],
-    1,
-)
-print("\nQuarterly hindcast vs actuals:")
-display(
-    quarterly_hindcast.sort_values(
-        ['quarter', 'error_pct'],
-        key=lambda c: c.abs() if c.name == 'error_pct' else c,
-    ).reset_index(drop=True)
-)
-
-# COMMAND ----------
-
-# DBTITLE 1,Step 7A: Hindcast — Retroactive Q1/Q2 2026 Model Predictions (ITSG)
-# STEP 7A: HINDCAST — RETROACTIVE Q1/Q2 2026 MODEL PREDICTIONS (ITSG)
+# DBTITLE 1,Step 7A: Hindcast — Retroactive Q1/Q2 2026 ITSG Predictions
+# STEP 7A: HINDCAST — RETROACTIVE Q1/Q2 2026 ITSG MODEL PREDICTIONS
 # =============================================================================
 # PURPOSE: Generate what each ITSG V5 model WOULD have predicted for Q1 and
-# Q2 2026 had the full pipeline been running at the start of those quarters.
+# Q2 2026 had the full pipeline been running at those quarter starts.
 #
-# WHY THIS IS NEEDED:
-#   The V5 pipeline launched mid-2026.  The PowerBI wide export backfills
-#   closed-quarter model columns with Prophet-only values (model_fill_source =
-#   'prophet_proxy'), making all models appear identical for Q1/Q2.
-#   This cell retroactively trains every model at the BOQ cutoff and produces
-#   differentiated forecasts that can replace the proxy values.
+# The PowerBI wide export backfills closed-quarter model columns with Prophet
+# proxy values.  This cell trains every model at each BOQ cutoff to produce
+# differentiated forecasts.
 #
-# APPROACH:
-#   Two "hindcast origins" simulate beginning-of-quarter predictions:
-#     Origin 1: 2025-12-28 -> predict Q1 2026 (Jan 5 - Mar 29, 13 weeks)
-#     Origin 2: 2026-03-29 -> predict Q2 2026 (Apr 5 - Jun 28, 13 weeks)
+# Origins:
+#   2025-12-28 -> Q1 2026 (Jan 5 - Mar 29, 13 weeks)
+#   2026-03-29 -> Q2 2026 (Apr 5 - Jun 28, 13 weeks)
 #
-#   At each origin every retained model is retrained on data up to that date,
-#   then predicts 13 weeks forward.  Results are compared to actual outcomes
-#   and written to itsg_backtest_results.
-#
-# MODELS (from benchmark_model_specs + DHR + LGB + Ensemble):
-#   Prophet_trend, MSTL_v2, ETS  -- via benchmark_model_specs (tuned params)
-#   DHR_ARIMA                    -- total-level with external regressors
-#   Global_LGB_Q50_ITSG          -- global panel recursive multi-step
-#   Adaptive_Ensemble            -- weighted combination via ensemble_weights
-#
-# OUTPUT TABLE (CREATE OR APPEND):
-#   datagroup_mdl.mdl_sales_analytics.itsg_backtest_results
-#
-# RUNTIME: ~10-15 min on serverless (5 models x 2 origins)
+# Models: benchmark_model_specs (Prophet/MSTL/ETS), DHR_ARIMA, LGB, Ensemble
+# Output: datagroup_mdl.mdl_sales_analytics.itsg_backtest_results (new table)
+# Runtime: ~10-15 min
 # =============================================================================
 
 import numpy as np
 import pandas as pd
 
 HINDCAST_ORIGINS = [
-    pd.Timestamp('2025-12-28'),  # Q1 2026 BOQ (last Monday of 2025)
-    pd.Timestamp('2026-03-29'),  # Q2 2026 BOQ (last Monday of Q1 2026)
+    pd.Timestamp('2025-12-28'),
+    pd.Timestamp('2026-03-29'),
 ]
 HINDCAST_HORIZON = 13
 HINDCAST_TABLE = 'datagroup_mdl.mdl_sales_analytics.itsg_backtest_results'
-HINDCAST_VERSION = PIPELINE_VERSION + '_hindcast' if 'PIPELINE_VERSION' in dir() else 'V5_hindcast'
+HINDCAST_VERSION = globals().get('PIPELINE_VERSION', 'V5') + '_hindcast'
 _LGB_MODEL = globals().get('GLOBAL_MODEL_NAME', 'Global_LGB_Q50_ITSG')
 _PRODUCT_SCOPE = globals().get('PRODUCT_SCOPE', 'ITSG')
 _ALL_MARKETS = globals().get('ALL_MARKETS', ['APAC', 'EMEA', 'LATAM', 'NA', 'Unknown'])
@@ -2496,457 +2259,130 @@ hindcast_rows = []
 for origin in HINDCAST_ORIGINS:
     origin_label = origin.date()
     forecast_weeks = pd.date_range(
-        origin + pd.Timedelta(weeks=1),
-        periods=HINDCAST_HORIZON,
-        freq='W-MON',
+        origin + pd.Timedelta(weeks=1), periods=HINDCAST_HORIZON, freq='W-MON',
     )
-
-    # Actuals from model_df (total ITSG weekly ARR)
     actuals_map = dict(zip(model_df['ds'], model_df['y']))
     actual_arr = np.array([actuals_map.get(w, np.nan) for w in forecast_weeks])
     q_actual = float(np.nansum(actual_arr))
 
     print(f"\n{'=' * 72}")
-    print(
-        f"HINDCAST ORIGIN: {origin_label}  ->  "
-        f"{forecast_weeks[0].date()} to {forecast_weeks[-1].date()}"
-    )
+    print(f"HINDCAST ORIGIN: {origin_label}  ->  {forecast_weeks[0].date()} to {forecast_weeks[-1].date()}")
     print(f"Actual quarter total: ${q_actual / 1e6:.2f}M")
     print('=' * 72)
 
     all_preds: dict[str, np.ndarray] = {}
-
-    # ---- 1. Benchmark models (Prophet, MSTL, ETS) via tuned specs ------------
     train_simple = model_df[model_df['ds'] <= origin][['ds', 'y']].copy()
-    print(f"Training rows (simple models): {len(train_simple)}")
+    print(f"Training rows: {len(train_simple)}")
 
-    for model_name, fit_fn, kwargs in benchmark_model_specs:
-        pred = np.asarray(
-            fit_fn(train_simple, horizon=HINDCAST_HORIZON, **kwargs),
-            dtype=float,
-        )
-        all_preds[model_name] = pred
+    # 1. Benchmark models (Prophet, MSTL, ETS) with tuned params
+    for name, fn, kw in benchmark_model_specs:
+        pred = np.asarray(fn(train_simple, horizon=HINDCAST_HORIZON, **kw), dtype=float)
+        all_preds[name] = pred
 
-    # ---- 2. DHR-ARIMA (total level with external regressors) -----------------
+    # 2. DHR-ARIMA (total level)
     try:
-        _dhr_params = globals().get('BEST_DHR_PARAMS', {})
+        _dhr_kw = globals().get('BEST_DHR_PARAMS', {})
         dhr_pred = np.asarray(
-            fit_predict_dhr_arima(
-                train_simple,
-                horizon=HINDCAST_HORIZON,
-                full_feature_df=dhr_df,
-                **_dhr_params,
-            ),
-            dtype=float,
-        )
+            fit_predict_dhr_arima(train_simple, horizon=HINDCAST_HORIZON,
+                                 full_feature_df=dhr_df, **_dhr_kw), dtype=float)
         all_preds['DHR_ARIMA'] = dhr_pred
     except Exception as exc:
-        print(f"  WARNING: DHR-ARIMA hindcast failed ({exc}); skipping")
+        print(f"  WARNING: DHR hindcast failed ({exc}); skipping")
         all_preds['DHR_ARIMA'] = np.full(HINDCAST_HORIZON, np.nan)
 
-    # ---- 3. Global LGB (recursive multi-step by market) ----------------------
+    # 3. Global LGB (recursive multi-step by market)
     try:
         _gp = globals().get('global_panel')
-        _best_params = globals().get('BEST_LGB_PARAMS')
-        if _gp is not None and _best_params is not None:
-            lgb_train_panel = _gp[_gp['ds'] <= origin].copy()
-            if len(lgb_train_panel) >= 40:
-                # Build minimal forward skeleton
-                hc_fwd = pd.MultiIndex.from_product(
-                    [forecast_weeks, _ALL_MARKETS],
-                    names=['ds', 'sales_market'],
+        _bp = globals().get('BEST_LGB_PARAMS')
+        if _gp is not None and _bp is not None:
+            lgb_train = _gp[_gp['ds'] <= origin].copy()
+            if len(lgb_train) >= 40:
+                fwd = pd.MultiIndex.from_product(
+                    [forecast_weeks, _ALL_MARKETS], names=['ds', 'sales_market']
                 ).to_frame(index=False)
-                hc_fwd['y'] = np.nan
-                hc_fwd['deal_count'] = 0.0
-                hc_fwd['slice_id'] = _PRODUCT_SCOPE + '|' + hc_fwd['sales_market']
-                hc_fwd = add_calendar_columns(hc_fwd)
-
-                # Fill features from training-only WoQ profiles
+                fwd['y'] = np.nan
+                fwd['deal_count'] = 0.0
+                fwd['slice_id'] = _PRODUCT_SCOPE + '|' + fwd['sales_market']
+                fwd = add_calendar_columns(fwd)
                 _fp_cols = globals().get('FP_FEATURE_COLS', [])
-                _hist_tail = lgb_train_panel.sort_values('ds').groupby('slice_id').tail(104)
+                _tail = lgb_train.sort_values('ds').groupby('slice_id').tail(104)
                 for col in _fp_cols:
-                    if col in _hist_tail.columns:
-                        profile = _hist_tail.groupby(['sales_market', 'week_of_qtr'])[col].median().to_dict()
-                        mkt_default = _hist_tail.groupby('sales_market')[col].median().to_dict()
-                        hc_fwd[col] = [
-                            profile.get((m, wk), mkt_default.get(m, 0.0))
-                            for m, wk in zip(hc_fwd['sales_market'], hc_fwd['week_of_qtr'])
-                        ]
+                    if col in _tail.columns:
+                        prof = _tail.groupby(['sales_market', 'week_of_qtr'])[col].median().to_dict()
+                        mdef = _tail.groupby('sales_market')[col].median().to_dict()
+                        fwd[col] = [prof.get((m, w), mdef.get(m, 0.0))
+                                    for m, w in zip(fwd['sales_market'], fwd['week_of_qtr'])]
                     else:
-                        hc_fwd[col] = 0.0
-
-                # Authoritative actuals feature
+                        fwd[col] = 0.0
                 if 'load_authoritative_actuals' in dir():
-                    hc_fwd['month_key'] = hc_fwd['ds'].dt.to_period('M').astype(str)
-                    _auth = load_authoritative_actuals(hc_fwd['ds'].min(), hc_fwd['ds'].max())
-                    hc_fwd = hc_fwd.merge(_auth, on=['month_key', 'sales_market'], how='left')
-                elif 'authoritative_actuals' not in hc_fwd.columns:
-                    hc_fwd['authoritative_actuals'] = 0.0
-                    hc_fwd['month_key'] = hc_fwd['ds'].dt.to_period('M').astype(str)
-
-                # Combine with training panel and engineer features
-                common_cols = [c for c in lgb_train_panel.columns if c in hc_fwd.columns]
-                combined = pd.concat(
-                    [lgb_train_panel[common_cols], hc_fwd[common_cols]],
-                    ignore_index=True,
-                )
+                    fwd['month_key'] = fwd['ds'].dt.to_period('M').astype(str)
+                    _auth = load_authoritative_actuals(fwd['ds'].min(), fwd['ds'].max())
+                    fwd = fwd.merge(_auth, on=['month_key', 'sales_market'], how='left')
+                elif 'authoritative_actuals' not in fwd.columns:
+                    fwd['authoritative_actuals'] = 0.0
+                    fwd['month_key'] = fwd['ds'].dt.to_period('M').astype(str)
+                cc = [c for c in lgb_train.columns if c in fwd.columns]
+                combined = pd.concat([lgb_train[cc], fwd[cc]], ignore_index=True)
                 combined = add_calendar_columns(combined)
                 hc_panel = _engineer_panel_features(combined)
-
-                lgb_models, _ = fit_global_quantile_models(
-                    hc_panel[hc_panel['ds'] <= origin], params=_best_params
-                )
-                lgb_scored = recursive_lgb_predict(
-                    lgb_models,
-                    hc_panel,
-                    origin + pd.Timedelta(weeks=1),
-                    forecast_weeks.max(),
-                )
-                lgb_total = (
-                    lgb_scored.groupby('ds', as_index=False)
-                    .agg(forecast=('p50', 'sum'))
-                )
-                lgb_arr = (
-                    lgb_total.set_index('ds')
-                    .reindex(forecast_weeks)['forecast']
-                    .fillna(0)
-                    .values.astype(float)
-                )
+                lgb_m, _ = fit_global_quantile_models(hc_panel[hc_panel['ds'] <= origin], params=_bp)
+                lgb_scored = recursive_lgb_predict(lgb_m, hc_panel,
+                                                   origin + pd.Timedelta(weeks=1), forecast_weeks.max())
+                lgb_arr = (lgb_scored.groupby('ds', as_index=False).agg(forecast=('p50', 'sum'))
+                           .set_index('ds').reindex(forecast_weeks)['forecast'].fillna(0).values.astype(float))
                 all_preds[_LGB_MODEL] = lgb_arr
             else:
-                print(f"  WARNING: LGB training rows ({len(lgb_train_panel)}) below minimum; skipping")
+                print(f"  WARNING: LGB training rows ({len(lgb_train)}) below minimum")
                 all_preds[_LGB_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
         else:
-            print("  WARNING: global_panel or BEST_LGB_PARAMS not available; skipping LGB")
             all_preds[_LGB_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
     except Exception as exc:
         print(f"  WARNING: LGB hindcast failed ({exc}); skipping")
         all_preds[_LGB_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
 
-    # ---- 4. Adaptive Ensemble (weighted average of live members) --------------
+    # 4. Adaptive Ensemble
     ew = ensemble_weights.set_index('model')['ensemble_weight']
-    ensemble_pred = np.zeros(HINDCAST_HORIZON)
-    total_weight = 0.0
+    ens = np.zeros(HINDCAST_HORIZON)
+    tw = 0.0
     for m in ew.index:
         if m in all_preds and np.isfinite(all_preds[m]).all():
             w = float(ew[m])
-            ensemble_pred += w * all_preds[m]
-            total_weight += w
-    if total_weight > 0:
-        ensemble_pred /= total_weight
-    else:
-        ensemble_pred = np.full(HINDCAST_HORIZON, np.nan)
-    all_preds['Adaptive_Ensemble'] = ensemble_pred
+            ens += w * all_preds[m]
+            tw += w
+    all_preds['Adaptive_Ensemble'] = ens / tw if tw > 0 else np.full(HINDCAST_HORIZON, np.nan)
 
-    # ---- Collect rows and print summary --------------------------------------
-    for model_name, pred in all_preds.items():
-        q_forecast = float(np.nansum(pred))
-        pct_err = (
-            100 * (q_forecast - q_actual) / q_actual
-            if q_actual > 0
-            else np.nan
-        )
-        print(f"  {model_name:<25} Q forecast: ${q_forecast / 1e6:.2f}M  (error: {pct_err:+.1f}%)")
-        for i, (ds_val, fcast) in enumerate(zip(forecast_weeks, pred)):
-            act = actual_arr[i]
+    # Collect rows
+    for mname, pred in all_preds.items():
+        qf = float(np.nansum(pred))
+        pe = 100 * (qf - q_actual) / q_actual if q_actual > 0 else np.nan
+        print(f"  {mname:<25} Q: ${qf/1e6:.2f}M  (err: {pe:+.1f}%)")
+        for i, (ds_val, fc) in enumerate(zip(forecast_weeks, pred)):
+            a = actual_arr[i]
             hindcast_rows.append({
-                'model': model_name,
-                'origin_date': origin_label,
-                'ds': ds_val,
-                'horizon_week': i + 1,
-                'forecast': float(fcast),
-                'actual': float(act) if np.isfinite(act) else None,
+                'model': mname, 'origin_date': origin_label, 'ds': ds_val,
+                'horizon_week': i + 1, 'forecast': float(fc),
+                'actual': float(a) if np.isfinite(a) else None,
                 'pipeline_version': HINDCAST_VERSION,
-                'error': (
-                    float(fcast - act) if np.isfinite(act) else None
-                ),
-                'rel_error': (
-                    float((fcast - act) / act)
-                    if np.isfinite(act) and abs(act) > 1e-9
-                    else None
-                ),
+                'error': float(fc - a) if np.isfinite(a) else None,
+                'rel_error': float((fc - a) / a) if np.isfinite(a) and abs(a) > 1e-9 else None,
             })
 
-# ---- Persist to Delta (overwrite — first creation of this table) -------------
 hindcast_df = pd.DataFrame(hindcast_rows)
 hindcast_df['ds'] = pd.to_datetime(hindcast_df['ds'])
-
-hindcast_sdf = spark.createDataFrame(hindcast_df)
-hindcast_sdf.write.format('delta').mode('overwrite').option(
-    'overwriteSchema', 'true'
-).saveAsTable(HINDCAST_TABLE)
+spark.createDataFrame(hindcast_df).write.format('delta').mode('overwrite').option(
+    'overwriteSchema', 'true').saveAsTable(HINDCAST_TABLE)
 
 print(f"\n{'=' * 72}")
-print(f"HINDCAST RESULTS WRITTEN TO {HINDCAST_TABLE}")
-print(f"{'=' * 72}")
-print(f"Rows written: {len(hindcast_df)}")
+print(f"ITSG HINDCAST -> {HINDCAST_TABLE}  ({len(hindcast_df)} rows)")
 print(f"Models: {sorted(hindcast_df['model'].unique().tolist())}")
-print(f"Origins: {sorted(str(o) for o in hindcast_df['origin_date'].unique())}")
-
-# ---- Quarterly summary comparison --------------------------------------------
 hindcast_df['quarter'] = hindcast_df['ds'].dt.to_period('Q').astype(str)
-quarterly_hindcast = (
-    hindcast_df.groupby(['quarter', 'model'], as_index=False)
-    .agg(
-        forecast_M=('forecast', lambda s: round(s.sum() / 1e6, 2)),
-        actual_M=('actual', lambda s: round(s.sum() / 1e6, 2)),
-    )
+qh = hindcast_df.groupby(['quarter', 'model'], as_index=False).agg(
+    forecast_M=('forecast', lambda s: round(s.sum()/1e6, 2)),
+    actual_M=('actual', lambda s: round(s.sum()/1e6, 2)),
 )
-quarterly_hindcast['error_pct'] = round(
-    100
-    * (quarterly_hindcast['forecast_M'] - quarterly_hindcast['actual_M'])
-    / quarterly_hindcast['actual_M'],
-    1,
-)
-print("\nQuarterly hindcast vs actuals (ITSG):")
-display(
-    quarterly_hindcast.sort_values(['quarter', 'error_pct'], key=lambda c: c.abs() if c.name == 'error_pct' else c)
-    .reset_index(drop=True)
-)
-
-# COMMAND ----------
-
-# DBTITLE 1,Step 7A: Hindcast — Retroactive Q1/Q2 2026 Model Predictions
-# STEP 7A: HINDCAST — RETROACTIVE Q1/Q2 2026 MODEL PREDICTIONS
-# =============================================================================
-# PURPOSE: Generate what each V5 model WOULD have predicted for Q1 and Q2 2026
-# had the full ITSG model pipeline been running at the start of those quarters.
-#
-# WHY THIS IS NEEDED:
-#   The V5 pipeline launched mid-2026.  The PowerBI wide export backfills
-#   closed-quarter model columns with Prophet-only values (model_fill_source =
-#   'prophet_proxy'), making all models appear identical for Q1/Q2.
-#   This cell retroactively trains every model at the BOQ cutoff and produces
-#   differentiated forecasts that can replace the proxy values.
-#
-# APPROACH:
-#   Two "hindcast origins" simulate beginning-of-quarter predictions:
-#     Origin 1: 2025-12-28 -> predict Q1 2026 (Jan 5 - Mar 29, 13 weeks)
-#     Origin 2: 2026-03-29 -> predict Q2 2026 (Apr 5 - Jun 28, 13 weeks)
-#
-#   At each origin every retained model is retrained on data up to that date,
-#   then predicts 13 weeks forward.  Results are compared to actual outcomes
-#   and APPENDED to itsg_backtest_results.
-#
-# MODELS (reuses functions from Steps 4-6):
-#   Prophet_trend, MSTL_v2, ETS   -- via benchmark_model_specs
-#   DHR_ARIMA                      -- via fit_predict_dhr_arima + dhr_df
-#   Global_LGB_Q50_ITSG            -- via fit_global_quantile_models + recursive_lgb_predict
-#   Adaptive_Ensemble              -- weighted combination via ensemble_weights
-#
-# OUTPUT TABLE (APPEND):
-#   datagroup_mdl.mdl_sales_analytics.itsg_backtest_results
-#
-# RUNTIME: ~15-20 min on serverless (5 models x 2 origins)
-# =============================================================================
-
-import numpy as np
-import pandas as pd
-
-HINDCAST_ORIGINS = [
-    pd.Timestamp('2025-12-28'),  # Q1 2026 BOQ (last Monday of 2025)
-    pd.Timestamp('2026-03-29'),  # Q2 2026 BOQ (last Monday of Q1 2026)
-]
-HINDCAST_HORIZON = 13
-HINDCAST_TABLE = 'datagroup_mdl.mdl_sales_analytics.itsg_backtest_results'
-HINDCAST_VERSION = globals().get('NOTEBOOK_VERSION', 'v5') + '_hindcast'
-_DHR_MODEL = 'DHR_ARIMA'
-_LGB_MODEL = globals().get('GLOBAL_MODEL_NAME', 'Global_LGB_Q50_ITSG')
-_BEST_DHR = globals().get('BEST_DHR_PARAMS', {})
-_BEST_LGB = globals().get('BEST_LGB_PARAMS', {})
-_PRODUCT_SCOPE = globals().get('PRODUCT_SCOPE', 'ITSG')
-_ALL_MARKETS = globals().get('ALL_MARKETS', ['APAC', 'EMEA', 'LATAM', 'NA', 'Unknown'])
-
-hindcast_rows = []
-
-for origin in HINDCAST_ORIGINS:
-    origin_label = origin.date()
-    forecast_weeks = pd.date_range(
-        origin + pd.Timedelta(weeks=1),
-        periods=HINDCAST_HORIZON,
-        freq='W-MON',
-    )
-
-    # Actuals from model_df (total ITSG weekly ARR)
-    actuals_map = dict(zip(model_df['ds'], model_df['y']))
-    actual_arr = np.array([actuals_map.get(w, np.nan) for w in forecast_weeks])
-    q_actual = float(np.nansum(actual_arr))
-
-    print(f"\n{'=' * 72}")
-    print(
-        f"HINDCAST ORIGIN: {origin_label}  ->  "
-        f"{forecast_weeks[0].date()} to {forecast_weeks[-1].date()}"
-    )
-    print(f"Actual quarter total: ${q_actual / 1e6:.2f}M")
-    print('=' * 72)
-
-    all_preds: dict[str, np.ndarray] = {}
-
-    # ---- 1. Statistical benchmarks (Prophet, MSTL, ETS) ----------------------
-    train_simple = model_df[model_df['ds'] <= origin][['ds', 'y']].copy()
-    print(f"Training rows (simple models): {len(train_simple)}")
-
-    for name, fn, kwargs in benchmark_model_specs:
-        pred = np.asarray(
-            fn(train_simple, horizon=HINDCAST_HORIZON, **kwargs), dtype=float
-        )
-        all_preds[name] = pred
-
-    # ---- 2. DHR-ARIMA (total-level with external regressors) -----------------
-    try:
-        dhr_train = model_df[model_df['ds'] <= origin][['ds', 'y']].copy()
-        dhr_pred = np.asarray(
-            fit_predict_dhr_arima(
-                dhr_train,
-                horizon=HINDCAST_HORIZON,
-                full_feature_df=dhr_df,
-                **_BEST_DHR,
-            ),
-            dtype=float,
-        )
-        all_preds[_DHR_MODEL] = dhr_pred
-    except Exception as exc:
-        print(f"  WARNING: DHR-ARIMA hindcast failed ({exc}); skipping")
-        all_preds[_DHR_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
-
-    # ---- 3. Global LGB (panel by market, recursive prediction) ---------------
-    try:
-        # Build forward panel for hindcast weeks
-        fwd = pd.MultiIndex.from_product(
-            [forecast_weeks, _ALL_MARKETS], names=['ds', 'sales_market']
-        ).to_frame(index=False)
-        fwd['y'] = np.nan
-        fwd['deal_count'] = 0.0
-        fwd['slice_id'] = _PRODUCT_SCOPE + '|' + fwd['sales_market']
-        fwd = add_calendar_columns(fwd)
-
-        # Feature columns from training-only WoQ profiles
-        train_panel = global_panel[global_panel['ds'] <= origin].copy()
-        hist_tail = train_panel.sort_values('ds').groupby('slice_id').tail(104)
-        for col in FP_FEATURE_COLS:
-            profile = hist_tail.groupby(['sales_market', 'week_of_qtr'])[col].median().to_dict()
-            mkt_default = hist_tail.groupby('sales_market')[col].median().to_dict()
-            fwd[col] = [
-                profile.get((m, wk), mkt_default.get(m, 0.0))
-                for m, wk in zip(fwd['sales_market'], fwd['week_of_qtr'])
-            ]
-
-        # Authoritative actuals
-        fwd['month_key'] = fwd['ds'].dt.to_period('M').astype(str)
-        try:
-            fwd_auth = load_authoritative_actuals(fwd['ds'].min(), fwd['ds'].max())
-            fwd = fwd.merge(fwd_auth, on=['month_key', 'sales_market'], how='left')
-        except Exception:
-            fwd['authoritative_actuals'] = np.nan
-
-        # Combine history + forward, engineer features, train, predict
-        base_cols = [c for c in train_panel.columns if c in fwd.columns]
-        combined = pd.concat([train_panel[base_cols], fwd[base_cols]], ignore_index=True)
-        combined = add_calendar_columns(combined)
-        hindcast_panel = _engineer_panel_features(combined)
-
-        hindcast_lgb, _ = fit_global_quantile_models(
-            hindcast_panel[hindcast_panel['ds'] <= origin], params=_BEST_LGB
-        )
-        lgb_scored = recursive_lgb_predict(
-            hindcast_lgb, hindcast_panel,
-            origin + pd.Timedelta(weeks=1), forecast_weeks.max(),
-        )
-        lgb_total = (
-            lgb_scored.groupby('ds', as_index=False)
-            .agg(forecast=('p50', 'sum'))
-        )
-        lgb_arr = (
-            lgb_total.set_index('ds')
-            .reindex(forecast_weeks)['forecast']
-            .fillna(0)
-            .values.astype(float)
-        )
-        all_preds[_LGB_MODEL] = lgb_arr
-    except Exception as exc:
-        print(f"  WARNING: LGB hindcast failed ({exc}); skipping")
-        all_preds[_LGB_MODEL] = np.full(HINDCAST_HORIZON, np.nan)
-
-    # ---- 4. Adaptive Ensemble (weighted average of components) ----------------
-    ew = ensemble_weights.set_index('model')['ensemble_weight']
-    ensemble_pred = np.zeros(HINDCAST_HORIZON)
-    total_weight = 0.0
-    for m in ew.index:
-        if m in all_preds and np.isfinite(all_preds[m]).all():
-            w = float(ew[m])
-            ensemble_pred += w * all_preds[m]
-            total_weight += w
-    if total_weight > 0:
-        ensemble_pred /= total_weight
-    else:
-        ensemble_pred = np.full(HINDCAST_HORIZON, np.nan)
-    all_preds['Adaptive_Ensemble'] = ensemble_pred
-
-    # ---- Collect rows and print summary --------------------------------------
-    for model_name, pred in all_preds.items():
-        q_forecast = float(np.nansum(pred))
-        pct_err = (
-            100 * (q_forecast - q_actual) / q_actual
-            if q_actual > 0
-            else np.nan
-        )
-        print(f"  {model_name:<25} Q forecast: ${q_forecast / 1e6:.2f}M  (error: {pct_err:+.1f}%)")
-        for i, (ds_val, fcast) in enumerate(zip(forecast_weeks, pred)):
-            act = actual_arr[i]
-            hindcast_rows.append({
-                'model': model_name,
-                'origin_date': origin_label,
-                'ds': ds_val,
-                'horizon_week': i + 1,
-                'forecast': float(fcast),
-                'actual': float(act) if np.isfinite(act) else None,
-                'pipeline_version': HINDCAST_VERSION,
-                'error': (
-                    float(fcast - act) if np.isfinite(act) else None
-                ),
-                'rel_error': (
-                    float((fcast - act) / act)
-                    if np.isfinite(act) and abs(act) > 1e-9
-                    else None
-                ),
-            })
-
-# ---- Persist to Delta (APPEND — creates table if needed) ---------------------
-hindcast_df = pd.DataFrame(hindcast_rows)
-hindcast_df['ds'] = pd.to_datetime(hindcast_df['ds'])
-
-hindcast_sdf = spark.createDataFrame(hindcast_df)
-hindcast_sdf.write.mode('append').saveAsTable(HINDCAST_TABLE)
-
-print(f"\n{'=' * 72}")
-print(f"HINDCAST RESULTS APPENDED TO {HINDCAST_TABLE}")
-print(f"{'=' * 72}")
-print(f"Rows appended: {len(hindcast_df)}")
-print(f"Models: {sorted(hindcast_df['model'].unique().tolist())}")
-print(f"Origins: {sorted(str(o) for o in hindcast_df['origin_date'].unique())}")
-
-# ---- Quarterly summary comparison --------------------------------------------
-hindcast_df['quarter'] = hindcast_df['ds'].dt.to_period('Q').astype(str)
-quarterly_hindcast = (
-    hindcast_df.groupby(['quarter', 'model'], as_index=False)
-    .agg(
-        forecast_M=('forecast', lambda s: round(s.sum() / 1e6, 2)),
-        actual_M=('actual', lambda s: round(s.sum() / 1e6, 2)),
-    )
-)
-quarterly_hindcast['error_pct'] = round(
-    100
-    * (quarterly_hindcast['forecast_M'] - quarterly_hindcast['actual_M'])
-    / quarterly_hindcast['actual_M'],
-    1,
-)
-print("\nQuarterly hindcast vs actuals:")
-display(
-    quarterly_hindcast.sort_values(
-        ['quarter', 'error_pct'],
-        key=lambda c: c.abs() if c.name == 'error_pct' else c,
-    ).reset_index(drop=True)
-)
+qh['error_pct'] = round(100 * (qh['forecast_M'] - qh['actual_M']) / qh['actual_M'], 1)
+print("\nITSG Quarterly hindcast vs actuals:")
+display(qh.sort_values(['quarter', 'error_pct'], key=lambda c: c.abs() if c.name == 'error_pct' else c).reset_index(drop=True))
 
 # COMMAND ----------
 

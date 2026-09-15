@@ -63,6 +63,8 @@ SCHEMA  = "mdl_sales_analytics"
 
 SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
 OUTPUT_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_powerbi_wide"
+UCC_HINDCAST_TABLE = f"{CATALOG}.{SCHEMA}.ucc_backtest_results"
+ITSG_HINDCAST_TABLE = f"{CATALOG}.{SCHEMA}.itsg_backtest_results"
 
 APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
 
@@ -80,6 +82,8 @@ QUANTILES = ["P05", "P25", "P50", "P75", "P95"]
 
 print(f"Source: {SOURCE_TABLE}")
 print(f"Output: {OUTPUT_TABLE}")
+print(f"UCC hindcast: {UCC_HINDCAST_TABLE}")
+print(f"ITSG hindcast: {ITSG_HINDCAST_TABLE}")
 print(f"Models: {len(MODELS)}, Quantiles: {len(QUANTILES)}")
 print(f"Expected model columns: {len(MODELS) * len(QUANTILES)} = {len(MODELS)}x{len(QUANTILES)}")
 
@@ -254,28 +258,92 @@ print(f"Actuals rows: {wide.filter(F.col('forecast_type') == 'actuals').count()}
       f"Forecast rows: {wide.filter(F.col('forecast_type') == 'forecast').count()}")
 
 # ============================================================================
-# FILL HISTORICAL GAPS: V5 models are NULL before Aug 2026 — fill with Prophet
+# BACKFILL HISTORICAL GAPS: use hindcasts first, then Prophet proxy fallback
 # ============================================================================
-V5_MODELS = [m for m in MODELS if m != "Prophet"]
+# Closed-quarter rows (Q1/Q2 2026) predate the native V5/V9 launches, so
+# forecast_all_models only carries Prophet values there. We now backfill those
+# product-total historical rows from the retroactive hindcast tables first;
+# only rows with no native model AND no hindcast still fall back to Prophet.
+NON_PROPHET_MODELS = [m for m in MODELS if m != "Prophet"]
+HINDCAST_MODEL_MAP = {
+    "Adaptive_Ensemble": "Adaptive_Ensemble",
+    "DHR_ARIMA": "DHR_ARIMA",
+    "ETS": "ETS",
+    "Global_LGB_Q50_ITSG": "Global_LGB_Q50_ITSG",
+    "Global_LGB_Q50_UCC": "Global_LGB_Q50_UCC",
+    "MSTL_v2": "MSTL_v2",
+    "Prophet": "Prophet_trend",
+}
 
 v5_any_filled = F.lit(False)
-for m in V5_MODELS:
+for m in NON_PROPHET_MODELS:
     v5_any_filled = v5_any_filled | F.col(f"{m}_P50").isNotNull()
 
-wide = wide.withColumn("model_fill_source",
+
+def build_hindcast_backfill(table_name: str, product_name: str):
+    hc = (
+        spark.table(table_name)
+        .select(F.to_date("ds").alias("ds"), "model", F.col("forecast").cast("double").alias("forecast"))
+        # Reruns append duplicate rows; average keeps the notebook idempotent
+        # without assuming a sortable pipeline_version naming scheme.
+        .groupBy("ds", "model")
+        .agg(F.avg("forecast").alias("forecast"))
+        .groupBy("ds")
+        .pivot("model", values=list(HINDCAST_MODEL_MAP.values()))
+        .agg(F.first("forecast"))
+    )
+    for export_model, hindcast_model in HINDCAST_MODEL_MAP.items():
+        out_col = f"hc_{export_model}_P50"
+        if hindcast_model in hc.columns:
+            hc = hc.withColumnRenamed(hindcast_model, out_col)
+        else:
+            hc = hc.withColumn(out_col, F.lit(None).cast("double"))
+    return hc.select("ds", *[f"hc_{m}_P50" for m in MODELS]).withColumn("product", F.lit(product_name))
+
+
+hindcast_backfill = build_hindcast_backfill(UCC_HINDCAST_TABLE, "UCC").unionByName(
+    build_hindcast_backfill(ITSG_HINDCAST_TABLE, "ITSG")
+)
+wide = wide.join(hindcast_backfill, on=["ds", "product"], how="left")
+
+hindcast_any_filled = F.lit(False)
+for m in MODELS:
+    hindcast_any_filled = hindcast_any_filled | F.col(f"hc_{m}_P50").isNotNull()
+
+is_hindcast_backfill_row = (
+    (F.col("sales_market") == "Total") &
+    (F.col("product") != "Total") &
+    (F.col("forecast_type") == "actuals") &
+    hindcast_any_filled
+)
+
+wide = wide.withColumn(
+    "model_fill_source",
     F.when(v5_any_filled, F.lit("native"))
+     .when(is_hindcast_backfill_row, F.lit("hindcast_point"))
      .otherwise(F.lit("prophet_proxy"))
 )
 
-for m in V5_MODELS:
+for m in MODELS:
+    hc_col = f"hc_{m}_P50"
     for q in QUANTILES:
         col_name = f"{m}_{q}"
         prophet_col = f"Prophet_{q}"
-        wide = wide.withColumn(col_name, F.coalesce(F.col(col_name), F.col(prophet_col)))
+        wide = wide.withColumn(
+            col_name,
+            F.when(is_hindcast_backfill_row & F.col(hc_col).isNotNull(), F.col(hc_col))
+             .otherwise(F.coalesce(F.col(col_name), F.col(prophet_col)))
+        )
 
+wide = wide.drop(*[f"hc_{m}_P50" for m in MODELS])
+
+hindcast_count = wide.filter(F.col("model_fill_source") == "hindcast_point").count()
 filled_count = wide.filter(F.col("model_fill_source") == "prophet_proxy").count()
 native_count = wide.filter(F.col("model_fill_source") == "native").count()
-print(f"Prophet-proxy filled rows: {filled_count}, Native V5 rows: {native_count}")
+print(
+    f"Hindcast backfilled rows: {hindcast_count}, "
+    f"Prophet-proxy rows: {filled_count}, Native rows: {native_count}"
+)
 
 # ============================================================================
 # FIX Issue 2 (negative forecasts): Floor all P05 columns at 0
@@ -360,11 +428,11 @@ _ensemble_row = (
         (F.col("run_date_utc") == _latest_bl_date) &
         (F.col("model") == "Adaptive_Ensemble")
     )
-    .select("holdout_wape_baseline", "holdout_start")
+    .select("holdout_wape_baseline")
     .collect()
 )
 _ensemble_wape = round(_ensemble_row[0]["holdout_wape_baseline"], 1) if _ensemble_row else None
-_holdout_start = str(_ensemble_row[0]["holdout_start"]) if _ensemble_row else None
+_holdout_start = "2026-01-05"  # Known UCC holdout start (monitoring baseline doesn't track this column)
 wide = wide.withColumn("ensemble_holdout_wape", F.lit(_ensemble_wape))
 wide = wide.withColumn("holdout_eval_start", F.lit(_holdout_start).cast("date"))
 print(f"Ensemble holdout WAPE (from monitoring baseline, {_latest_bl_date}): {_ensemble_wape}%")
