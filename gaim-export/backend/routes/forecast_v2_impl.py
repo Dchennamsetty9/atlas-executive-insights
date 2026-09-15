@@ -1197,21 +1197,22 @@ async def get_monthly(
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                -- Variance-aggregated month bands (same method as Overview):
-                -- summing weekly P10/P90 assumes every week hits its extreme at
-                -- once and overstates the band ~sqrt(weeks)x.
-                GREATEST(SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(most_likely AS DOUBLE), 0)
-                        - COALESCE(CAST(worst_case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(best_case AS DOUBLE), 0)
-                        - COALESCE(CAST(most_likely AS DOUBLE), 0), 0), 2))) AS arr_best
+                -- Variance-aggregated month bands (same method as Overview).
+                -- COALESCE(Most_Likely, Actuals) fills closed months: for weeks
+                -- where forecast is NULL, the actual value is used (zero
+                -- uncertainty for realized periods → Risk Floor = Stretch Case).
+                GREATEST(SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0))
+                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0)
+                        - COALESCE(CAST(Worst_Case AS DOUBLE), CAST(Actuals AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0))
+                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Best_Case AS DOUBLE), CAST(Actuals AS DOUBLE), 0)
+                        - COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0), 0), 2))) AS arr_best
             FROM {FC_TABLE}
-            WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
-              AND {_latest_run()}
-              -- Monthly table now reads from the unified V5 compat view
-              -- (forecast_results_v2compat), refreshed daily by forecast_unify_publish.
+            WHERE {_latest_run()}
+              -- All forecast_types included: actuals rows use actual value,
+              -- forecast rows use model predictions. Closed months get zero
+              -- band width (actual = actual), open months keep V5 intervals.
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
