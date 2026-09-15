@@ -1207,9 +1207,11 @@ async def get_monthly(
                 SUM(COALESCE(CAST(most_likely AS DOUBLE), 0))
                     + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(best_case AS DOUBLE), 0)
                         - COALESCE(CAST(most_likely AS DOUBLE), 0), 0), 2))) AS arr_best
-            FROM {FORECAST_PROPHET_TABLE}
-                            -- Monthly table should show full forecast months (not only the
-                            -- remaining open weeks after latest actuals splice).
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
+              AND {_latest_run()}
+              -- Monthly table now reads from the unified V5 compat view
+              -- (forecast_results_v2compat), refreshed daily by forecast_unify_publish.
               {pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
