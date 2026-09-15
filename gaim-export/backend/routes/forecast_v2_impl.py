@@ -1194,8 +1194,9 @@ async def get_monthly(
 
     fc_sql = None
     if include_forecasts:
-        # Read from arr_forecast_powerbi_wide which has Ensemble P05/P50/P95
+        # Read from arr_forecast_powerbi_wide which has Ensemble P25/P50/P75
         # for ALL periods — hindcast (Q1/Q2), native V5 (Q3+), and forward.
+        # Uses P25/P75 (interquartile range) for tighter, exec-friendly bands.
         # Variance-aggregated monthly bands: sqrt(sum(weekly_halfwidth^2)).
         # product='Total' only exists from Sep onward in powerbi_wide, so
         # when the user asks for Total we SUM(UCC + ITSG) to cover all months.
@@ -1211,10 +1212,10 @@ async def get_monthly(
                 date_format(ds, 'MMMM')      AS month_name,
                 GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
                     - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
-                        - COALESCE(CAST(Adaptive_Ensemble_P05 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                        - COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
                 SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
                 SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P95 AS DOUBLE), 0)
+                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
                         - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
             FROM {POWERBI_WIDE_TABLE}
             WHERE 1=1
