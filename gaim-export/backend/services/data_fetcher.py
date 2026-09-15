@@ -111,7 +111,7 @@ class DataFetcher:
             
             # Replace NaN/Inf values with None for JSON serialization
             df = df.replace([float('inf'), float('-inf')], None)
-            df = df.fillna(value=None)
+            df = df.where(df.notna(), None)
             
             return df
         except Exception as e:
