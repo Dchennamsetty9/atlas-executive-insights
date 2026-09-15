@@ -139,7 +139,7 @@ def load_csv_files(conn):
             
             # Clean data
             df = df.replace([float('inf'), float('-inf')], None)
-            df = df.fillna(value=None)
+            df = df.where(df.notna(), None)
             
             # Clear existing data
             cursor.execute(f"DELETE FROM {table_name}")

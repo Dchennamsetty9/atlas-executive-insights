@@ -62,7 +62,7 @@ def extract_pipeline_data(conn):
     columns = [desc[0] for desc in cursor.description]
     
     df = pd.DataFrame(rows, columns=columns)
-    df = df.replace([float('inf'), float('-inf')], None).fillna(value=None)
+    df = df.replace([float('inf'), float('-inf')], None).where(lambda x: x.notna(), None)
     
     print(f"✅ Extracted {len(df)} rows")
     return df
@@ -96,7 +96,7 @@ def extract_opportunity_data(conn):
     columns = [desc[0] for desc in cursor.description]
     
     df = pd.DataFrame(rows, columns=columns)
-    df = df.replace([float('inf'), float('-inf')], None).fillna(value=None)
+    df = df.replace([float('inf'), float('-inf')], None).where(lambda x: x.notna(), None)
     
     print(f"✅ Extracted {len(df)} rows")
     return df
@@ -125,7 +125,7 @@ def extract_forecast_data(conn):
     columns = [desc[0] for desc in cursor.description]
     
     df = pd.DataFrame(rows, columns=columns)
-    df = df.replace([float('inf'), float('-inf')], None).fillna(value=None)
+    df = df.replace([float('inf'), float('-inf')], None).where(lambda x: x.notna(), None)
     
     print(f"✅ Extracted {len(df)} rows")
     return df
