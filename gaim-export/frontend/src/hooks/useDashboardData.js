@@ -99,13 +99,12 @@ export function useDashboardData(filters, play) {
     loadKpis();
     connectWS();
 
-    // Fallback polling (15 min) in case WS is not available
-    const interval = setInterval(async () => {
-      try {
-        await apiService.post('/api/cache/refresh', {});
-      } catch { /* ignore */ }
+    // Fallback polling (60 min) in case WS is not available.
+    // Does NOT bust backend cache — relies on natural TTL (CACHE_TTL_SECONDS).
+    // Manual "Refresh Now" (handleRefreshNow) still force-invalidates.
+    const interval = setInterval(() => {
       loadKpis();
-    }, 15 * 60 * 1000);
+    }, 60 * 60 * 1000);
 
     return () => {
       clearInterval(interval);
