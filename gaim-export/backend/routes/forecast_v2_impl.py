@@ -33,6 +33,9 @@ FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
+# PowerBI wide table — has Ensemble P05/P50/P95 for ALL periods incl. hindcast.
+# Used by /monthly for forecast scenarios so closed months show real model predictions.
+POWERBI_WIDE_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_powerbi_wide`"
 # Default to the legacy tables for production safety. Environments that have the
 # new unified compat views can opt in via env vars without code changes.
 FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "arr_forecast_v2")
@@ -1191,29 +1194,31 @@ async def get_monthly(
 
     fc_sql = None
     if include_forecasts:
+        # Read from arr_forecast_powerbi_wide which has Ensemble P05/P50/P95
+        # for ALL periods — hindcast (Q1/Q2), native V5 (Q3+), and forward.
+        # Variance-aggregated monthly bands: sqrt(sum(weekly_halfwidth^2)).
+        # product='Total' only exists from Sep onward in powerbi_wide, so
+        # when the user asks for Total we SUM(UCC + ITSG) to cover all months.
+        _eff_product = _selected_product(product, product_line)
+        _pw_pf = ("AND product IN ('UCC', 'ITSG')"
+                  if _eff_product == 'Total'
+                  else f"AND product = '{_eff_product}'")
         fc_sql = f"""
             SELECT
                 year(ds)                     AS yr,
                 quarter(ds)                  AS qtr,
                 month(ds)                    AS mth,
                 date_format(ds, 'MMMM')      AS month_name,
-                -- Variance-aggregated month bands (same method as Overview).
-                -- COALESCE(Most_Likely, Actuals) fills closed months: for weeks
-                -- where forecast is NULL, the actual value is used (zero
-                -- uncertainty for realized periods → Risk Floor = Stretch Case).
-                GREATEST(SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0))
-                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0)
-                        - COALESCE(CAST(Worst_Case AS DOUBLE), CAST(Actuals AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0)) AS arr_likely,
-                SUM(COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0))
-                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Best_Case AS DOUBLE), CAST(Actuals AS DOUBLE), 0)
-                        - COALESCE(CAST(Most_Likely AS DOUBLE), CAST(Actuals AS DOUBLE), 0), 0), 2))) AS arr_best
-            FROM {FC_TABLE}
-            WHERE {_latest_run()}
-              -- All forecast_types included: actuals rows use actual value,
-              -- forecast rows use model predictions. Closed months get zero
-              -- band width (actual = actual), open months keep V5 intervals.
-              {pf} {gf}
+                GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                    - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
+                        - COALESCE(CAST(Adaptive_Ensemble_P05 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
+                SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                    + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P95 AS DOUBLE), 0)
+                        - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
+            FROM {POWERBI_WIDE_TABLE}
+            WHERE 1=1
+              {_pw_pf} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
             ORDER BY yr, mth
