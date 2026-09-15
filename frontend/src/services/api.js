@@ -70,7 +70,7 @@ api.interceptors.response.use(
 /**
  * API Service Methods
  */
-export const apiService = {
+export const createApiService = (api) => ({
   // Generic methods
   get: (url, config) => api.get(url, config),
   post: (url, data, config) => api.post(url, data, config),
@@ -329,7 +329,9 @@ export const apiService = {
     api.post('/api/ai/chart-annotation', { chart_type: chartType, data_points: dataPoints, metric_name: metricName }),
 
   getRecommendations: () => api.get('/api/recommendations'),
-}
+});
+
+export const apiService = createApiService(api);
 
 // Legacy function for backwards compatibility
 export const fetchKPIs = async (startDate, endDate) => {

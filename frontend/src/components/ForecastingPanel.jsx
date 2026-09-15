@@ -15,7 +15,9 @@ import {
   Area, Bar, Line, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
-import { apiService } from '../services/api';
+import { apiService, createApiService } from '../services/api';
+import { createForecastRequests } from './forecast/forecastRequests';
+import { loadForecastTab } from './forecast/loadForecastTab';
 import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
@@ -971,40 +973,40 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
   const [facts,     setFacts]     = useState(null); // deterministic, computed insights
+  const aiBatchRef = useRef(null);
 
   const activePl  = prodLine && prodLine !== 'All' ? prodLine : null;
   const activeGeo = salesMarket && salesMarket !== 'All' ? salesMarket : null;
 
   const loadAi = useCallback(async () => {
+    aiBatchRef.current?.cancel();
+    const batch = createForecastRequests(apiService.get).start();
+    aiBatchRef.current = batch;
+    const scopedApi = createApiService(batch);
     setAiLoading(true); setAiError(null);
-    // Headline facts are computed from reliable numeric endpoints; the LLM
-    // narrative is best-effort and demoted to a collapsible section. Fetch all
-    // in parallel so a failure in one never blanks the tab.
-    const [intel, aqtr, bt, rd] = await Promise.allSettled([
-      apiService.getForecastV2Intelligence(prodLine, salesMarket),
-      apiService.getForecastV2AccuracyByQuarter(activePl),
-      apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-      apiService.getForecastV2RunDelta(activePl, activeGeo),
-    ]);
-
-    if (intel.status === 'fulfilled') {
-      const res = intel.value;
-      const d = (res?.data && typeof res.data === 'object') ? res.data : res;
-      setAiData({ ...(d || {}), _source: res?.source ?? d?.source });
-    } else {
-      setAiData(null);
-      setAiError(intel.reason?.message || 'AI narrative unavailable');
-    }
-
-    setFacts({
-      acc:      aqtr.status === 'fulfilled' ? _historicalAccuracy(aqtr.value) : null,
-      trust:    bt.status   === 'fulfilled' ? bt.value : null,
-      runDelta: rd.status   === 'fulfilled' ? rd.value : null,
+    setAiData(null); setFacts(null);
+    const receive = (request, apply, onError = () => {}) => request.then(value => {
+      if (batch.isCurrent()) apply(value);
+    }).catch(error => {
+      if (batch.isCurrent()) onError(error);
+    }).finally(() => {
+      if (batch.isCurrent()) setAiLoading(false);
     });
-    setAiLoading(false);
+    await Promise.allSettled([
+      receive(scopedApi.getForecastV2Intelligence(prodLine, salesMarket), res => {
+        const data = (res?.data && typeof res.data === 'object') ? res.data : res;
+        setAiData({ ...(data || {}), _source: res?.source ?? data?.source });
+      }, error => setAiError(error.message || 'AI narrative unavailable')),
+      receive(scopedApi.getForecastV2AccuracyByQuarter(activePl), value => setFacts(previous => ({ ...previous, acc: _historicalAccuracy(value) }))),
+      receive(scopedApi.getForecastV2Backtest(4, model, activePl, activeGeo), value => setFacts(previous => ({ ...previous, trust: value }))),
+      receive(scopedApi.getForecastV2RunDelta(activePl, activeGeo), value => setFacts(previous => ({ ...previous, runDelta: value }))),
+    ]);
   }, [model, prodLine, salesMarket, activePl, activeGeo]); // refetch on selection change
 
-  useEffect(() => { loadAi(); }, [loadAi]);
+  useEffect(() => {
+    loadAi();
+    return () => aiBatchRef.current?.cancel();
+  }, [loadAi]);
 
   // Normalise field names across backend shape variants
   const momentum  = aiData?.momentum ?? aiData?.trend_status;
@@ -1258,9 +1260,10 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion, horizon
 
   useEffect(() => {
     let cancelled = false;
+    const batch = createForecastRequests(apiService.get).start();
     (async () => {
       try {
-        const res = await apiService.getForecastV2Backtest(
+        const res = await createApiService(batch).getForecastV2Backtest(
           horizon, model,
           prodLine !== 'All' ? prodLine : null,
           salesMarket && salesMarket !== 'All' ? salesMarket : null,
@@ -1273,20 +1276,21 @@ const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion, horizon
         if (!cancelled) setResult({ key: requestKey, error: e.message || 'Failed to load backtest', checkedAt: new Date().toISOString() });
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; batch.cancel(); };
   }, [horizon, model, prodLine, salesMarket, requestKey]);
 
   // Only offer "available" short history after verifying it for this exact product/model/refresh.
   useEffect(() => {
     if (data?.reason !== 'no_matched_history' || horizon === 1) return;
     let cancelled = false;
-    apiService.getForecastV2Backtest(1, model, prodLine, salesMarket && salesMarket !== 'All' ? salesMarket : null)
+    const batch = createForecastRequests(apiService.get).start();
+    createApiService(batch).getForecastV2Backtest(1, model, prodLine, salesMarket && salesMarket !== 'All' ? salesMarket : null)
       .then(res => {
         const available = backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, 1)) &&
           res.source === 'live' && res.available === true && res.rows?.length > 0;
         if (!cancelled) setShortHistory({ key: requestKey, available });
       }).catch(() => { if (!cancelled) setShortHistory({ key: requestKey, available: false }); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; batch.cancel(); };
   }, [data?.reason, horizon, model, prodLine, salesMarket, requestKey]);
 
   const isLive = data?.source === 'live' && data?.available === true;
@@ -1463,10 +1467,12 @@ const ModelLabSection = ({ product, salesMarket }) => {
 
   useEffect(() => {
     let cancelled = false;
+    const batch = createForecastRequests(apiService.get).start();
     (async () => {
       setMlLoading(true); setMlError(null);
+      setData(null);
       try {
-        const res = await apiService.getForecastV2ModelLab(product, grain, salesMarket);
+        const res = await createApiService(batch).getForecastV2ModelLab(product, grain, salesMarket);
         if (cancelled) return;
         setData(res);
         setSel((prev) => (res?.models?.includes(prev) ? prev : (res?.recommended_model || res?.models?.[0] || null)));
@@ -1476,7 +1482,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         if (!cancelled) setMlLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; batch.cancel(); };
   }, [product, grain, salesMarket]);
 
   const rows = data?.rows || [];
@@ -1858,10 +1864,12 @@ const ForecastingPanel = () => {
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
-  const [loadedTabs,  setLoadedTabs]  = useState(new Set());
-  const loadedTabsRef = useRef(new Set());
-  const tabLoadInFlightRef = useRef(new Set());
-  const hasHydratedFiltersRef = useRef(false);
+  const [settledFields, setSettledFields] = useState(new Set());
+  const [dataScope, setDataScope] = useState(null);
+  const loadedTabsRef = useRef(new Map());
+  const dataScopeRef = useRef(null);
+  const requestsRef = useRef(null);
+  const activeBatchRef = useRef(null);
 
   const [simWinRate, setSimWinRate] = useState(31.8);
   const [simCycle, setSimCycle] = useState(45);
@@ -1879,145 +1887,113 @@ const ForecastingPanel = () => {
   const apiYear = selectedYear;
   const apiQuarter = selectedQuarter;
 
-  const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, yrRoll, yrRoy] = await Promise.allSettled([
-      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
-      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
-      apiService.getForecastV2Models(),
-      apiService.getForecastV2Freshness(),
-      apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
-      apiService.getForecastV2RunDelta(activePl, activeGeo),
-      // Full-year rows for the Quarterly Summary bars: rolling covers only the
-      // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
-      // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
-      apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
-      apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-    ]);
+  const scopeKey = JSON.stringify([model, fcType, activePl, activeGeo, apiYear, apiQuarter]);
+  const isFieldLoading = field => loading && !settledFields.has(field);
 
-    if (wk.status === 'fulfilled') {
-      setWeekly(wk.value?.rows ?? []);
-      setWeeklyKpis(wk.value?.kpis ?? null);
-      setQuarterlySummary(wk.value?.quarterly_summary ?? null);
-      setSource(wk.value?.source ?? null);
-      if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
-        setError(`Forecast data fallback: ${wk.value.error}`);
-      }
+  const fetchTabData = useCallback((targetTab, { force = false } = {}) => {
+    requestsRef.current ??= createForecastRequests(apiService.get);
+    const batch = requestsRef.current.start({ force });
+    activeBatchRef.current = batch;
+    if (dataScopeRef.current !== scopeKey) {
+      dataScopeRef.current = scopeKey;
+      loadedTabsRef.current.clear();
+      setWeekly(null);
+      setWeeklyKpis(null);
+      setQuarterlySummary(null);
+      setYtd(null);
+      setYearRows(null);
+      setHistorical(null);
+      setHistoricalMeta(null);
+      setByProduct(null);
+      setMonthly(null);
+      setConfidence(null);
+      setDriverBridge(null);
+      setRiskRadar([]);
+      setMeetingMode(null);
+      setConfidenceBands(null);
+      setRunDelta(null);
+      setActions([]);
+      setGovernanceLog([]);
+      setScenarioGrid([]);
+      setSensitivityData([]);
+      setModelScenarios([]);
+      setHistoricalScenarios([]);
+      setSelectedScenario(null);
+      setSource(null);
     }
-    if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
-    if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
-    if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
-    if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
-    if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-    {
-      const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
-      const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
-      setYearRows(base.length || roy.length ? [...base, ...roy] : null);
-      if (yrRoll.status === 'fulfilled' && yrRoll.value?.quarterly_summary) setQuarterlySummary(yrRoll.value.quarterly_summary);
-    }
-    const firstReject = [wk, yt].find((r) => r.status === 'rejected');
-    if (firstReject) {
-      setSource('demo');
-      setError(firstReject.reason?.message || 'Some endpoints failed to load');
-    }
-  }, [model, fcType, activePl, activeGeo, apiYear, apiQuarter, selectedYear]);
-
-  const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
-    if (tabLoadInFlightRef.current.has(targetTab)) return;
-    if (!force && loadedTabsRef.current.has(targetTab)) return;
-
-    tabLoadInFlightRef.current.add(targetTab);
-    setLoading(true);
+    setDataScope(scopeKey);
     setError(null);
-    try {
-      if (targetTab === 'Overview') {
-        await fetchOverviewData();
-      } else if (targetTab === 'Multi-Year') {
-        const [hs] = await Promise.allSettled([
-          apiService.getForecastV2Historical(null, activePl, activeGeo, null, model),
-        ]);
-        if (hs.status === 'fulfilled') {
-          setHistorical(hs.value?.rows ?? []);
-          setHistoricalMeta(hs.value ?? null);
-        }
-      } else if (targetTab === 'By Product') {
-        const [bp] = await Promise.allSettled([
-          apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
-        ]);
-        if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
-      } else if (targetTab === 'Monthly') {
-        const [mo] = await Promise.allSettled([
-          apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
-        ]);
-        if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
-      } else if (targetTab === 'Accuracy') {
-        // Accuracy reads have their own publication-refresh lifecycle.
-      } else if (targetTab === 'Plan Tracking') {
-        await fetchOverviewData();
-        const [bridge] = await Promise.allSettled([
-          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
-        ]);
-        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
-      } else if (targetTab === 'Exec Mode') {
-        const [conf, bridge, radar, meeting, act, gov, rd, sg, sens, ms, hs] = await Promise.allSettled([
-          apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
-          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
-          apiService.getForecastV2RiskRadar(fcType, apiYear, apiQuarter, 20, model),
-          apiService.getForecastV2MeetingMode(model, apiYear, apiQuarter),
-          apiService.getActions('pending'),
-          apiService.getForecastV2GovernanceLog(),
-          apiService.getForecastV2RunDelta(activePl, activeGeo),
-          apiService.getForecastV2ScenarioGrid(activePl, activeGeo, apiQuarter),
-          apiService.getForecastV2Sensitivity(activePl, activeGeo),
-          apiService.getForecastV2ModelScenarios(activePl),
-          apiService.getForecastV2HistoricalScenarios(activePl, activeGeo, apiYear),
-        ]);
-        if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
-        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
-        if (radar.status === 'fulfilled') setRiskRadar(radar.value?.items ?? []);
-        if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
-        if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
-        if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
-        if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-        if (sg.status === 'fulfilled') setScenarioGrid(sg.value?.data ?? sg.value?.rows ?? []);
-        if (sens.status === 'fulfilled') setSensitivityData(sens.value?.data ?? sens.value?.rows ?? []);
-        if (ms.status === 'fulfilled') setModelScenarios(ms.value?.data ?? ms.value?.rows ?? []);
-        if (hs.status === 'fulfilled') setHistoricalScenarios(hs.value?.data ?? hs.value?.rows ?? []);
-      }
-
-      loadedTabsRef.current.add(targetTab);
-      setLoadedTabs(new Set(loadedTabsRef.current));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      tabLoadInFlightRef.current.delete(targetTab);
+    setSettledFields(new Set());
+    const loadedAt = loadedTabsRef.current.get(targetTab);
+    if (!force && loadedAt && Date.now() - loadedAt < 300_000) {
       setLoading(false);
+      return;
     }
-  }, [
-    model,
-    fcType,
-    activePl,
-    activeGeo,
-    apiYear,
-    apiQuarter,
-    fetchOverviewData,
-  ]);
+    loadedTabsRef.current.delete(targetTab);
+    setLoading(true);
+    let failed = false;
+    let yearSummary = null;
+    const settle = field => setSettledFields(previous => new Set([...previous, field]));
+    const publish = (field, value) => {
+      if (!batch.isCurrent()) return;
+      switch (field) {
+        case 'weekly':
+          setWeekly(value?.rows ?? []);
+          setWeeklyKpis(value?.kpis ?? null);
+          setQuarterlySummary(yearSummary ?? value?.quarterly_summary ?? null);
+          setSource(value?.source ?? null);
+          if (value?.source === 'demo' && value?.error) setError(`Forecast data fallback: ${value.error}`);
+          break;
+        case 'ytd': setYtd(value?.rows ?? []); break;
+        case 'models': setModelRegistry(value?.models ?? []); break;
+        case 'freshness': setFreshness(value ?? null); break;
+        case 'confidenceBands': setConfidenceBands(value ?? null); break;
+        case 'runDelta': setRunDelta(value ?? null); break;
+        case 'yearRows': {
+          const base = value.rolling?.rows ?? [];
+          const roy = (value.roy?.rows ?? []).filter(row => row.type === 'forecast');
+          setYearRows(base.length || roy.length ? [...base, ...roy] : null);
+          yearSummary = value.rolling?.quarterly_summary ?? null;
+          if (yearSummary) setQuarterlySummary(yearSummary);
+          break;
+        }
+        case 'historical': setHistorical(value?.rows ?? []); setHistoricalMeta(value ?? null); break;
+        case 'byProduct': setByProduct(value ?? null); break;
+        case 'monthly': setMonthly(value?.months ?? []); break;
+        case 'confidence': setConfidence(value ?? null); break;
+        case 'driverBridge': setDriverBridge(value ?? null); break;
+        case 'riskRadar': setRiskRadar(value?.items ?? []); break;
+        case 'meetingMode': setMeetingMode(value ?? null); break;
+        case 'actions': setActions(value?.data ?? []); break;
+        case 'governanceLog': setGovernanceLog(value?.data ?? []); break;
+        case 'scenarioGrid': setScenarioGrid(value?.data ?? value?.rows ?? []); break;
+        case 'sensitivity': setSensitivityData(value?.data ?? value?.rows ?? []); break;
+        case 'modelScenarios': setModelScenarios(value?.data ?? value?.rows ?? []); break;
+        case 'historicalScenarios': setHistoricalScenarios(value?.data ?? value?.rows ?? []); break;
+      }
+      if (value?.source === 'demo' || value?.error) failed = true;
+      settle(field);
+    };
+    const onError = (field, failure) => {
+      if (!batch.isCurrent()) return;
+      failed = true;
+      setError(previous => previous ?? `${field}: ${failure.message || 'Could not load forecast data'}`);
+      settle(field);
+    };
+    loadForecastTab(createApiService(batch), {
+      tab: targetTab, model, forecastType: fcType, productLine: activePl,
+      salesMarket: activeGeo, year: apiYear, quarter: apiQuarter,
+    }, publish, onError).then(() => {
+      if (!batch.isCurrent()) return;
+      if (!failed) loadedTabsRef.current.set(targetTab, Date.now());
+      setLoading(false);
+    });
+  }, [scopeKey, model, fcType, activePl, activeGeo, apiYear, apiQuarter]);
 
   useEffect(() => {
     fetchTabData(tab);
+    return () => activeBatchRef.current?.cancel();
   }, [tab, fetchTabData]);
-
-  useEffect(() => {
-    if (!hasHydratedFiltersRef.current) {
-      hasHydratedFiltersRef.current = true;
-      return;
-    }
-    loadedTabsRef.current = new Set();
-    setLoadedTabs(new Set());
-    const timer = setTimeout(() => {
-      fetchTabData(tab, { force: true });
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter, fetchTabData]);
 
   const refreshCurrentTab = useCallback(() => {
     setPublicationVersion(value => value + 1);
@@ -2039,7 +2015,7 @@ const ForecastingPanel = () => {
     color:       active ? (color ?? '#f1f5f9') : '#475569',
   });
 
-  const isDemo  = source !== 'live';
+  const isDemo  = dataScope === scopeKey && source === 'demo';
   const demoPayload = useMemo(() => {
     const dWeekly = _buildDemoWeekly(fcType);
     return {
@@ -2214,14 +2190,14 @@ const ForecastingPanel = () => {
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
 
         {/* ── Group 3: MODEL — Ensemble recommended; others expand on hover/click ── */}
-        <div>
+        <div style={{ minWidth: 0, maxWidth: '100%' }}>
           <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>FORECAST MODEL</div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
                onMouseLeave={() => setModelsOpen(false)}>
-            <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
+            <button onClick={() => setModel('ensemble')} style={{ ...pill(model === 'ensemble', '#00FF88'), flexWrap: 'wrap', maxWidth: '100%' }}>
               Ensemble ★
               <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
-                <span style={{ fontSize: 9, color: '#94a3b8',
+                <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'normal', maxWidth: 220,
                                background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
                   {quarterlyPill(leaderboard, prodLine, 'Ensemble')}
                 </span>
@@ -2234,9 +2210,9 @@ const ForecastingPanel = () => {
                 const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
                 const lbKey = MODEL_LB_KEY[m];
                 return (
-                  <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
+                  <button key={m} onClick={() => setModel(m)} style={{ ...pill(model === m, meta.color), flexWrap: 'wrap', maxWidth: '100%' }}>
                     {meta.label}
-                      <span style={{ fontSize: 9, color: '#94a3b8',
+                      <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'normal', maxWidth: 220,
                                      background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
                         {quarterlyPill(leaderboard, prodLine, lbKey)}
                       </span>
@@ -2331,11 +2307,11 @@ const ForecastingPanel = () => {
 
       {/* ── Tab content ────────────────────────────────────────────────────── */}
       <div style={{ paddingTop: 16 }}>
-        <TabErrorBoundary key={tab}>
+        {dataScope !== scopeKey ? <Skeleton height={300} /> : <TabErrorBoundary key={tab}>
 
           {tab === 'Overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {!loading && weeklyKpis && (() => {
+              {!isFieldLoading('weekly') && weeklyKpis && (() => {
                 const ml = weeklyKpis.most_likely ?? 0;
                 const wc = weeklyKpis.worst_case ?? 0;
                 const bc = weeklyKpis.best_case ?? 0;
@@ -2354,7 +2330,7 @@ const ForecastingPanel = () => {
               })()}
 
               {/* Hero KPI cards */}
-              {loading
+              {isFieldLoading('weekly')
                 ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
@@ -2475,7 +2451,8 @@ const ForecastingPanel = () => {
               {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
                   truncated by the 13-week window; current quarter stacks
                   realized (orange) + remaining forecast (blue) */}
-              {(yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
+              {isFieldLoading('yearRows') && <Skeleton height={260} />}
+              {!isFieldLoading('yearRows') && (yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
                 <CardWrap downloadName="quarterly_summary"
                           explainKey="quarterly_outlook" explainProductLine={prodLine}
                           explainRegion={salesMarket} explainYear={selectedYear}>
@@ -2498,7 +2475,7 @@ const ForecastingPanel = () => {
                   {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
                   {salesMarket && salesMarket !== 'All' ? ` · ${salesMarket}` : ''}
                 </SectionTitle>
-                {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+                {isFieldLoading('ytd') ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
             </div>
@@ -2680,7 +2657,7 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
                 <SectionTitle>Plan Attainment</SectionTitle>
-                {loading ? <Skeleton height={150} /> : (() => {
+                {isFieldLoading('weekly') ? <Skeleton height={150} /> : !weeklyKpis ? <EmptyState /> : (() => {
                   const ytd = weeklyKpis?.ytd_actuals ?? 0;
                   const plan = weeklyKpis?.most_likely ?? 0;
                   const pct = plan > 0 ? Math.min((ytd / plan) * 100, 100) : 0;
@@ -2713,12 +2690,12 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Actuals vs Planned Pace</SectionTitle>
-                {loading ? <Skeleton height={220} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+                {isFieldLoading('ytd') ? <Skeleton height={220} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
               <CardWrap>
                 <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
-                {loading ? <Skeleton height={160} /> : (
+                {isFieldLoading('driverBridge') ? <Skeleton height={160} /> : !driverBridge ? <EmptyState /> : (
                   <div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
                       <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
@@ -3116,7 +3093,7 @@ const ForecastingPanel = () => {
             </div>
           )}
 
-        </TabErrorBoundary>
+        </TabErrorBoundary>}
       </div>
 
       <style>{`

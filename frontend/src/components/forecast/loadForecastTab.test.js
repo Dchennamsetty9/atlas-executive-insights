@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { loadForecastTab } from './loadForecastTab.js';
+
+const selection = { tab: 'Overview', model: 'ensemble', forecastType: 'roy', productLine: 'UCC', salesMarket: 'NA', year: 2026, quarter: null };
+
+test('overview publishes weekly data while secondary requests remain pending', async () => {
+  const completions = new Map();
+  const api = new Proxy({}, { get: (_, method) => (...args) => {
+    const key = JSON.stringify([method, args]);
+    if (!completions.has(key)) {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      completions.set(key, { promise, resolve });
+    }
+    return completions.get(key).promise;
+  } });
+  const published = [];
+  const done = loadForecastTab(api, selection, field => published.push(field), assert.fail);
+  const weeklyKey = JSON.stringify(['getForecastV2Weekly', ['ensemble', 'roy', null, 'UCC', 'NA', 2026, null]]);
+  completions.get(weeklyKey).resolve({ rows: [] });
+  await Promise.resolve();
+  assert.deepEqual(published, ['weekly']);
+  for (const completion of completions.values()) completion.resolve({ rows: [] });
+  await done;
+  assert.ok(published.includes('yearRows'));
+});
+
+test('plan bridge starts before overview requests finish', async () => {
+  const called = [];
+  const api = new Proxy({}, { get: (_, method) => () => {
+    called.push(method);
+    return Promise.resolve({ rows: [] });
+  } });
+  const done = loadForecastTab(api, { ...selection, tab: 'Plan Tracking' }, () => {}, assert.fail);
+  assert.ok(called.includes('getForecastV2DriverBridge'));
+  await done;
+});
+
+test('one failed exec request does not discard successful sections', async () => {
+  const api = new Proxy({}, { get: (_, method) => () => method === 'getActions'
+    ? Promise.reject(new Error('unavailable')) : Promise.resolve({ rows: [] }) });
+  const published = [];
+  const errors = [];
+  await loadForecastTab(api, { ...selection, tab: 'Exec Mode' }, field => published.push(field), field => errors.push(field));
+  assert.equal(published.length, 10);
+  assert.deepEqual(errors, ['actions']);
+});
