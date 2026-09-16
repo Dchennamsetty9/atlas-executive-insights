@@ -1503,47 +1503,41 @@ async def get_monthly(
                       if _eff_product == 'Total'
                       else f"AND product = '{_eff_product}'")
             fc_sql = f"""
-                SELECT yr, qtr, mth, month_name, arr_worst, arr_likely, arr_best
+                SELECT yr, qtr, mth, month_name,
+                    GREATEST(SUM(p50)
+                        - SQRT(SUM(POWER(GREATEST(p50 - p_lower, 0), 2))), 0) AS arr_worst,
+                    SUM(p50) AS arr_likely,
+                    SUM(p50)
+                        + SQRT(SUM(POWER(GREATEST(p_upper - p50, 0), 2))) AS arr_best
                 FROM (
-                    -- Forward forecast: EXACT V5 P50 from v2compat (~P30/P70)
+                    -- Forward weeks from v2compat (exact V5 P50, ~P30/P70 bands)
                     SELECT year(ds) AS yr, quarter(ds) AS qtr, month(ds) AS mth,
                         date_format(ds, 'MMMM') AS month_name,
-                        GREATEST(SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0))
-                            - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Most_Likely AS DOUBLE), 0)
-                                - COALESCE(CAST(Worst_Case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                        SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS arr_likely,
-                        SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0))
-                            + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Best_Case AS DOUBLE), 0)
-                                - COALESCE(CAST(Most_Likely AS DOUBLE), 0), 0), 2))) AS arr_best
+                        COALESCE(CAST(Most_Likely AS DOUBLE), 0) AS p50,
+                        COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS p_lower,
+                        COALESCE(CAST(Best_Case AS DOUBLE), 0) AS p_upper
                     FROM {FC_TABLE}
                     WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
                       AND {_latest_run()} {pf} {gf} {date_filter}
-                    GROUP BY year(ds), quarter(ds), month(ds), date_format(ds, 'MMMM')
-                ) fwd
-                UNION ALL
-                -- Historical hindcast: powerbi_wide P25/P50/P75 for months with
-                -- NO forward forecast in v2compat (Q1/Q2 and closed Q3 months).
-                SELECT yr, qtr, mth, month_name, arr_worst, arr_likely, arr_best
-                FROM (
+                    UNION ALL
+                    -- Historical/gap weeks from powerbi_wide (P25/P50/P75).
+                    -- Week-level NOT IN so transition-month weeks (e.g. Sep 7
+                    -- actual) are included even when later weeks in the same
+                    -- month are covered by v2compat forward forecast.
                     SELECT year(ds) AS yr, quarter(ds) AS qtr, month(ds) AS mth,
                         date_format(ds, 'MMMM') AS month_name,
-                        GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
-                            - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
-                                - COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                        SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
-                        SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
-                            + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
-                                - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
+                        COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0) AS p50,
+                        COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0) AS p_lower,
+                        COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0) AS p_upper
                     FROM {POWERBI_WIDE_TABLE}
                     WHERE 1=1 {_pw_pf} {gf} {date_filter}
-                    GROUP BY year(ds), quarter(ds), month(ds), date_format(ds, 'MMMM')
-                ) hist
-                WHERE (hist.yr, hist.mth) NOT IN (
-                    SELECT year(ds), month(ds)
-                    FROM {FC_TABLE}
-                    WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
-                      AND {_latest_run()} {pf} {gf} {date_filter}
-                )
+                      AND CAST(ds AS DATE) NOT IN (
+                        SELECT CAST(ds AS DATE) FROM {FC_TABLE}
+                        WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
+                          AND {_latest_run()} {pf} {gf} {date_filter}
+                      )
+                ) combined
+                GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth
             """
         else:
