@@ -782,9 +782,9 @@ def _v5_forward_sql(table: str, has_pg: bool, product: str, market: str, grain: 
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM((COALESCE(CAST(p10 AS DOUBLE), 0) + COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) / 2) AS arr_worst,
             SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
+            SUM((COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0) + COALESCE(CAST(p90 AS DOUBLE), 0)) / 2) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
@@ -818,9 +818,9 @@ def _v5_monthly_sql(table: str, has_pg: bool, product: str, market: str, grain: 
             QUARTER(ds) AS qtr,
             MONTH(ds) AS mth,
             DATE_FORMAT(ds, 'MMMM') AS month_name,
-            SUM(COALESCE(CAST(p10 AS DOUBLE), 0)) AS arr_worst,
+            SUM((COALESCE(CAST(p10 AS DOUBLE), 0) + COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) / 2) AS arr_worst,
             SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
-            SUM(COALESCE(CAST(p90 AS DOUBLE), 0)) AS arr_best
+            SUM((COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0) + COALESCE(CAST(p90 AS DOUBLE), 0)) / 2) AS arr_best
         FROM {table}
         WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
           AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
