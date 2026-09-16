@@ -2009,8 +2009,8 @@ if ge_rows:
 #
 # Key invariants:
 #   Most_Likely = Adaptive_Ensemble.p50 (EXACT median)
-#   Worst_Case  = Adaptive_Ensemble.p10 (EXACT 10th percentile)
-#   Best_Case   = Adaptive_Ensemble.p90 (EXACT 90th percentile)
+#   Worst_Case  = Adaptive_Ensemble.p30 (EXACT 30th percentile; interpolated for ITSG)
+#   Best_Case   = Adaptive_Ensemble.p70 (EXACT 70th percentile; interpolated for ITSG)
 # For actuals rows: Most_Likely = Worst_Case = Best_Case = actual value.
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2052,9 +2052,9 @@ spark.sql(f"""
         MAX(CASE WHEN model = 'ACTUAL'            THEN actual END) AS Actuals,
         COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p50 END),
                  MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Most_Likely,
-        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END),
+        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN (p10 + p50) / 2 END),
                  MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Worst_Case,
-        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p90 END),
+        COALESCE(MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN (p50 + p90) / 2 END),
                  MAX(CASE WHEN model = 'ACTUAL' THEN actual END)) AS Best_Case,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p10 END)    AS p10,
         MAX(CASE WHEN model = 'Adaptive_Ensemble' THEN p20 END)    AS p20,
