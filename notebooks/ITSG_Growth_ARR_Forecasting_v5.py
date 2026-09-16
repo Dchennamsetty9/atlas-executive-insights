@@ -171,6 +171,15 @@ LAST_CLOSED_WEEK = CURRENT_WEEK_START - pd.Timedelta(weeks=1)
 MARKET_MAP = {'AUS/ROW': 'APAC', 'INDIA': 'APAC', 'UNKNOWN': 'Unknown', '': 'Unknown'}
 GLOBAL_MARKETS = ['APAC', 'EMEA', 'LATAM', 'NA', 'Unknown']
 
+# ── Quarter-End Calibration (ported from UCC V5) ─────────────────────────────
+# The Adaptive Ensemble systematically under-forecasts the last 2 weeks of each
+# quarter (deal-close surge). Post-ensemble calibration scales up the ensemble
+# P50 for these weeks using holdout-derived correction factors.
+QE_CALIBRATION_ENABLED = True
+QE_CALIBRATION_WEEKS_FROM_END = 2
+QE_CALIBRATION_MAX_ADJUSTMENT = 0.50  # max 50% uplift (safety guard)
+QE_CALIBRATION_MIN_OBS = 3  # minimum holdout QE weeks needed to apply
+
 
 def normalize_market(series: pd.Series) -> pd.Series:
     out = series.fillna('Unknown').astype(str).str.strip().str.upper()
@@ -569,6 +578,9 @@ def add_calendar_columns(df: pd.DataFrame) -> pd.DataFrame:
     out['quarter_end_flag'] = (out['week_of_qtr'] >= 11).astype(int)
     out['is_q4'] = (out['quarter'] == 4).astype(int)
     out['q4_week_countdown'] = np.where(out['quarter'] == 4, 14 - out['week_of_qtr'], 0)
+    _max_woq_out = out.groupby(['year', 'quarter'])['week_of_qtr'].transform('max')
+    out['weeks_from_qtr_end'] = _max_woq_out - out['week_of_qtr']
+    out['is_last_2_weeks_of_qtr'] = (out['weeks_from_qtr_end'] <= 1).astype(int)
     out['woq_sin'] = np.sin(2 * np.pi * out['week_of_qtr'] / 13.0)
     out['woq_cos'] = np.cos(2 * np.pi * out['week_of_qtr'] / 13.0)
     out['qtr_sin'] = np.sin(2 * np.pi * out['quarter'] / 4.0)
@@ -758,6 +770,17 @@ print(f'Boundaries: CV end {cv_region_df["ds"].max().date()} < validation {VALID
 print(f'Validation slice actual: ${validation_df["y"].sum()/1e6:.3f}M over {VALIDATION_HORIZON} weeks')
 print('\nFold specification (all strictly pre-validation, pre-holdout):')
 display(fold_spec_df)
+
+# --- Compute global QE surge index from training data (ported from UCC V5) ----
+_cal_for_qe = add_calendar_columns(weekly_itsg[['ds', 'y']].copy())
+_qe_mask = _cal_for_qe['is_last_2_weeks_of_qtr'] == 1
+_non_qe_mask = _cal_for_qe['is_last_2_weeks_of_qtr'] == 0
+_qe_avg = _cal_for_qe.loc[_qe_mask, 'y'].expanding().mean()
+_non_qe_avg = _cal_for_qe.loc[_non_qe_mask, 'y'].expanding().mean()
+_surge = (_qe_avg / _non_qe_avg.reindex(_cal_for_qe.index).ffill()).reindex(_cal_for_qe.index).ffill()
+_cal_for_qe['qe_surge_index'] = _surge.shift(13).fillna(1.0).clip(0.5, 3.0)
+_GLOBAL_QE_SURGE_INDEX = float(_cal_for_qe['qe_surge_index'].iloc[-1])
+print(f'\nQuarter-end surge index (global, ITSG): {_GLOBAL_QE_SURGE_INDEX:.3f}')
 
 # COMMAND ----------
 
@@ -1217,6 +1240,7 @@ RECURSIVE_HISTORY_WEEKS = 60   # >= 53 so y_lag52 / yoy stay populated (V4 used 
 GLOBAL_FEATURE_COLS = [
     'week_of_qtr', 'quarter_end_flag', 'is_q4', 'q4_week_countdown',
     'qe_proximity', 'qe_proximity_sq',
+    'is_last_2_weeks_of_qtr', 'qe_surge_index',
     'woq_sin', 'woq_cos', 'qtr_sin', 'qtr_cos',
     'sales_market',
     'created_lag4', 'created_lag5', 'headcount_lag4', 'win_rate_woq',
@@ -1299,6 +1323,11 @@ def _engineer_panel_features(panel: pd.DataFrame) -> pd.DataFrame:
     # Continuous quarter-end proximity: 0 for weeks 1-8, ramps 0→1 for weeks 9-13
     panel['qe_proximity'] = np.maximum(0, panel['week_of_qtr'] - 8) / 5.0
     panel['qe_proximity_sq'] = panel['qe_proximity'] ** 2
+    # QE surge features (ported from UCC V5 quarter-end calibration)
+    _max_woq_panel = panel.groupby(['slice_id', 'year', 'quarter'])['week_of_qtr'].transform('max')
+    panel['weeks_from_qtr_end'] = _max_woq_panel - panel['week_of_qtr']
+    panel['is_last_2_weeks_of_qtr'] = (panel['weeks_from_qtr_end'] <= 1).astype(int)
+    panel['qe_surge_index'] = globals().get('_GLOBAL_QE_SURGE_INDEX', 1.0)
     panel['pipeline_velocity'] = (panel['all_created_arr'] / panel['headcount'].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     panel['plan_gap'] = panel['miradore_plan'] - panel['y'].fillna(0.0)
     grouped = panel.groupby('slice_id', group_keys=False)
@@ -1990,6 +2019,34 @@ ensemble_total = (
 )
 ensemble_total = apply_interval_adjustments(ensemble_total, ensemble_lower_adj, ensemble_upper_adj)
 ensemble_total['model'] = 'Adaptive_Ensemble'
+
+# --- Quarter-end calibration (ported from UCC V5) --------------------------------
+# Uplift ensemble P50 for the last 2 weeks of each quarter using holdout-derived
+# correction factor. Only applied when enabled, enough holdout QE observations
+# exist, and the factor implies an uplift (>1.0).
+if QE_CALIBRATION_ENABLED:
+    _ens_hold = ensemble_holdout.copy()
+    _ens_hold = add_calendar_columns(_ens_hold)
+    _qe_hold = _ens_hold[_ens_hold['is_last_2_weeks_of_qtr'] == 1]
+    _n_qe_obs = len(_qe_hold)
+    if _n_qe_obs >= QE_CALIBRATION_MIN_OBS:
+        _qe_factor = _qe_hold['actual'].sum() / max(_qe_hold['forecast'].sum(), 1e-9)
+        _qe_factor = min(max(_qe_factor, 1.0), 1.0 + QE_CALIBRATION_MAX_ADJUSTMENT)  # only uplift, capped
+        _fwd_cal = add_calendar_columns(ensemble_total[['ds']].copy())
+        _qe_fwd_mask = _fwd_cal['is_last_2_weeks_of_qtr'] == 1
+        _n_qe_fwd = _qe_fwd_mask.sum()
+        if _qe_factor > 1.0 and _n_qe_fwd > 0:
+            for col in ['forecast', 'p10', 'p50', 'p90']:
+                ensemble_total.loc[_qe_fwd_mask.values, col] *= _qe_factor
+            print(f'QE calibration ACTIVE (ITSG): factor={_qe_factor:.3f} applied to {_n_qe_fwd} forward QE weeks '
+                  f'(holdout had {_n_qe_obs} QE obs, actual/forecast ratio = {_qe_factor:.3f})')
+        else:
+            print(f'QE calibration SKIPPED (ITSG): factor={_qe_factor:.3f} (no uplift needed or no forward QE weeks)')
+    else:
+        print(f'QE calibration SKIPPED (ITSG): only {_n_qe_obs} holdout QE obs (need >= {QE_CALIBRATION_MIN_OBS})')
+else:
+    print('QE calibration DISABLED')
+
 production_total_forecasts = pd.concat([
     production_total_forecasts[['ds', 'model', 'forecast', 'p10', 'p50', 'p90']],
     ensemble_total[['ds', 'model', 'forecast', 'p10', 'p50', 'p90']],
