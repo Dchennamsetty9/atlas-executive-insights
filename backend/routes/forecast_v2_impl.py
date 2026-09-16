@@ -1494,29 +1494,56 @@ async def get_monthly(
             # for ALL periods — hindcast (Q1/Q2), native V5 (Q3+), and forward.
             # Uses P25/P75 (interquartile range) for tighter, exec-friendly bands.
             # product='Total' only exists from Sep onward in powerbi_wide, so
-            # when the user asks for Total we SUM(UCC + ITSG) to cover all months.
+            # HYBRID: forward months from v2compat (exact V5 P50, ~P30/P70 bands),
+            # historical hindcast from powerbi_wide (P25/P75 bands for Q1/Q2).
+            # powerbi_wide applies reconciliation that shrinks P50 for forward
+            # periods — v2compat passes through the V5 values exactly.
             _eff_product = _selected_product(product, product_line)
             _pw_pf = ("AND product IN ('UCC', 'ITSG')"
                       if _eff_product == 'Total'
                       else f"AND product = '{_eff_product}'")
             fc_sql = f"""
-                SELECT
-                    year(ds)                     AS yr,
-                    quarter(ds)                  AS qtr,
-                    month(ds)                    AS mth,
-                    date_format(ds, 'MMMM')      AS month_name,
-                    GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
-                        - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
-                            - COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
-                    SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
-                    SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
-                        + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
-                            - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
-                FROM {POWERBI_WIDE_TABLE}
-                WHERE 1=1
-                  {_pw_pf} {gf}
-                  {date_filter}
-                GROUP BY yr, qtr, mth, month_name
+                SELECT yr, qtr, mth, month_name, arr_worst, arr_likely, arr_best
+                FROM (
+                    -- Forward forecast: EXACT V5 P50 from v2compat (~P30/P70)
+                    SELECT year(ds) AS yr, quarter(ds) AS qtr, month(ds) AS mth,
+                        date_format(ds, 'MMMM') AS month_name,
+                        GREATEST(SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0))
+                            - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Most_Likely AS DOUBLE), 0)
+                                - COALESCE(CAST(Worst_Case AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                        SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0)) AS arr_likely,
+                        SUM(COALESCE(CAST(Most_Likely AS DOUBLE), 0))
+                            + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Best_Case AS DOUBLE), 0)
+                                - COALESCE(CAST(Most_Likely AS DOUBLE), 0), 0), 2))) AS arr_best
+                    FROM {FC_TABLE}
+                    WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
+                      AND {_latest_run()} {pf} {gf} {date_filter}
+                    GROUP BY year(ds), quarter(ds), month(ds), date_format(ds, 'MMMM')
+                ) fwd
+                UNION ALL
+                -- Historical hindcast: powerbi_wide P25/P50/P75 for months with
+                -- NO forward forecast in v2compat (Q1/Q2 and closed Q3 months).
+                SELECT yr, qtr, mth, month_name, arr_worst, arr_likely, arr_best
+                FROM (
+                    SELECT year(ds) AS yr, quarter(ds) AS qtr, month(ds) AS mth,
+                        date_format(ds, 'MMMM') AS month_name,
+                        GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                            - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
+                                - COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                        SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
+                        SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                            + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
+                                - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
+                    FROM {POWERBI_WIDE_TABLE}
+                    WHERE 1=1 {_pw_pf} {gf} {date_filter}
+                    GROUP BY year(ds), quarter(ds), month(ds), date_format(ds, 'MMMM')
+                ) hist
+                WHERE (hist.yr, hist.mth) NOT IN (
+                    SELECT year(ds), month(ds)
+                    FROM {FC_TABLE}
+                    WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
+                      AND {_latest_run()} {pf} {gf} {date_filter}
+                )
                 ORDER BY yr, mth
             """
         else:
