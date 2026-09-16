@@ -35,6 +35,9 @@ FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
+# PowerBI wide table — has Ensemble P25/P50/P75 for ALL periods incl. hindcast.
+# Used by /monthly for forecast scenarios so closed months show real model predictions.
+POWERBI_WIDE_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_powerbi_wide`"
 PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_all_models`"
 # Default to the unified compat views (source of truth from forecast_unify_publish).
 # These views expose exact p10/p50/p90 values from the per-product V5 pipelines.
@@ -1487,20 +1490,31 @@ async def get_monthly(
     fc_sql = None
     if include_forecasts:
         if not source.get("no_run_date"):
+            # Read from arr_forecast_powerbi_wide which has Ensemble P25/P50/P75
+            # for ALL periods — hindcast (Q1/Q2), native V5 (Q3+), and forward.
+            # Uses P25/P75 (interquartile range) for tighter, exec-friendly bands.
+            # product='Total' only exists from Sep onward in powerbi_wide, so
+            # when the user asks for Total we SUM(UCC + ITSG) to cover all months.
+            _eff_product = _selected_product(product, product_line)
+            _pw_pf = ("AND product IN ('UCC', 'ITSG')"
+                      if _eff_product == 'Total'
+                      else f"AND product = '{_eff_product}'")
             fc_sql = f"""
                 SELECT
                     year(ds)                     AS yr,
                     quarter(ds)                  AS qtr,
                     month(ds)                    AS mth,
                     date_format(ds, 'MMMM')      AS month_name,
-                    SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_worst,
-                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
-                    SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_best
-                FROM {FC_TABLE}
-                                WHERE forecast_type IN ('rolling', 'roy')
-                  AND {_latest_run()}
-                                    AND {_forecast_after_actuals_pred(pf, gf)}
-                  {pf} {gf}
+                    GREATEST(SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                        - SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
+                            - COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0), 0), 2))), 0) AS arr_worst,
+                    SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)) AS arr_likely,
+                    SUM(COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0))
+                        + SQRT(SUM(POWER(GREATEST(COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
+                            - COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0), 0), 2))) AS arr_best
+                FROM {POWERBI_WIDE_TABLE}
+                WHERE 1=1
+                  {_pw_pf} {gf}
                   {date_filter}
                 GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth
