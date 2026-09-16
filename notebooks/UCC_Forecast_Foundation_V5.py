@@ -327,6 +327,18 @@ PROPHET_BIAS_CORRECTION_METHOD = 'median_ratio'  # 'median_ratio' or 'rolling_me
 SUMMER_MONTHS = [7, 8]   # months treated as "deep summer"
 SUMMER_DEPTH_ENABLED = True
 
+# ── 6B. QUARTER-END CALIBRATION ──────────────────────────────────────────────
+# The Adaptive Ensemble systematically under-forecasts the last 2 weeks of each
+# quarter (deal-close surge). Historical evidence (2024-2025):
+#   Q3 last 2 weeks avg: $3.58M vs model forecast $2.68M (-25%)
+#   All-quarter surge ratio: 1.75x (last-2-week avg / other-week avg)
+# Post-ensemble calibration scales up the ensemble P50 for these weeks using
+# holdout-derived correction factors (analogous to Prophet bias correction).
+QE_CALIBRATION_ENABLED = True
+QE_CALIBRATION_WEEKS_FROM_END = 2  # number of weeks from quarter-end to calibrate
+QE_CALIBRATION_MAX_ADJUSTMENT = 0.50  # max 50% uplift (safety guard)
+QE_CALIBRATION_MIN_OBS = 3  # minimum holdout QE weeks needed to apply
+
 # ── 7. LGB HYPERPARAMETER TUNING (Phase 5) ─────────────────────────────────
 # The single 13-week validation slice is insufficient to distinguish hyperparameter
 # candidates: num_leaves flipped 31<->15 three times on near-identical data.
@@ -360,6 +372,9 @@ CALENDAR_FEATURES = [
     'month_end_x_qtr_end', 'month_sin', 'month_cos',
     # NEW (2026-08-17): summer depth features for Q3 structural fix
     'summer_depth', 'summer_depth_sq',
+    # NEW (2026-09-16): targeted quarter-end surge features
+    'is_last_2_weeks_of_qtr',  # binary: 1 for last 2 weeks of any quarter
+    'qe_surge_index',          # historical avg(QE week actual) / avg(non-QE actual)
 ]
 PIPELINE_FEATURES = [
     'created_pipeline_amount', 'marketing_generated_pipeline',
@@ -769,6 +784,26 @@ weekly_ucc['q4_week_countdown'] = np.where(
 # Continuous quarter-end proximity: 0 for weeks 1-8, ramps 0→1 for weeks 9-13
 weekly_ucc['qe_proximity']    = np.maximum(0, weekly_ucc['week_of_qtr'] - 8) / 5.0
 weekly_ucc['qe_proximity_sq'] = weekly_ucc['qe_proximity'] ** 2
+
+# NEW (2026-09-16): Targeted quarter-end surge features
+# Binary: 1 for the last 2 weeks of any quarter (where deal-close surge concentrates)
+# Uses reverse-counted week position so it adapts to 13- or 14-week quarters
+_max_woq = weekly_ucc.groupby(['year', 'quarter'])['week_of_qtr'].transform('max')
+weekly_ucc['weeks_from_qtr_end'] = _max_woq - weekly_ucc['week_of_qtr']
+weekly_ucc['is_last_2_weeks_of_qtr'] = (weekly_ucc['weeks_from_qtr_end'] <= 1).astype(int)
+# Historical QE surge index: rolling ratio of avg last-2-week actual vs avg other-week actual
+# Lagged by 1 quarter to prevent leakage. Uses shift(13) as proxy for prior quarter.
+_qe_mask = weekly_ucc['is_last_2_weeks_of_qtr'] == 1
+_non_qe_mask = weekly_ucc['is_last_2_weeks_of_qtr'] == 0
+_qe_avg = weekly_ucc.loc[_qe_mask, 'y'].expanding().mean()
+_non_qe_avg = weekly_ucc.loc[_non_qe_mask, 'y'].expanding().mean()
+weekly_ucc['qe_surge_index'] = 0.0
+# Compute expanding ratio and forward-fill to all rows, then lag by 13 weeks
+_surge = (_qe_avg / _non_qe_avg.reindex(weekly_ucc.index).ffill()).reindex(weekly_ucc.index).ffill()
+weekly_ucc['qe_surge_index'] = _surge.shift(13).fillna(1.0).clip(0.5, 3.0)
+_GLOBAL_QE_SURGE_INDEX = float(weekly_ucc['qe_surge_index'].iloc[-1])  # expose for build_future_panel
+print(f"Quarter-end features: is_last_2_weeks_of_qtr=1 in {_qe_mask.sum()} weeks, "
+      f"latest qe_surge_index={weekly_ucc['qe_surge_index'].iloc[-1]:.2f}")
 
 # Cyclical encoding (for linear models that don't understand circular calendar)
 weekly_ucc['week_of_qtr_sin'] = np.sin(2 * np.pi * weekly_ucc['week_of_qtr'] / 13)
@@ -3637,6 +3672,8 @@ GLOBAL_FEATURE_COLS = [
     'stage_weighted_lag4', 'commit_pipeline_lag4', 'commit_ratio_lag4',
     # NEW (#4): large-deal shock indicators
     'large_deal_arr_lag1', 'large_deal_flag_lag1', 'large_deal_trailing_4w',
+    # NEW (2026-09-16): targeted quarter-end surge features
+    'is_last_2_weeks_of_qtr', 'qe_surge_index',
 ]
 GLOBAL_PROFILE_COLS = [
     'all_created_arr', 'headcount', 'avg_deal_size', 'avg_sales_cycle',
@@ -3710,6 +3747,10 @@ def add_global_calendar(df: pd.DataFrame) -> pd.DataFrame:
     cal['qtr_cos'] = np.cos(2 * np.pi * cal['quarter'] / 4.0)
     cal['qe_proximity'] = np.maximum(0, cal['week_of_qtr'] - 8) / 5.0
     cal['qe_proximity_sq'] = cal['qe_proximity'] ** 2
+    _max_woq_cal = cal.groupby(['year', 'quarter'])['week_of_qtr'].transform('max')
+    cal['weeks_from_qtr_end'] = _max_woq_cal - cal['week_of_qtr']
+    cal['is_last_2_weeks_of_qtr'] = (cal['weeks_from_qtr_end'] <= 1).astype(int)
+    cal['qe_surge_index'] = globals().get('_GLOBAL_QE_SURGE_INDEX', 1.0)
     cal['us_holiday'] = cal['ds'].apply(lambda d: int(d.date() in us_holidays or (d + pd.Timedelta(days=1)).date() in us_holidays))
     return out.merge(cal, on='ds', how='left')
 
@@ -7782,6 +7823,50 @@ production_ensemble_forecast = (
     .agg(ensemble_p50=('p50', lambda s: float(np.average(s, weights=ensemble_input.loc[s.index, 'ensemble_weight']))))
 )
 production_ensemble_forecast = apply_forward_interval_calibration(production_ensemble_forecast)
+
+# --- Quarter-end calibration (post-ensemble, 2026-09-16) ----------------------
+# Historical evidence: last 2 weeks of each quarter surge 1.75x vs other weeks.
+# The ensemble systematically under-forecasts this surge (Prophet, DHR drag it
+# down). Calibration uses holdout-derived correction: if the ensemble under-
+# forecasted QE weeks in the holdout, scale forward QE weeks accordingly.
+if globals().get('QE_CALIBRATION_ENABLED', False):
+    _qe_n_weeks = globals().get('QE_CALIBRATION_WEEKS_FROM_END', 2)
+    _qe_max_adj = globals().get('QE_CALIBRATION_MAX_ADJUSTMENT', 0.50)
+    _qe_min_obs = globals().get('QE_CALIBRATION_MIN_OBS', 3)
+    # Identify QE weeks in holdout
+    _ho = ensemble_holdout_history.copy()
+    _ho['ds'] = pd.to_datetime(_ho['ds'])
+    _ho['quarter'] = _ho['ds'].dt.quarter
+    _ho['year'] = _ho['ds'].dt.year
+    _ho['week_of_qtr'] = _ho.groupby(['year', 'quarter']).cumcount() + 1
+    _max_woq_ho = _ho.groupby(['year', 'quarter'])['week_of_qtr'].transform('max')
+    _ho['is_qe'] = (_max_woq_ho - _ho['week_of_qtr'] < _qe_n_weeks)
+    _qe_ho = _ho[_ho['is_qe'] & _ho['actual'].notna() & (_ho['p50'] > 0)]
+    if len(_qe_ho) >= _qe_min_obs:
+        _qe_factor = float(_qe_ho['actual'].sum() / _qe_ho['p50'].sum())
+        _qe_factor = min(_qe_factor, 1.0 + _qe_max_adj)  # safety cap
+        _qe_factor = max(_qe_factor, 1.0)  # only uplift, never suppress
+        # Identify QE weeks in the forward forecast
+        _fwd = production_ensemble_forecast.copy()
+        _fwd['ds'] = pd.to_datetime(_fwd['ds'])
+        _fwd['quarter'] = _fwd['ds'].dt.quarter
+        _fwd['year'] = _fwd['ds'].dt.year
+        _fwd['week_of_qtr'] = _fwd.groupby(['year', 'quarter']).cumcount() + 1
+        _max_woq_fwd = _fwd.groupby(['year', 'quarter'])['week_of_qtr'].transform('max')
+        _fwd_qe = (_max_woq_fwd - _fwd['week_of_qtr'] < _qe_n_weeks)
+        production_ensemble_forecast.loc[_fwd_qe, 'ensemble_p50'] *= _qe_factor
+        production_ensemble_forecast.loc[_fwd_qe, 'p10'] *= _qe_factor
+        production_ensemble_forecast.loc[_fwd_qe, 'p90'] *= _qe_factor
+        _n_adjusted = int(_fwd_qe.sum())
+        print(f'QE calibration ACTIVE: factor={_qe_factor:.3f} applied to {_n_adjusted} '
+              f'forward QE weeks (holdout had {len(_qe_ho)} QE obs, '
+              f'actual/forecast ratio = {_qe_factor:.3f})')
+    else:
+        print(f'QE calibration SKIPPED: only {len(_qe_ho)} holdout QE weeks '
+              f'(need >= {_qe_min_obs}). Forward forecast unchanged.')
+else:
+    print('QE calibration: disabled (QE_CALIBRATION_ENABLED=False).')
+
 production_ensemble_forecast['model'] = 'Adaptive_Ensemble'
 
 # --- Market-level ensemble, reconciled so markets sum to the ensemble total ---
