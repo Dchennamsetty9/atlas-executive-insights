@@ -7870,7 +7870,6 @@ production_forward_sdf = spark.createDataFrame(production_forward_export)
 production_forward_sdf.write \
     .mode('overwrite') \
     .option('overwriteSchema', 'true') \
-    .partitionBy('ds') \
     .saveAsTable(PRIMARY_PRODUCTION_OUTPUT_TABLE)
 
 app_forecast_sdf = spark.createDataFrame(app_forecast_export)
@@ -9744,7 +9743,6 @@ except Exception as exc:
 spark.createDataFrame(monitoring_baseline).write \
     .mode('append') \
     .option('mergeSchema', 'true') \
-    .partitionBy('run_date_utc') \
     .saveAsTable(MONITORING_BASELINE_TABLE)
 
 print('Production monitoring baseline for retained models + ensemble:')
