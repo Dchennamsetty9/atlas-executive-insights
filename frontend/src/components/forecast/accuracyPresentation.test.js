@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accuracyProducts, quarterlyValue, quarterlyPill, sourceDate, backtestFreshness, backtestGuidance } from './accuracyPresentation.js';
+import { accuracyProducts, quarterlyValue, quarterlyPill, quarterlyEvidence, quarterlyBasis, sourceDate, backtestFreshness, backtestGuidance } from './accuracyPresentation.js';
 
 const rows = [
   { product: 'UCC', sales_market: 'Total', quarterly_errors: { Ensemble: 0.826, ETS: 0 } },
@@ -11,14 +11,14 @@ const rows = [
 test('All renders two explicit products rather than a synthetic total', () => {
   for (const product of ['All', 'Total', null, undefined]) assert.deepEqual(accuracyProducts(product), ['UCC', 'ITSG']);
   assert.deepEqual(accuracyProducts('ITSG'), ['ITSG']);
-  assert.equal(quarterlyPill(rows, 'All', 'Ensemble'), 'Qtr · UCC 0.8% · ITSG 12.5%');
-  assert.equal(quarterlyPill(rows, 'UCC', 'Ensemble'), 'Qtr 0.8%');
+  assert.equal(quarterlyPill(rows, 'All', 'Ensemble'), 'Qtr · UCC 0.8% (unverified) · ITSG 12.5% (unverified)');
+  assert.equal(quarterlyPill(rows, 'UCC', 'Ensemble'), 'Qtr 0.8% (unverified)');
 });
 
 test('missing product or quarterly data never borrows total, weekly or region errors', () => {
   const partial = [{ product: 'ITSG', sales_market: 'NA', quarterly_errors: { ETS: 9 } },
     { product: 'ITSG', sales_market: 'Total', ETS: 12 }, rows[0], rows[2]];
-  assert.equal(quarterlyPill(partial, 'All', 'ETS'), 'Qtr · UCC 0.0% · ITSG —');
+  assert.equal(quarterlyPill(partial, 'All', 'ETS'), 'Qtr · UCC 0.0% (unverified) · ITSG —');
   assert.equal(quarterlyValue(partial, 'ITSG', 'ETS'), null);
   assert.equal(quarterlyPill([], 'All', 'Ensemble'), 'Qtr · UCC — · ITSG —');
 });
@@ -29,6 +29,22 @@ test('quarterly formatting preserves zero and over-100 errors but rejects invali
   for (const value of [null, undefined, '', ' ', false, true, NaN, Infinity, 'bad']) {
     assert.equal(quarterlyValue([{ product: 'UCC', sales_market: 'Total', quarterly_errors: { ETS: value } }], 'UCC', 'ETS'), null);
   }
+});
+
+test('quarterly provenance distinguishes measured, estimated, blended and missing evidence', () => {
+  const evidenceRows = rows.map(row => ({ ...row, quarterly_provenance: {
+    Ensemble: row.product === 'UCC'
+      ? { status: 'measured', quarter: '2026Q2', quarters_evaluated: 1 }
+      : { status: 'estimated' },
+    ETS: { status: 'blended' },
+  } }));
+  assert.equal(quarterlyPill(evidenceRows, 'All', 'Ensemble'), 'Qtr · UCC 0.8% · ITSG 12.5% (estimated)');
+  assert.equal(quarterlyBasis(evidenceRows, 'UCC', 'Ensemble'), 'Measured · 2026Q2 · 1 quarter');
+  assert.equal(quarterlyBasis(evidenceRows, 'ITSG', 'Ensemble'), 'Estimated from weekly error');
+  assert.equal(quarterlyBasis(evidenceRows, 'UCC', 'ETS'), 'Weighted blend');
+  assert.equal(quarterlyBasis(rows, 'UCC', 'ETS'), 'Evaluation basis unverified');
+  assert.equal(quarterlyBasis([], 'UCC', 'ETS'), 'Not available');
+  assert.equal(quarterlyEvidence([{ ...rows[0], quarterly_provenance: { ETS: { status: 'unknown' } } }], 'UCC', 'ETS').status, 'unverified');
 });
 
 test('source freshness uses returned publications only, never current check time', () => {

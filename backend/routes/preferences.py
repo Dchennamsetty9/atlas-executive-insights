@@ -41,7 +41,7 @@ class SetPrefRequest(BaseModel):
 # ── Filter presets ─────────────────────────────────────────────────────────────
 
 @router.get("/presets")
-async def list_presets(
+def list_presets(
     user_id: str = Depends(require_authenticated_user)
 ):
     presets = user_prefs_service.get_presets(user_id)
@@ -49,7 +49,7 @@ async def list_presets(
 
 
 @router.post("/presets")
-async def save_preset(
+def save_preset(
     body: SavePresetRequest,
     user_id: str = Depends(require_authenticated_user)
 ):
@@ -58,7 +58,7 @@ async def save_preset(
 
 
 @router.delete("/presets/{name}")
-async def delete_preset(
+def delete_preset(
     name: str,
     user_id: str = Depends(require_authenticated_user)
 ):
@@ -69,7 +69,7 @@ async def delete_preset(
 # ── Generic preferences ────────────────────────────────────────────────────────
 
 @router.get("/{key}")
-async def get_pref(
+def get_pref(
     key: str,
     user_id: str = Depends(require_authenticated_user)
 ):
@@ -78,7 +78,7 @@ async def get_pref(
 
 
 @router.put("/{key}")
-async def set_pref(
+def set_pref(
     key: str,
     body: SetPrefRequest,
     user_id: str = Depends(require_authenticated_user)

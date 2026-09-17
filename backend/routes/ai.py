@@ -39,7 +39,7 @@ from services.gaim_data_service import GAIMDataService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/ai", tags=["ai"])
+router = APIRouter(prefix="/api/ai", tags=["ai"], dependencies=[Depends(require_authenticated_user)])
 
 # Module-level GAIM service for Features 1 & 2 (they need live KPI data)
 _gaim = GAIMDataService()

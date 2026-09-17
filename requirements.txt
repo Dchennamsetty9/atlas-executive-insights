@@ -7,6 +7,7 @@ python-multipart>=0.0.18   # CVE-2024-53981 + ReDoS + arbitrary-file-write + unb
 databricks-sql-connector==3.0.0
 databricks-sdk==0.20.0
 sqlalchemy==2.0.25
+sqlglot==27.29.0
 
 # ML and Forecasting
 prophet==1.1.5

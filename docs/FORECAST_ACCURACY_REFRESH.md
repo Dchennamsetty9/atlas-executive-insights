@@ -3,6 +3,7 @@
 ## Scope
 
 Quarterly model pills and the Accuracy summary read `forecast_leaderboard_v2compat`.
+The API also reads `forecast_quarterly_accuracy` for per-model evaluation evidence.
 Forecast vs Reality reads each product's retained `*_forecast_vintages` and current
 `*_forecast_cbe` actuals. It never substitutes UCC for ITSG/All, fabricates bands, or
 shows demo backtests when history is missing. Native Prophet is not silently mapped
@@ -36,6 +37,14 @@ when closed actuals and a matching earlier publication exist at the selected hor
 
 - Quarterly values are publisher outputs, which may include estimates or weighted
   blends; they are not automatically verified closed-quarter errors.
+- Quarterly evidence is matched by product, model, publication date, and numeric
+  value. A unique `holdout_closed_quarter` record with a closed quarter label and
+  positive evaluation count is classified as measured. This describes the source
+  evaluation, not independently certified model accuracy.
+- Estimates and weighted blends are labeled explicitly. Missing, conflicting,
+  stale, or inaccessible metadata leaves the published value visible as unverified,
+  without a performance color. The source model and evaluated quarter are shown
+  when supplied, separately from the leaderboard publication date.
 - Backtest horizons are explicit lead-time bins: 1 = 1–7 days, 4 = 22–28 days,
   8 = 50–56 days, 13 = 85–91 days before the target week.
 - Actuals are the latest published closed-week values and may include revisions.
@@ -59,7 +68,23 @@ when closed actuals and a matching earlier publication exist at the selected hor
 
 ## Validation limits
 
-Focused backtest, quarterly-value, and refresh tests are included. The restored
-baseline has two unrelated failing backend tests (monthly query count and by-product
-forward-period assertion) and five unrelated React lint errors. Those broader fixes
-are intentionally not part of this change.
+Offline tests cover monthly Prophet/quarter selection, rolling forward-year periods,
+credential-scoped forecast caching, quarterly evidence matching, backtests, and
+refresh behavior. CI runs the dependency-free frontend contract tests before npm
+installation. Existing frontend dependency and repository-wide lint findings still
+need separate fixes; adding the contract step does not make the whole CI pipeline green.
+
+Before production rollout, confirm that the effective SQL identities can SELECT
+`forecast_quarterly_accuracy` and validate its latest metadata against the published
+leaderboard. No grants, notebook execution, table writes, or deployment are performed
+by these local changes. A missing grant produces unverified quarterly values.
+
+Forecast query-cache keys now include a SHA-256 fingerprint of the effective SQL
+credential and warehouse. Credential changes cannot reuse another scope's entries;
+requests without a scope are not cached. Entries remain TTL-bound and capped at 512.
+This change is limited to forecast query caching, not the separate KPI cache. Leaderboard
+and quarterly evidence reads continue to bypass caching.
+
+Release traceability remains a separate gate: scheduled jobs still refer to mutable
+workspace notebooks. Record and verify the app and notebook revisions before release;
+these fixes do not pin those job inputs or certify a live production forecast.

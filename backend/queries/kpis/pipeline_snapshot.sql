@@ -4,7 +4,7 @@
 -- layer; they return NULL (coerced to 0 in gaim_data_service.py).
 -- Compares current period vs 90 days prior (same-length window shifted back).
 --
--- Placeholders: {start_date}, {end_date}, {filter_clause}
+-- Bound parameters: start_date, end_date, start_date, end_date.
 -- Note: {filter_clause} is constructed from VALIDATED whitelist values only —
 --       never from raw user input.
 WITH latest AS (
@@ -18,7 +18,7 @@ won AS (
     FROM federated.sales.metis_won_opps_fact w
     CROSS JOIN latest ld
     WHERE w.data_date  = ld.max_date
-      AND w.close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}')
+    AND w.close_date BETWEEN DATE(?) AND DATE(?)
       {filter_clause}
 ),
 prev AS (
@@ -28,8 +28,8 @@ prev AS (
     FROM federated.sales.metis_won_opps_fact w
     CROSS JOIN latest ld
     WHERE w.data_date  = ld.max_date
-      AND w.close_date BETWEEN DATE_ADD(DATE('{start_date}'), -90)
-                           AND DATE_ADD(DATE('{end_date}'),   -90)
+    AND w.close_date BETWEEN DATE_ADD(DATE(?), -90)
+                   AND DATE_ADD(DATE(?), -90)
       {filter_clause}
 )
 SELECT

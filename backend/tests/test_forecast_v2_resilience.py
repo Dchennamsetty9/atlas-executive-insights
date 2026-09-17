@@ -25,6 +25,7 @@ fake_db = types.ModuleType("services.databricks_connection")
 fake_db.execute_query = lambda _sql: []
 fake_db.token_available = lambda: False
 fake_db.set_request_token = lambda _token: None
+fake_db.query_cache_scope = lambda: None
 fake_prefs = types.ModuleType("services.user_preferences_service")
 fake_prefs.user_prefs_service = object()
 fake_services.databricks_connection = fake_db

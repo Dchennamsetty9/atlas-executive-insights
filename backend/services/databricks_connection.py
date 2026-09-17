@@ -9,6 +9,8 @@ Auth priority (first usable wins):
     3. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
+import hashlib
+import json
 import logging
 import os
 import time
@@ -84,6 +86,18 @@ def token_available() -> bool:
     return DATABRICKS_AVAILABLE and (bool(_resolve_token()) or _oauth_m2m_available())
 
 
+def query_cache_scope() -> str | None:
+    token = _resolve_token()
+    if token:
+        credentials = ("token", token)
+    elif _oauth_m2m_available():
+        credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
+    else:
+        return None
+    identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
+
+
 def get_connection():
     """
     Return a live Databricks SQL connection.
@@ -133,6 +147,7 @@ def execute_query(
     *,
     max_attempts: int = 2,   # Retry once on cold-start failures (was 1)
     backoff: float = 3.0,
+    max_rows: int | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute a SQL query and return results as a list of dicts.
@@ -146,10 +161,14 @@ def execute_query(
         params:       Optional list of parameter values.
         max_attempts: Total number of attempts before re-raising the error.
         backoff:      Base delay in seconds; actual delay = backoff * attempt_number.
+        max_rows:     Optional positive bound on fetched rows; callers must also
+                  constrain SQL when a server-side result limit is required.
 
     Returns:
         List of dicts, one per row, keyed by column name.
     """
+    if max_rows is not None and (not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows <= 0):
+        raise ValueError("max_rows must be a positive integer")
     _TRANSIENT_SIGNALS = ("timeout", "connection", "reset", "unavailable", "retry", "refused", "broken pipe")
 
     last_exc: Exception | None = None
@@ -162,7 +181,7 @@ def execute_query(
                     else:
                         cursor.execute(query)
                     columns = [desc[0] for desc in cursor.description]
-                    rows = cursor.fetchall()
+                    rows = cursor.fetchmany(max_rows) if max_rows is not None else cursor.fetchall()
                     return [dict(zip(columns, row)) for row in rows]
         except Exception as exc:
             msg = str(exc).lower()

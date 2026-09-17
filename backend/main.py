@@ -27,7 +27,9 @@ from bootstrap import (
     metrics_calculator,
     genie_service,
 )
-from services.data_cache import data_cache             # In-memory TTL cache (15-min refresh)
+from services.data_cache import data_cache, kpi_cache_key, kpi_cache_prefix
+from services.databricks_connection import query_cache_scope
+from services.gaim_data_service import validate_date_range
 from models.kpi import KPICard, ChartData, Insight, Forecast
 
 logger = logging.getLogger(__name__)
@@ -319,7 +321,8 @@ async def get_kpis(
     end_date: str = None,
     geo: str = "All",
     channel: str = "All",
-    product: str = "All"
+    product: str = "All",
+    user_id: str = Depends(require_authenticated_user),
 ):
     """
     Get KPI cards with current values, trends, and comparisons
@@ -332,6 +335,10 @@ async def get_kpis(
         product: Product filter (Connect, Engage, Rescue, Central, Resolve, or All)
     """
     try:
+        start_date, end_date = validate_date_range(start_date, end_date)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Invalid date range; use ISO dates with start_date <= end_date") from None
+    try:
         # Build filter context
         filters = {
             "geo": geo,
@@ -340,8 +347,8 @@ async def get_kpis(
         }
 
         # Build a stable cache key from filter combo (include dates so period changes re-fetch)
-        cache_key = f"kpis:{start_date}:{end_date}:{geo}:{channel}:{product}"
-        cached = data_cache.get(cache_key)
+        cache_key = kpi_cache_key(user_id, query_cache_scope(), start_date, end_date, geo, channel, product)
+        cached = data_cache.get(cache_key) if cache_key else None
         if cached is not None:
             print(f"Cache hit: {cache_key} (age {data_cache.cache_age_seconds(cache_key):.0f}s)")
             return cached
@@ -359,7 +366,8 @@ async def get_kpis(
         kpis = metrics_calculator.calculate_kpis(raw_data)
 
         # Store in cache for next request
-        data_cache.set(cache_key, kpis)
+        if cache_key:
+            data_cache.set(cache_key, kpis)
 
         # Fire threshold alerts in the background (non-blocking — never delays the KPI response)
         from services.notification_service import notification_service as _ns
@@ -397,25 +405,28 @@ async def force_cache_refresh(
     """
     Force-invalidate the KPI cache so the next /api/kpis call re-queries Databricks.
     Called by the frontend "Refresh Now" button.
-    Passing geo/channel/product invalidates that specific slice; omitting them
-    (or passing "All") invalidates everything.
+    Passing geo/channel/product invalidates that slice across all cached dates
+    for the caller's current credential scope. All filters invalidate that scope.
     """
-    if geo == "All" and channel == "All" and product == "All":
-        data_cache.invalidate_all()
-        return {"status": "invalidated", "scope": "all"}
-    key = f"kpis:{geo}:{channel}:{product}"
-    data_cache.invalidate(key)
-    return {"status": "invalidated", "scope": key}
+    credential_scope = query_cache_scope()
+    all_slices = geo == "All" and channel == "All" and product == "All"
+    prefix = kpi_cache_prefix(_user, credential_scope) if all_slices else kpi_cache_prefix(_user, credential_scope, geo, channel, product)
+    if prefix:
+        data_cache.invalidate_prefix(prefix)
+    return {"status": "invalidated", "scope": "caller" if all_slices else "caller_slice"}
 
 
 @app.get("/api/cache/status")
-async def cache_status():
+async def cache_status(user_id: str = Depends(require_authenticated_user)):
     """Return cache freshness info — used by the frontend Last Refreshed indicator."""
     entries = []
+    prefix = kpi_cache_prefix(user_id, query_cache_scope())
     for key in list(data_cache.last_refresh.keys()):
+        if not prefix or not key.startswith(prefix):
+            continue
         age = data_cache.cache_age_seconds(key)
         entries.append({
-            "key": key,
+            "key": key[len(prefix):],
             "last_refreshed_utc": data_cache.last_refreshed_at(key).isoformat() if data_cache.last_refreshed_at(key) else None,
             "age_seconds": round(age, 1) if age is not None else None,
             "is_stale": data_cache.is_stale(key),

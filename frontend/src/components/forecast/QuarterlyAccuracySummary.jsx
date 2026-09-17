@@ -1,4 +1,4 @@
-import { accuracyProducts, quarterlyRow, quarterlyValue, errorPercent, sourceDate } from './accuracyPresentation';
+import { accuracyProducts, quarterlyRow, quarterlyValue, quarterlyEvidence, quarterlyBasis, errorPercent, sourceDate } from './accuracyPresentation';
 
 export default function QuarterlyAccuracySummary({ rows, product, models, modelKeys, modelMeta, color }) {
   const products = accuracyProducts(product);
@@ -15,7 +15,12 @@ export default function QuarterlyAccuracySummary({ rows, product, models, modelK
           <td style={{ padding: '10px 12px', color: '#e2e8f0' }}>{modelMeta[key].label}</td>
           {products.map(p => {
             const value = quarterlyValue(rows, p, modelKeys[key]);
-            return <td key={p} style={{ padding: '10px 12px', color: value == null ? '#94a3b8' : color(value), fontWeight: 700 }}>{errorPercent(value)}</td>;
+            const evidence = quarterlyEvidence(rows, p, modelKeys[key]);
+            return <td key={p} style={{ padding: '10px 12px', color: evidence.status === 'measured' ? color(value) : '#94a3b8', fontWeight: 700 }}>
+              {errorPercent(value)}
+              <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 400, marginTop: 4 }}>{quarterlyBasis(rows, p, modelKeys[key])}</div>
+              {evidence.source_model && <div style={{ color: '#94a3b8', fontSize: 10, fontWeight: 400, overflowWrap: 'anywhere' }}>{evidence.source_model}</div>}
+            </td>;
           })}
         </tr>)}</tbody>
       </table>
@@ -23,9 +28,12 @@ export default function QuarterlyAccuracySummary({ rows, product, models, modelK
     </div> : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
       {models.map(key => {
         const value = quarterlyValue(rows, product, modelKeys[key]);
+        const evidence = quarterlyEvidence(rows, product, modelKeys[key]);
         return <div key={key} style={{ padding: 12, borderRadius: 8, border: '1px solid #ffffff12' }}>
           <div style={{ color: '#94a3b8', fontSize: 11 }}>{modelMeta[key].label}</div>
-          <div style={{ color: value == null ? '#94a3b8' : color(value), fontSize: 22, fontWeight: 700 }}>{errorPercent(value)}</div>
+          <div style={{ color: evidence.status === 'measured' ? color(value) : '#94a3b8', fontSize: 22, fontWeight: 700 }}>{errorPercent(value)}</div>
+          <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 4 }}>{quarterlyBasis(rows, product, modelKeys[key])}</div>
+          {evidence.source_model && <div style={{ color: '#94a3b8', fontSize: 10, overflowWrap: 'anywhere', marginTop: 4 }}>{evidence.source_model}</div>}
         </div>;
       })}
     </div>}

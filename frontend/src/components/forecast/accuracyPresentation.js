@@ -12,11 +12,34 @@ export const quarterlyValue = (rows, product, model) => {
 
 export const errorPercent = value => value == null ? '—' : `${value.toFixed(1)}%`;
 
+export const quarterlyEvidence = (rows, product, model) => {
+  if (quarterlyValue(rows, product, model) == null) return { status: 'unavailable' };
+  const evidence = quarterlyRow(rows, product)?.quarterly_provenance?.[model];
+  return ['measured', 'estimated', 'blended', 'unverified'].includes(evidence?.status)
+    ? evidence : { status: 'unverified' };
+};
+
+export const quarterlyBasis = (rows, product, model) => {
+  const evidence = quarterlyEvidence(rows, product, model);
+  if (evidence.status === 'measured') {
+    const count = evidence.quarters_evaluated;
+    return `Measured · ${evidence.quarter} · ${count} quarter${count === 1 ? '' : 's'}`;
+  }
+  return { estimated: 'Estimated from weekly error', blended: 'Weighted blend',
+    unverified: 'Evaluation basis unverified', unavailable: 'Not available' }[evidence.status];
+};
+
 export const quarterlyPill = (rows, product, model) => {
   const products = accuracyProducts(product);
+  const label = selected => {
+    const value = quarterlyValue(rows, selected, model);
+    const status = quarterlyEvidence(rows, selected, model).status;
+    const qualifier = value == null || status === 'measured' ? '' : ` (${status})`;
+    return `${errorPercent(value)}${qualifier}`;
+  };
   return products.length > 1
-    ? `Qtr · ${products.map(p => `${p} ${errorPercent(quarterlyValue(rows, p, model))}`).join(' · ')}`
-    : `Qtr ${errorPercent(quarterlyValue(rows, product, model))}`;
+    ? `Qtr · ${products.map(productName => `${productName} ${label(productName)}`).join(' · ')}`
+    : `Qtr ${label(product)}`;
 };
 
 // Preserve source date precision; do not label a browser retrieval time as publication time.

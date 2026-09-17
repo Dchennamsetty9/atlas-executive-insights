@@ -600,12 +600,17 @@ const QuarterlyBarChart = ({ weeklyRows, quarterlyData, year }) => {
     }))} year={year} curQtr={curQtr} curYear={curYear} />;
   }
   if (!weeklyRows || weeklyRows.length === 0) return null;
+  // Rolling and roy responses can overlap at the publication boundary. Keep
+  // one row per week so the fallback chart cannot double-count a week.
+  const uniqueWeeklyRows = Array.from(
+    new Map(weeklyRows.map(row => [row.date, row])).values(),
+  );
   const today = new Date();
   const curQtr = Math.floor(today.getMonth() / 3) + 1;
   const curYear = today.getFullYear();
 
   const qtrs = [1, 2, 3, 4].map(q => {
-    const rows = weeklyRows.filter(r => {
+    const rows = uniqueWeeklyRows.filter(r => {
       const d = new Date(r.date);
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });

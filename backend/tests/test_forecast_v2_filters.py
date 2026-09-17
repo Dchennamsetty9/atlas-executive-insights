@@ -9,6 +9,9 @@ import datetime
 import pathlib
 import sys
 import types
+from contextvars import ContextVar
+
+import pytest
 
 # Bootstrap import path and service stubs for forecast_v2_impl imports.
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -18,6 +21,7 @@ fake_db = types.ModuleType("services.databricks_connection")
 fake_db.execute_query = lambda _sql: []
 fake_db.token_available = lambda: False
 fake_db.set_request_token = lambda _token: None
+fake_db.query_cache_scope = lambda: None
 fake_prefs = types.ModuleType("services.user_preferences_service")
 fake_prefs.user_prefs_service = object()
 fake_services.databricks_connection = fake_db
@@ -45,6 +49,51 @@ def test_weekly_fallback_is_not_exposed_as_quarterly_error():
     assert values["quarterly_errors"]["ETS"] is None
     assert all(value is None for value in values["quarterly_errors"].values())
     assert "Ensemble" not in values
+
+
+@pytest.mark.parametrize("source,closed,quarter,count,status", [
+    ("holdout_closed_quarter", True, "2026Q2", 1, "measured"),
+    ("holdout_closed_quarter", False, "2026Q3", 1, "unverified"),
+    ("holdout_closed_quarter", True, None, 1, "unverified"),
+    ("holdout_closed_quarter", True, "2026Q2", 0, "unverified"),
+    ("holdout_closed_quarter", True, "2026Q2", float("nan"), "unverified"),
+    ("estimated_0.35x_weekly", False, None, 0, "estimated"),
+    ("dollar_weighted_blend", False, None, 0, "blended"),
+    ("unknown_method", True, "2026Q2", 1, "unverified"),
+])
+def test_quarterly_evidence_requires_measured_closed_quarter(source, closed, quarter, count, status):
+    row = {"product": "UCC", "sales_market": "Total", "publication_date": "2026-09-09",
+           **impl._leaderboard_error_values({"qtr_ensemble": 0})}
+    record = {"product": "UCC", "model": "Adaptive_Ensemble", "quarterly_wape": 0,
+              "run_date": "2026-09-09", "source": source, "quarter_label": quarter,
+              "is_closed": closed, "quarters_evaluated": count}
+    evidence = impl._quarterly_evidence(row, [record])
+    assert evidence["Ensemble"]["status"] == status
+    assert evidence["Ensemble"]["source"] == source
+    assert evidence["ETS"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("override", [
+    {"product": "ITSG"}, {"model": "ETS"}, {"run_date": "2026-09-08"},
+    {"quarterly_wape": 99}, {"quarterly_wape": float("inf")},
+])
+def test_quarterly_evidence_does_not_borrow_mismatched_records(override):
+    row = {"product": "UCC", "sales_market": "Total", "publication_date": "2026-09-09",
+           **impl._leaderboard_error_values({"qtr_ensemble": 0.826})}
+    record = {"product": "UCC", "model": "Adaptive_Ensemble", "quarterly_wape": 0.826,
+              "run_date": "2026-09-09", "source": "holdout_closed_quarter", "quarter_label": "2026Q2",
+              "is_closed": True, "quarters_evaluated": 1, **override}
+    assert impl._quarterly_evidence(row, [record])["Ensemble"]["status"] == "unverified"
+
+
+def test_quarterly_evidence_rejects_duplicate_and_regional_records():
+    row = {"product": "UCC", "sales_market": "Total", "publication_date": "2026-09-09",
+           **impl._leaderboard_error_values({"qtr_ensemble": 0.826})}
+    record = {"product": "UCC", "model": "Adaptive_Ensemble", "quarterly_wape": 0.826,
+              "run_date": "2026-09-09", "source": "holdout_closed_quarter", "quarter_label": "2026Q2",
+              "is_closed": True, "quarters_evaluated": 1}
+    assert impl._quarterly_evidence(row, [record, record])["Ensemble"]["status"] == "unverified"
+    assert impl._quarterly_evidence({**row, "sales_market": "NA"}, [record])["Ensemble"]["status"] == "unverified"
 
 
 def test_backtest_unsupported_scopes_never_query_or_substitute_history(monkeypatch):
@@ -101,6 +150,62 @@ def test_accuracy_reads_bypass_daily_cache_for_new_publications(monkeypatch):
     assert impl._QUERY_CACHE == {}
 
 
+def test_forecast_cache_isolates_callers_and_retains_same_caller_hits(monkeypatch):
+    from routes import forecast_v2 as package
+
+    caller = ContextVar("cache_test_caller", default="caller-a")
+    calls = []
+
+    def query(_sql):
+        calls.append(caller.get())
+        return [{"owner": caller.get()}]
+
+    monkeypatch.setattr(package, "execute_query", query)
+    monkeypatch.setattr(impl, "query_cache_scope", caller.get)
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 300)
+    monkeypatch.setattr(impl, "_QUERY_CACHE", {})
+
+    async def request_as(identity):
+        caller.set(identity)
+        return await impl._cached_query("SELECT private_data", endpoint="/monthly")
+
+    for identity in ("caller-a", "caller-b", "caller-a", "caller-b"):
+        result = asyncio.run(request_as(identity))
+        assert result == [{"owner": identity}]
+    assert calls == ["caller-a", "caller-b"]
+    assert len(impl._QUERY_CACHE) == 2
+
+
+def test_forecast_cache_without_identity_bypasses_storage(monkeypatch):
+    from routes import forecast_v2 as package
+
+    calls = []
+    monkeypatch.setattr(package, "execute_query", lambda sql: calls.append(sql) or [])
+    monkeypatch.setattr(impl, "query_cache_scope", lambda: None)
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 300)
+    monkeypatch.setattr(impl, "_QUERY_CACHE", {})
+    for _ in range(2):
+        asyncio.run(impl._cached_query("SELECT 1", endpoint="/monthly"))
+    assert len(calls) == 2
+    assert impl._QUERY_CACHE == {}
+
+
+def test_forecast_cache_expires_entries_and_limits_live_keys(monkeypatch):
+    from routes import forecast_v2 as package
+
+    cache = {f"existing-{index}": (100, []) for index in range(512)}
+    cache["expired"] = (0, [])
+    monkeypatch.setattr(package, "execute_query", lambda _sql: [{"fresh": True}])
+    monkeypatch.setattr(impl, "query_cache_scope", lambda: "caller")
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 50)
+    monkeypatch.setattr(impl.time, "time", lambda: 100)
+    monkeypatch.setattr(impl, "_QUERY_CACHE", cache)
+    result = asyncio.run(impl._cached_query("SELECT 1", endpoint="/monthly"))
+    assert result == [{"fresh": True}]
+    assert "expired" not in cache
+    assert len(cache) == 512
+
+
 def test_leaderboard_exposes_source_publication_without_inventing_missing_dates(monkeypatch):
     queries = []
     async def columns():
@@ -120,6 +225,33 @@ def test_leaderboard_exposes_source_publication_without_inventing_missing_dates(
     assert result["data"][0]["publication_date"] == "2026-09-08"
     assert result["data"][1]["publication_date"] is None
     assert result["data"][0]["quarterly_errors"]["Ensemble"] == 0.826
+    assert result["data"][0]["quarterly_provenance"]["Ensemble"]["status"] == "unverified"
+
+
+@pytest.mark.parametrize("provenance_available", [True, False])
+def test_leaderboard_serves_provenance_without_hiding_query_failure(monkeypatch, provenance_available):
+    async def columns():
+        return set()
+
+    async def query(sql, **kwargs):
+        if kwargs.get("metric") == "quarterly_provenance":
+            assert "forecast_quarterly_accuracy" in sql
+            assert kwargs["endpoint"] == "/leaderboard"
+            if not provenance_available:
+                raise RuntimeError("test missing metadata grant")
+            return [{"product": "UCC", "model": "Adaptive_Ensemble", "quarterly_wape": 0.826,
+                     "run_date": "2026-09-09", "source": "holdout_closed_quarter", "quarter_label": "2026Q2",
+                     "is_closed": True, "quarters_evaluated": 1}]
+        if kwargs.get("metric") == "ensemble_realized_mape":
+            return []
+        return [{"product": "UCC", "sales_market": "Total", "publication_date": "2026-09-09", "qtr_ensemble": 0.826}]
+
+    monkeypatch.setattr(impl, "_lb_columns", columns)
+    monkeypatch.setattr(impl, "_cached_query", query)
+    result = asyncio.run(impl.get_leaderboard(live_mode=True))
+    row = result["data"][0]
+    assert row["quarterly_errors"]["Ensemble"] == 0.826
+    assert row["quarterly_provenance"]["Ensemble"]["status"] == ("measured" if provenance_available else "unverified")
 
 
 def test_rolling_next_year_filter_is_quarter_anchored():
@@ -130,7 +262,7 @@ def test_rolling_next_year_filter_is_quarter_anchored():
     assert "CAST(ds AS DATE) <" in filt
 
 
-def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch):
+def test_monthly_rolling_uses_all_periods_and_separates_actuals(monkeypatch):
     captured_sql = []
 
     async def fake_cached_query(sql, **_kwargs):
@@ -154,20 +286,119 @@ def test_monthly_rolling_uses_rolling_window_and_full_month_forecast(monkeypatch
 
     assert result["source"] == "live"
     assert result["months"] == []
-    assert len(captured_sql) == 2  # actuals query + forecast query
+    assert len(captured_sql) == 3
 
     forecast_sql = next(sql for sql in captured_sql if "arr_likely" in sql)
+    actuals_sql = next(sql for sql in captured_sql if "AS arr_actual" in sql)
+    predicted_sql = next(sql for sql in captured_sql if "AS arr_predicted" in sql)
 
     assert "forecast_results_v2compat" in forecast_sql
     assert "forecast_prophet" not in forecast_sql
-    assert "forecast_type IN ('actuals', 'rolling', 'roy')" in forecast_sql
+    assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in forecast_sql
+    assert "WHERE forecast_type = 'actuals'" in actuals_sql
+    assert "WHERE forecast_type = 'actuals'" in predicted_sql
 
     # Rolling full-year mode should use the quarter-anchored next-12-month window.
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in forecast_sql
     assert "ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 12)" in forecast_sql
 
-    # Monthly table must keep full-month forecasts (not splice to remaining weeks only).
-    assert "CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE))" not in forecast_sql
+    assert "CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE))" in forecast_sql
+
+
+@pytest.mark.parametrize("forecast_type,year_offset,expected", [
+    ("rolling", 0, "forecast_type IN ('rolling', 'roy')"),
+    ("rolling", 1, "forecast_type = 'forward_1yr'"),
+    ("forward_1yr", 1, "forecast_type = 'forward_1yr'"),
+    ("roy", 0, "forecast_type = 'roy'"),
+])
+def test_monthly_selected_period_uses_publication_filter(monkeypatch, forecast_type, year_offset, expected):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    result = asyncio.run(impl.get_monthly(
+        product=None, product_line="UCC", sales_market=None,
+        forecast_type=forecast_type, model="ensemble",
+        year=datetime.date.today().year + year_offset, quarter=None, live_mode=True,
+    ))
+
+    assert result["source"] == "live"
+    forecast_sql = next(sql for sql in captured_sql if "AS arr_likely" in sql)
+    assert f"WHERE {expected}" in forecast_sql
+
+
+def test_monthly_merges_actuals_predictions_and_remaining_forecast(monkeypatch):
+    async def fake_cached_query(_sql, **kwargs):
+        rows = {
+            "actuals": [{"yr": 2026, "qtr": 3, "mth": 9, "month_name": "September", "arr_actual": 100}],
+            "rolling": [{"yr": 2026, "qtr": 3, "mth": 9, "month_name": "September", "arr_likely": 40, "arr_worst": 30, "arr_best": 50}],
+            "prediction": [{"yr": 2026, "qtr": 3, "mth": 9, "month_name": "September", "arr_predicted": 95, "arr_pred_worst": 90, "arr_pred_best": 110}],
+        }
+        return rows[kwargs["forecast_type"]]
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    result = asyncio.run(impl.get_monthly(
+        product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="ensemble", year=None,
+        quarter=None, live_mode=True,
+    ))
+
+    assert len(result["months"]) == 1
+    month = result["months"][0]
+    assert month["arr_actual"] == 100
+    assert month["arr_likely"] == 40
+    assert month["arr_predicted"] == 95
+    assert month["arr_worst"] == 30
+    assert month["arr_best"] == 50
+
+
+def test_monthly_prophet_uses_native_source_without_run_date(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    result = asyncio.run(impl.get_monthly(
+        product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="prophet", year=2026,
+        quarter=None, live_mode=True,
+    ))
+
+    assert result["source"] == "live"
+    assert len(captured_sql) == 3
+    for sql in captured_sql:
+        assert impl.PROPHET_TABLE in sql
+        assert "model_name = 'Prophet'" in sql
+        assert "is_current = TRUE" in sql
+        assert "run_date" not in sql
+
+
+def test_monthly_quarter_without_year_uses_current_year(monkeypatch):
+    captured_sql = []
+
+    async def fake_cached_query(sql, **_kwargs):
+        captured_sql.append(sql)
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    today = datetime.date.today()
+    current_quarter = ((today.month - 1) // 3) + 1
+    result = asyncio.run(impl.get_monthly(
+        product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="ensemble", year=None,
+        quarter=current_quarter, live_mode=True,
+    ))
+
+    assert result["source"] == "live"
+    assert len(captured_sql) == 3
+    assert all(str(today.year) in sql for sql in captured_sql)
+    assert all(row["year"] == today.year for row in result["months"])
+    assert len(result["months"]) == 3
 
 
 def test_forward_1yr_is_not_aliased_for_forecast_type_sources():
@@ -649,3 +880,45 @@ def test_by_product_rolling_uses_all_future_periods(monkeypatch):
     assert result["source"] == "live"
     landing_sql = next(sql for sql in captured_sql if "UNION ALL" in sql and "forecast_type" in sql)
     assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in landing_sql
+
+
+@pytest.mark.parametrize("product", [None, "UCC", "ITSG"])
+@pytest.mark.parametrize("model", ["prophet", "ensemble"])
+def test_by_product_landing_respects_model_source_and_slice_cutoff(monkeypatch, product, model):
+    captured = {}
+
+    async def columns():
+        return set()
+
+    async def fake_cached_query(sql, **kwargs):
+        captured[kwargs.get("metric")] = sql
+        return []
+
+    monkeypatch.setattr(impl, "_lb_columns", columns)
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    result = asyncio.run(impl.get_by_product(
+        product=None, product_line=product, sales_market=None,
+        model=model, forecast_type="rolling", year=None, quarter=None, live_mode=True,
+    ))
+
+    assert result["source"] == "live"
+    for metric in ("product", "geo"):
+        sql = captured[metric]
+        assert "actual_rows.product = forecast_rows.product" in sql
+        assert "actual_rows.sales_market" in sql and "forecast_rows.sales_market" in sql
+        if model == "prophet":
+            assert impl.PROPHET_TABLE in sql
+            assert impl.FC_TABLE not in sql
+            assert "run_date" not in sql
+            assert "is_current = TRUE" in sql
+            assert "model_name = 'Prophet'" in sql
+            assert "forecast_p50" in sql
+        else:
+            assert impl.FC_TABLE in sql
+            assert "run_date" in sql
+            assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in sql
+    if model == "prophet" and product is None:
+        assert "product = 'Total'" not in captured["geo"]
+        assert "product IN ('UCC','ITSG')" in captured["geo"]
+    else:
+        assert f"product = '{product or 'Total'}'" in captured["geo"]

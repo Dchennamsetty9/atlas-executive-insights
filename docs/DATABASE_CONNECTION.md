@@ -1,5 +1,49 @@
 # Database Connection Guide for Atlas Executive Insights
 
+## Backend Access Rules
+
+The current KPI service reads `federated.sales.metis_won_opps_fact`,
+`federated.sales.metis_opened_opps_fact`, and `federated.sales.metis_targets_summary`.
+The GAIM SQL examples below are historical reference, not the active query templates.
+
+- `/api/kpis`, `/api/cache/*`, and all `/api/ai/*` routes require the existing
+  authenticated-user dependency. Explicit local-development authentication settings
+  still apply; production requests without a verified identity are rejected.
+- KPI and trend dates are validated before querying and passed as bound SQL
+  parameters. KPI HTTP requests return 422 for invalid or reversed date ranges.
+- KPI cache keys include the caller and effective SQL credential scope. Refresh
+  affects only that caller's current credential scope, across all dates in the
+  selected slice. Cache status lists only that scope's entries. Missing credential
+  scopes bypass caching; expiration and invalidation release payloads, with a
+  512-entry cap per application process.
+- Action reads and mutations are owner-scoped by `user_id`, not the editable
+  assignee field `owner`. Missing, foreign, and legacy null-owner actions cannot
+  be changed through the user API. Legacy rows need an explicitly reviewed ownership
+  migration; no migration is performed automatically.
+- Actions and preferences run synchronous storage calls in worker threads and
+  close connections. Storage failures return a generic 503 instead of success.
+  Preference writes use one bound `MERGE` statement. Multi-step workflows, such as
+  action creation followed by metadata updates, are not transactional; concurrent
+  JSON preference edits can still overwrite each other. Do not blindly retry writes
+  after a timeout because the database outcome may be unknown.
+- Ask AI SQL is parsed with pinned `sqlglot==27.29.0`. Only a single reporting
+  SELECT/CTE/UNION using the three federated tables above and approved analytical
+  functions is accepted. Unapproved constructs, table functions, custom functions,
+  recursive queries, and additional statements are rejected before execution.
+- AI SQL uses the shared connector's effective request credential, not the LLM
+  client's service-principal SQL endpoint. LLM serving authentication itself is
+  unchanged. There is no Genie fallback after a SQL policy, permission, or execution
+  failure. Queries are limited to 100 rows, fetched with `fetchmany`, and serialized
+  results above 256 KiB are rejected before LLM interpretation. These are result
+  bounds, not warehouse scan-cost limits or server-side query cancellation.
+
+These changes are verified with offline service and HTTP tests. Before deployment,
+install the root requirements and validate bound SQL and `MERGE` behavior against
+the configured warehouse with approved test data. Production grants, ingress,
+model-serving permissions, notebook revisions, and live financial correctness have
+not been validated by these tests. Synthetic/proxy KPI provenance and other audit
+findings are separate follow-up work; access controls do not certify KPI values.
+
 ## 📊 Data Source Information
 
 Your Performance Hub dashboards connect to **Databricks Unity Catalog**.

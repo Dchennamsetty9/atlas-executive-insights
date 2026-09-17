@@ -44,10 +44,11 @@ env:
   - name: FORECAST_V2_LEADERBOARD_TABLE
     value: "forecast_leaderboard_v2compat"
 
-  # Forecast tables publish daily; cache identical forecast API reads for a day
-  # so tab/filter refreshes do not repeatedly hit Databricks SQL.
+  # The forecast_app_snapshot is refreshed by the Tuesday weekly pipeline.
+  # Cache identical forecast API reads for one publication cycle so tab/filter
+  # refreshes do not repeatedly hit Databricks SQL.
   - name: FORECAST_V2_CACHE_TTL_SECONDS
-    value: "86400"
+    value: "604800"
   
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.

@@ -19,7 +19,7 @@ IMPORTANT — Close Rate vs Win Rate:
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 import pandas as pd
@@ -41,6 +41,14 @@ def _current_quarter_start() -> str:
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def validate_date_range(start_date, end_date):
+    start = date.fromisoformat(start_date or _current_quarter_start())
+    end = date.fromisoformat(end_date or _today())
+    if start > end:
+        raise ValueError("start_date must not be after end_date")
+    return start.isoformat(), end.isoformat()
 
 
 # Strict whitelists for every user-supplied filter value.
@@ -136,10 +144,7 @@ class GAIMDataService:
             metric_name, metric_value, target_value, previous_period_value
         Falls back to demo data if Databricks is unavailable.
         """
-        if not start_date:
-            start_date = _current_quarter_start()
-        if not end_date:
-            end_date = _today()
+        start_date, end_date = validate_date_range(start_date, end_date)
         if filters is None:
             filters = {}
 
@@ -178,10 +183,7 @@ class GAIMDataService:
         filters:    Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """Return [{date, value}] for a single metric's daily trend."""
-        if not start_date:
-            start_date = _current_quarter_start()
-        if not end_date:
-            end_date = _today()
+        start_date, end_date = validate_date_range(start_date, end_date)
         if filters is None:
             filters = {}
 
@@ -213,28 +215,26 @@ class GAIMDataService:
         Metrics not directly available in the federated subset are populated using
         safe proxy values so cards remain visible without breaking UX.
         """
+        start_date, end_date = validate_date_range(start_date, end_date)
         filter_clause = _filter_sql(filters)
 
         pipeline_sql = load_query(
             "kpis/pipeline_snapshot",
-            start_date=start_date, end_date=end_date,
             filter_clause=filter_clause,
         )
         created_sql = load_query(
             "kpis/created_pipeline",
-            start_date=start_date, end_date=end_date,
             filter_clause=filter_clause,
         )
         targets_sql = load_query(
             "kpis/targets",
-            start_date=start_date,
             filter_clause=filter_clause,
         )
 
         # Execute supported federated queries
-        pipe_rows    = execute_query(pipeline_sql)
-        created_rows = execute_query(created_sql)
-        target_rows  = execute_query(targets_sql)
+        pipe_rows    = execute_query(pipeline_sql, (start_date, end_date, start_date, end_date))
+        created_rows = execute_query(created_sql, (start_date, end_date))
+        target_rows  = execute_query(targets_sql, (start_date,))
 
         p = pipe_rows[0]    if pipe_rows    else {}
         c_ = created_rows[0] if created_rows else {}
@@ -394,6 +394,7 @@ class GAIMDataService:
         filters:    Dict[str, str],
     ) -> List[Dict[str, Any]]:
         """Return daily [{date, value}] for supported federated KPI trends only."""
+        start_date, end_date = validate_date_range(start_date, end_date)
         f = _filter_sql(filters)
 
         queries = {
@@ -402,7 +403,7 @@ class GAIMDataService:
                        SUM(amount_towards_plan) AS value
                 FROM federated.sales.metis_won_opps_fact
                 WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
-                  AND close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                  AND close_date BETWEEN DATE(?) AND DATE(?) {f}
                 GROUP BY close_date ORDER BY close_date
             """,
             "created_pipeline": f"""
@@ -410,7 +411,7 @@ class GAIMDataService:
                        SUM(amount_towards_plan) AS value
                 FROM federated.sales.metis_opened_opps_fact
                 WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
-                  AND pipeline_entered_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                  AND pipeline_entered_date BETWEEN DATE(?) AND DATE(?) {f}
                 GROUP BY pipeline_entered_date ORDER BY pipeline_entered_date
             """,
             "won_volume": f"""
@@ -418,7 +419,7 @@ class GAIMDataService:
                        COUNT(DISTINCT salesforce_opportunity_id) AS value
                 FROM federated.sales.metis_won_opps_fact
                 WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_won_opps_fact)
-                  AND close_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                  AND close_date BETWEEN DATE(?) AND DATE(?) {f}
                 GROUP BY close_date ORDER BY close_date
             """,
                         "opps_created": f"""
@@ -426,7 +427,7 @@ class GAIMDataService:
                                              COUNT(DISTINCT salesforce_opportunity_id) AS value
                                 FROM federated.sales.metis_opened_opps_fact
                                 WHERE data_date = (SELECT MAX(data_date) FROM federated.sales.metis_opened_opps_fact)
-                                    AND pipeline_entered_date BETWEEN DATE('{start_date}') AND DATE('{end_date}') {f}
+                                    AND pipeline_entered_date BETWEEN DATE(?) AND DATE(?) {f}
                                 GROUP BY pipeline_entered_date ORDER BY pipeline_entered_date
             """,
         }
@@ -435,7 +436,7 @@ class GAIMDataService:
         if not sql:
             return []
 
-        rows = execute_query(sql)
+        rows = execute_query(sql, (start_date, end_date))
         return [{"date": str(r.get("date", "")), "value": float(r.get("value") or 0)} for r in rows]
 
 

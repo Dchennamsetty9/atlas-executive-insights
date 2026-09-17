@@ -13,9 +13,9 @@ intelligence bullets (source="forecast") and insight panel bullets (source="insi
 """
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import require_authenticated_user
@@ -44,12 +44,12 @@ class UpdateActionMetaRequest(BaseModel):
 
 
 class UpdateStatusRequest(BaseModel):
-    status: str                    # pending | done
+    status: Literal["pending", "done"]
     owner: Optional[str] = None
 
 
 @router.get("")
-async def list_actions(
+def list_actions(
     status: Optional[str] = None,
     user_id: str = Depends(require_authenticated_user)
 ):
@@ -63,7 +63,7 @@ async def list_actions(
 
 
 @router.post("")
-async def create_action(
+def create_action(
     body: CreateActionRequest,
     user_id: str = Depends(require_authenticated_user)
 ):
@@ -84,34 +84,39 @@ async def create_action(
 
 
 @router.patch("/{action_id}/status")
-async def update_status(
+def update_status(
     action_id: str,
     body: UpdateStatusRequest,
-    _user_id: str = Depends(require_authenticated_user)
+    user_id: str = Depends(require_authenticated_user)
 ):
-    user_prefs_service.update_action_status(action_id, body.status, body.owner)
+    if not user_prefs_service.update_action_status(action_id, body.status, body.owner, user_id=user_id):
+        raise HTTPException(status_code=404, detail="Action not found")
     return {"success": True, "message": f"Action {action_id} → {body.status}"}
 
 
 @router.delete("/{action_id}")
-async def delete_action(
+def delete_action(
     action_id: str,
-    _user_id: str = Depends(require_authenticated_user)
+    user_id: str = Depends(require_authenticated_user)
 ):
-    user_prefs_service.delete_action(action_id)
+    if not user_prefs_service.delete_action(action_id, user_id=user_id):
+        raise HTTPException(status_code=404, detail="Action not found")
     return {"success": True, "message": f"Action {action_id} deleted."}
 
 
 @router.patch("/{action_id}/meta")
-async def update_action_meta(
+def update_action_meta(
     action_id: str,
     body: UpdateActionMetaRequest,
     user_id: str = Depends(require_authenticated_user)
 ):
-    meta = user_prefs_service.upsert_action_metadata(user_id, action_id, {
-        "due_date": body.due_date,
-        "playbook_action": body.playbook_action,
-        "expected_impact": body.expected_impact,
-        "actual_impact": body.actual_impact,
-    })
+    try:
+        meta = user_prefs_service.upsert_action_metadata(user_id, action_id, {
+            "due_date": body.due_date,
+            "playbook_action": body.playbook_action,
+            "expected_impact": body.expected_impact,
+            "actual_impact": body.actual_impact,
+        })
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Action not found") from None
     return {"success": True, "data": {"action_id": action_id, **meta}}
