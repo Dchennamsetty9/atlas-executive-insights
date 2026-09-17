@@ -2014,7 +2014,10 @@ const ForecastingPanel = () => {
         }
         case 'historical': setHistorical(value?.rows ?? []); setHistoricalMeta(value ?? null); break;
         case 'byProduct': setByProduct(value ?? null); break;
-        case 'monthly': setMonthly(value?.months ?? []); break;
+        case 'monthly':
+          setMonthly(value?.months ?? []);
+          if (value?.source === 'demo' && value?.error) setError(`Monthly data fallback: ${value.error}`);
+          break;
         case 'confidence': setConfidence(value ?? null); break;
         case 'driverBridge': setDriverBridge(value ?? null); break;
         case 'riskRadar': setRiskRadar(value?.items ?? []); break;

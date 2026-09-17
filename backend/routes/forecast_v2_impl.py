@@ -1543,7 +1543,6 @@ async def get_monthly(
                     ) AS arr_worst,
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
-<<<<<<< Updated upstream
                         + SQRT(SUM(POWER(GREATEST(
                             COALESCE(CAST({upper_col} AS DOUBLE), 0)
                             - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
@@ -1555,17 +1554,6 @@ async def get_monthly(
                       {pf} {gf}
                       {date_filter}
                 ) weekly
-=======
-                    + SQRT(SUM(POWER(GREATEST(
-                        COALESCE(CAST({upper_col} AS DOUBLE), 0)
-                        - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2)))
-                    AS arr_best
-                FROM {FC_TABLE}
-                WHERE {_latest_run()}
-                  AND {fc_type_clause}
-                  {pf} {gf}
-                  {date_filter}
->>>>>>> Stashed changes
                 GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth
             """
