@@ -23,7 +23,7 @@ export function loadForecastTab(api, selection, publish, onError) {
     }));
     if (tab === 'Plan Tracking') add('driverBridge', api.getForecastV2DriverBridge(year, quarter, model));
   } else if (tab === 'Multi-Year') {
-    add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null, model));
+    add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null));
   } else if (tab === 'By Product') {
     add('byProduct', api.getForecastV2ByProduct(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'Monthly') {

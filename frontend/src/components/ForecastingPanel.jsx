@@ -1,7 +1,7 @@
 /**
  * ForecastingPanel — V2 inline ARR forecast experience (replaces ForecastChart).
  *
- * Tabs: Overview · Multi-Year · By Product · Monthly · Accuracy · AI Insights
+ * Tabs: Overview · Multi-Year · By Product · Monthly · Weekly · Accuracy · Model Lab · AI Insights · Plan Tracking · Exec Mode
  *
  * Data source : arr_forecast_v2 + arr_forecast_v2_leaderboard
  *               Databricks job "arr_forecast_v2" — every Monday 03:00 UTC.
@@ -1904,7 +1904,6 @@ const ForecastingPanel = () => {
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
   const [runDelta,    setRunDelta]    = useState(null);   // what changed since last run
-  const [runHistory,  setRunHistory]  = useState(null);   // adjacent weekly forecast vintages
   const [weeklyChanges, setWeeklyChanges] = useState(null); // one row per forecast week
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
@@ -1966,7 +1965,6 @@ const ForecastingPanel = () => {
       setMeetingMode(null);
       setConfidenceBands(null);
       setRunDelta(null);
-      setRunHistory(null);
       setWeeklyChanges(null);
       setActions([]);
       setGovernanceLog([]);
@@ -2005,7 +2003,6 @@ const ForecastingPanel = () => {
         case 'freshness': setFreshness(value ?? null); break;
         case 'confidenceBands': setConfidenceBands(value ?? null); break;
         case 'runDelta': setRunDelta(value ?? null); break;
-        case 'runHistory': setRunHistory(value ?? null); break;
         case 'weeklyChanges': setWeeklyChanges(value ?? null); break;
         case 'yearRows': {
           const base = value.rolling?.rows ?? [];

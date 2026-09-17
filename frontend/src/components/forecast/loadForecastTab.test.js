@@ -46,3 +46,24 @@ test('one failed exec request does not discard successful sections', async () =>
   assert.equal(published.length, 10);
   assert.deepEqual(errors, ['actions']);
 });
+
+test('data tabs publish their dedicated payloads', async () => {
+  const cases = [
+    ['Multi-Year', 'historical'],
+    ['By Product', 'byProduct'],
+    ['Monthly', 'monthly'],
+    ['Weekly', 'weeklyChanges'],
+  ];
+
+  for (const [tab, field] of cases) {
+    const called = [];
+    const api = new Proxy({}, { get: (_, method) => (...args) => {
+      called.push([method, args]);
+      return Promise.resolve({ rows: [], months: [] });
+    } });
+    const published = [];
+    await loadForecastTab(api, { ...selection, tab }, value => published.push(value), assert.fail);
+    assert.ok(published.includes(field), `${tab} did not publish ${field}`);
+    assert.ok(called.length > 0, `${tab} did not call an API method`);
+  }
+});

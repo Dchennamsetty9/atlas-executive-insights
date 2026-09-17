@@ -139,7 +139,7 @@ export const createApiService = (api) => ({
   // AI endpoints
   getInsights: () => api.get('/api/insights'),
 
-  // ── Forecast V2 endpoints — arr_forecast_v2 table (scheduled Mondays 03:00 UTC) ──
+  // ── Forecast V2 endpoints — weekly Tuesday publication cycle ──
   getForecastV2Weekly: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { model, forecast_type: forecastType };
     if (product && product !== 'All') params.product = product;
@@ -250,13 +250,6 @@ export const createApiService = (api) => ({
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
     return api.get('/api/forecast/v2/run-delta', { params });
-  },
-
-  getForecastV2RunHistory: (productLine = null, salesMarket = null) => {
-    const params = {};
-    if (productLine && productLine !== 'All') params.product_line = productLine;
-    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
-    return api.get('/api/forecast/v2/run-history', { params });
   },
 
   // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish),
