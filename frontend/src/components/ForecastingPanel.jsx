@@ -779,7 +779,7 @@ const MonthlyTable = ({ months }) => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P10 — 1-in-10 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P90 — 1-in-5 upside scenario']].map(([h, tip]) => (
+            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Forecast / P50','Historical model forecast or future central forecast'],['Accuracy','100% minus absolute forecast error'],['Risk Floor','P25 — downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P75 — upside scenario']].map(([h, tip]) => (
               <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>
                 {tip ? <abbr title={tip} style={{ cursor: 'help', textDecoration: 'none' }}>{h}</abbr> : h}
               </th>
@@ -799,6 +799,7 @@ const MonthlyTable = ({ months }) => {
               const up = Math.max(0, (m.arr_best ?? lk) - lk);
               return {
                 arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
+                arr_predicted: m.arr_predicted != null ? (a.arr_predicted ?? 0) + m.arr_predicted : a.arr_predicted,
                 arr_likely: a.arr_likely + lk,
                 loSq: a.loSq + lo * lo,
                 upSq: a.upSq + up * up,
@@ -806,6 +807,7 @@ const MonthlyTable = ({ months }) => {
             }, { arr_actual: null, arr_likely: 0, loSq: 0, upSq: 0 });
             const tot = {
               arr_actual: agg.arr_actual,
+              arr_predicted: agg.arr_predicted,
               arr_likely: agg.arr_likely,
               arr_worst:  Math.max(0, agg.arr_likely - Math.sqrt(agg.loSq)),
               arr_best:   agg.arr_likely + Math.sqrt(agg.upSq),
@@ -818,11 +820,12 @@ const MonthlyTable = ({ months }) => {
                   <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 500 }}>{m.month_name}</td>
                   <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>
                     {fmtM(m.arr_actual)}
-                    {m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0 && (
-                      <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
-                        Predicted {fmtM(m.arr_predicted)} ({(((m.arr_predicted - m.arr_actual) / m.arr_actual) * 100).toFixed(1)}%)
-                      </div>
-                    )}
+                  </td>
+                  <td style={{ ...td, color: '#93c5fd' }}>{fmtM(m.arr_predicted ?? m.arr_likely)}</td>
+                  <td style={{ ...td, color: m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0 ? '#10b981' : '#475569' }}>
+                    {m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0
+                      ? `${Math.max(0, 100 - Math.abs((m.arr_predicted - m.arr_actual) / m.arr_actual) * 100).toFixed(1)}%`
+                      : '—'}
                   </td>
                   <td style={{ ...td, color: '#ef4444' }}>{fmtM(m.arr_worst)}</td>
                   <td style={{ ...td, color: '#f1f5f9', fontWeight: 600 }}>{fmtM(m.arr_likely)}</td>
@@ -834,6 +837,12 @@ const MonthlyTable = ({ months }) => {
                 <td style={{ ...td, textAlign: 'left', color: '#3b82f6', fontWeight: 700 }}>Total</td>
                 <td style={{ ...td, textAlign: 'left', color: '#3b82f6', fontWeight: 700 }}>{`Q${q} Total`}</td>
                 <td style={{ ...td, color: '#f59e0b', fontWeight: 700 }}>{fmtM(tot.arr_actual)}</td>
+                <td style={{ ...td, color: '#93c5fd', fontWeight: 700 }}>{fmtM(tot.arr_predicted ?? tot.arr_likely)}</td>
+                <td style={{ ...td, color: tot.arr_actual != null && tot.arr_predicted != null && tot.arr_actual > 0 ? '#10b981' : '#475569', fontWeight: 700 }}>
+                  {tot.arr_actual != null && tot.arr_predicted != null && tot.arr_actual > 0
+                    ? `${Math.max(0, 100 - Math.abs((tot.arr_predicted - tot.arr_actual) / tot.arr_actual) * 100).toFixed(1)}%`
+                    : '—'}
+                </td>
                 <td style={{ ...td, color: '#ef4444', fontWeight: 700 }}>{fmtM(tot.arr_worst)}</td>
                 <td style={{ ...td, color: '#f1f5f9', fontWeight: 700 }}>{fmtM(tot.arr_likely)}</td>
                 <td style={{ ...td, color: '#10b981', fontWeight: 700 }}>{fmtM(tot.arr_best)}</td>
