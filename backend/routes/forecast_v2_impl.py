@@ -97,8 +97,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "display_name": "ETS",
         "table": FC_TABLE,
         "most_likely_col": "arr_ets",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "ETS",
         "has_forecast_type": True,
     },
@@ -118,8 +118,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "display_name": "LightGBM",
         "table": FC_TABLE,
         "most_likely_col": "arr_lightgbm",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "LightGBM",
         "has_forecast_type": True,
     },
@@ -127,8 +127,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "display_name": "MSTL",
         "table": FC_TABLE,
         "most_likely_col": "arr_mstl_v2",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "MSTL_v2",
         "has_forecast_type": True,
     },
@@ -136,8 +136,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "display_name": "DHR-ARIMA",
         "table": FC_TABLE,
         "most_likely_col": "arr_dhr_arima",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "DHR_ARIMA",
         "has_forecast_type": True,
     },
@@ -147,8 +147,8 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
         "display_name": "Ensemble",
         "table": FC_TABLE,
         "most_likely_col": "Most_Likely",
-        "lower_col": "Worst_Case",
-        "upper_col": "Best_Case",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "best_mape",
         "has_forecast_type": True,
     },
@@ -1258,8 +1258,8 @@ async def get_weekly(
                 kpi_sql = f"""
                     SELECT ds, Actuals,
                            {_ml_expr} AS Most_Likely,
-                           COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                           COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                           COALESCE(CAST(p30 AS DOUBLE), 0) AS Worst_Case,
+                           COALESCE(CAST(p70 AS DOUBLE), 0) AS Best_Case,
                            forecast_type
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
@@ -1279,8 +1279,8 @@ async def get_weekly(
                     kpi_sql = f"""
                         SELECT ds, Actuals,
                                {_ml_expr} AS Most_Likely,
-                               COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                               COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                               COALESCE(CAST(p30 AS DOUBLE), 0) AS Worst_Case,
+                               COALESCE(CAST(p70 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
                         FROM {FC_TABLE}
                         WHERE {_latest_run()}
@@ -1293,8 +1293,8 @@ async def get_weekly(
                     kpi_sql = f"""
                         SELECT ds, Actuals,
                                {_ml_expr} AS Most_Likely,
-                               COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                               COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                               COALESCE(CAST(p30 AS DOUBLE), 0) AS Worst_Case,
+                               COALESCE(CAST(p70 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
                         FROM {FC_TABLE}
                         WHERE {_latest_run()}
@@ -1316,8 +1316,8 @@ async def get_weekly(
                 kpi_sql = f"""
                     SELECT ds, Actuals,
                            {_ml_expr} AS Most_Likely,
-                           COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                           COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                           COALESCE(CAST(p30 AS DOUBLE), 0) AS Worst_Case,
+                           COALESCE(CAST(p70 AS DOUBLE), 0) AS Best_Case,
                            forecast_type
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
@@ -1345,8 +1345,8 @@ async def get_weekly(
                     FROM (
                         SELECT ds, Actuals,
                                {_ml_expr} AS Most_Likely,
-                               COALESCE(CAST(Worst_Case AS DOUBLE), 0) AS Worst_Case,
-                               COALESCE(CAST(Best_Case  AS DOUBLE), 0) AS Best_Case,
+                               COALESCE(CAST(p30 AS DOUBLE), 0) AS Worst_Case,
+                               COALESCE(CAST(p70 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
                         FROM {FC_TABLE}
                         WHERE {_latest_run()}
@@ -1533,27 +1533,16 @@ async def get_monthly(
                     SUM(p50)
                         + SQRT(SUM(POWER(GREATEST(p_upper - p50, 0), 2))) AS arr_best
                 FROM (
-                    -- Forward weeks from v2compat.
-                    -- If powerbi_wide has a closed actual for this week, use
-                    -- the actual (actuals-win); otherwise use V5 forecast P50.
+                    -- Forward weeks from v2compat (V5 forecast is authoritative).
+                    -- Do NOT override with powerbi_wide actuals here: the Prophet
+                    -- proxy in powerbi_wide can have actuals ~1 week ahead of CBE,
+                    -- which would replace a real V5 forecast with a stale proxy.
                     SELECT year(fc.ds) AS yr, quarter(fc.ds) AS qtr, month(fc.ds) AS mth,
                         date_format(fc.ds, 'MMMM') AS month_name,
-                        CASE WHEN COALESCE(pw.actuals, 0) > 0
-                             THEN pw.actuals
-                             ELSE COALESCE(CAST(fc.Most_Likely AS DOUBLE), 0)
-                        END AS p50,
-                        CASE WHEN COALESCE(pw.actuals, 0) > 0
-                             THEN pw.actuals
-                             ELSE COALESCE(CAST(fc.Worst_Case AS DOUBLE), 0)
-                        END AS p_lower,
-                        CASE WHEN COALESCE(pw.actuals, 0) > 0
-                             THEN pw.actuals
-                             ELSE COALESCE(CAST(fc.Best_Case AS DOUBLE), 0)
-                        END AS p_upper
+                        COALESCE(CAST(fc.Most_Likely AS DOUBLE), 0) AS p50,
+                        COALESCE(CAST(fc.p30 AS DOUBLE), 0) AS p_lower,
+                        COALESCE(CAST(fc.p70 AS DOUBLE), 0) AS p_upper
                     FROM {FC_TABLE} fc
-                    LEFT JOIN {POWERBI_WIDE_TABLE} pw
-                      ON CAST(fc.ds AS DATE) = CAST(pw.ds AS DATE)
-                      AND pw.sales_market = 'Total' {_pw_pf.replace('AND product', 'AND pw.product')}
                     WHERE fc.forecast_type IN ('rolling', 'roy', 'forward_1yr')
                       AND {_latest_run().replace('run_date', 'fc.run_date')} {pf.replace('AND product', 'AND fc.product')} {gf.replace('AND sales_market', 'AND fc.sales_market')} {date_filter.replace('year(ds)', 'year(fc.ds)')}
                     UNION ALL
@@ -2353,8 +2342,8 @@ async def get_confidence_bands(
                 SUM(COALESCE(CAST({p10_col}    AS DOUBLE), 0)) AS p10,
                             SUM(COALESCE(CAST({p50_col}    AS DOUBLE), 0)) AS most_likely,
                 SUM(COALESCE(CAST({p90_col}    AS DOUBLE), 0)) AS p90,
-                SUM(COALESCE(CAST(Worst_Case   AS DOUBLE), 0)) AS worst_case,
-                SUM(COALESCE(CAST(Best_Case    AS DOUBLE), 0)) AS best_case
+                SUM(COALESCE(CAST(p30 AS DOUBLE), 0)) AS worst_case,
+                SUM(COALESCE(CAST(p70 AS DOUBLE), 0)) AS best_case
             FROM {FC_TABLE}
             WHERE {_latest_run()}
                         AND {cb_fc_pred}
@@ -2367,8 +2356,8 @@ async def get_confidence_bands(
                 SUM(COALESCE(CAST({p10_col} AS DOUBLE), 0)) AS p10,
                 SUM(COALESCE(CAST({p50_col} AS DOUBLE), 0)) AS most_likely,
                 SUM(COALESCE(CAST({p90_col} AS DOUBLE), 0)) AS p90,
-                SUM(COALESCE(CAST({p10_col} AS DOUBLE), 0)) AS worst_case,
-                SUM(COALESCE(CAST({p90_col} AS DOUBLE), 0)) AS best_case
+                SUM(COALESCE(CAST(forecast_p25 AS DOUBLE), 0)) AS worst_case,
+                SUM(COALESCE(CAST(forecast_p75 AS DOUBLE), 0)) AS best_case
                         FROM {table}
                         WHERE {_source_forecast_type_filter(source)}
                             AND {_source_base_filter(source).replace('AND ', '', 1)}

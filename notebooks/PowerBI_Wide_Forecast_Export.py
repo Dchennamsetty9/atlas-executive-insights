@@ -53,6 +53,34 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,arr_forecast_powerbi_wide — Monthly by Product (all models)
+# MAGIC %sql --name pbi_monthly
+# MAGIC SELECT
+# MAGIC   product,
+# MAGIC   DATE_FORMAT(ds, 'yyyy-MM') AS month,
+# MAGIC   CONCAT('Q', quarter) AS qtr,
+# MAGIC   ROUND(SUM(actuals) / 1e6, 2)                   AS `Actuals ($M)`,
+# MAGIC   ROUND(SUM(Adaptive_Ensemble_P50) / 1e6, 2)      AS `Ensemble ($M)`,
+# MAGIC   ROUND(SUM(Prophet_P50) / 1e6, 2)                AS `Prophet ($M)`,
+# MAGIC   ROUND(SUM(MSTL_v2_P50) / 1e6, 2)               AS `MSTL ($M)`,
+# MAGIC   ROUND(SUM(DHR_ARIMA_P50) / 1e6, 2)              AS `DHR ($M)`,
+# MAGIC   ROUND(SUM(Global_LGB_Q50_P50) / 1e6, 2) AS `LGB ($M)`,
+# MAGIC   ROUND(SUM(ETS_P50) / 1e6, 2)                    AS `ETS ($M)`,
+# MAGIC   ROUND(SUM(most_likely) / 1e6, 2)                AS `Most Likely ($M)`,
+# MAGIC   ROUND(SUM(worst_case) / 1e6, 2)                 AS `Worst ($M)`,
+# MAGIC   ROUND(SUM(best_case) / 1e6, 2)                  AS `Best ($M)`,
+# MAGIC   COUNT(DISTINCT CASE WHEN actuals IS NOT NULL THEN ds END) AS `Act Wks`,
+# MAGIC   COUNT(DISTINCT CASE WHEN forecast_type = 'forecast' THEN ds END) AS `Fwd Wks`,
+# MAGIC   FIRST(model_fill_source) AS fill_source
+# MAGIC FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_powerbi_wide
+# MAGIC WHERE UPPER(TRIM(sales_market)) = 'TOTAL'
+# MAGIC   AND grain_level = 'total'
+# MAGIC   AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC GROUP BY product, DATE_FORMAT(ds, 'yyyy-MM'), quarter
+# MAGIC ORDER BY product, month
+
+# COMMAND ----------
+
 # DBTITLE 1,Cell 2 - Config
 # ============================================================================
 # CONFIG

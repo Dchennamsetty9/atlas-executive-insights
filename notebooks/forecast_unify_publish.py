@@ -2981,6 +2981,14 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # Source: forecast_all_models (built in Cell 14)
 # Output: arr_forecast_wide — ds × product × sales_market with model columns
+#
+# KEY FIX (Sep 17 2026):
+#   Removed forecast_type from P50 pivot groupBy so each
+#   (ds, product, sales_market) gets ONE row with ALL models' P50 values
+#   alongside actuals. Previously forecast_type split caused:
+#     - Closed months: actuals row had NULL model columns
+#     - Double-count risk when Power BI SUM'd actuals across rows
+#   Now: forecast_type is DERIVED from actuals presence after pivoting.
 # ══════════════════════════════════════════════════════════════════════════════
 
 from pyspark.sql import functions as F
@@ -2997,36 +3005,42 @@ grained = all_models.withColumn(
      .otherwise(F.lit("market"))
 )
 
-# --- Pivot P50 (main forecast) ---
+# --- Pivot P50 (main forecast) — ONE row per (ds, product, market, grain) ---
+# ignorenulls=True ensures we pick the actual P50 over NULL when a model
+# appears in both an 'actuals' row (NULL P50) and a 'forecast' row (real P50).
 p50_wide = (
     grained
-    .groupBy("ds", "product", "sales_market", "grain_level", "forecast_type")
+    .groupBy("ds", "product", "sales_market", "grain_level")
     .pivot("model_name")
-    .agg(F.first("forecast_p50"))
+    .agg(F.first("forecast_p50", ignorenulls=True))
 )
 
-# --- Pivot P10 (lower bound) ---
-p10_wide = (
+# --- Pivot P05 (lower bound) ---
+p05_raw = (
     grained
     .groupBy("ds", "product", "sales_market")
     .pivot("model_name")
-    .agg(F.first(F.col("forecast_p50") - F.col("forecast_p50") + F.col("forecast_p05")))
+    .agg(F.first("forecast_p05", ignorenulls=True))
 )
-# Rename p10 columns
-for c in p10_wide.columns:
-    if c not in ("ds", "product", "sales_market"):
-        p10_wide = p10_wide.withColumnRenamed(c, f"{c}_p05")
+# Rename: append _p05 suffix to model columns
+p05_cols = p05_raw.columns
+p05_wide = p05_raw.select(
+    *[F.col(c).alias(f"{c}_p05") if c not in ("ds", "product", "sales_market") else F.col(c)
+      for c in p05_cols]
+)
 
-# --- Pivot P90 (upper bound) ---
-p90_wide = (
+# --- Pivot P95 (upper bound) ---
+p95_raw = (
     grained
     .groupBy("ds", "product", "sales_market")
     .pivot("model_name")
-    .agg(F.first("forecast_p95"))
+    .agg(F.first("forecast_p95", ignorenulls=True))
 )
-for c in p90_wide.columns:
-    if c not in ("ds", "product", "sales_market"):
-        p90_wide = p90_wide.withColumnRenamed(c, f"{c}_p95")
+p95_cols = p95_raw.columns
+p95_wide = p95_raw.select(
+    *[F.col(c).alias(f"{c}_p95") if c not in ("ds", "product", "sales_market") else F.col(c)
+      for c in p95_cols]
+)
 
 # --- Actuals (model-independent, take first non-null) ---
 actuals_df = (
@@ -3035,12 +3049,15 @@ actuals_df = (
     .agg(F.first("actuals", ignorenulls=True).alias("actuals"))
 )
 
-# --- Join all pivots ---
+# --- Join all pivots + derive forecast_type from actuals ---
 wide = (
     p50_wide
-    .join(p10_wide, on=["ds", "product", "sales_market"], how="left")
-    .join(p90_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(p05_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(p95_wide, on=["ds", "product", "sales_market"], how="left")
     .join(actuals_df, on=["ds", "product", "sales_market"], how="left")
+    .withColumn("forecast_type",
+        F.when(F.col("actuals").isNotNull(), F.lit("actuals"))
+         .otherwise(F.lit("forecast")))
     .withColumn("run_date", F.current_date())
     .withColumn("published_at_utc", F.current_timestamp())
 )
@@ -3138,3 +3155,518 @@ for vw in ['v_forecast_all_models_current', 'v_forecast_model_comparison', 'v_fo
     print(f"  ✓ Granted SELECT on {vw}")
 
 print(f"\n✓ All views created and grants applied.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Rebuild arr_forecast_wide — ALL models, ALL months (standalone)
+# ══════════════════════════════════════════════════════════════════════════════
+# REBUILD arr_forecast_wide — ALL models for ALL months (Jan–Dec 2026)
+# ══════════════════════════════════════════════════════════════════════════════
+# Standalone cell — does NOT depend on any prior cell variables.
+# Sources:
+#   1. forecast_results  → current model predictions (rolling+forward+roy)
+#   2. ucc/itsg_forecast_vintages → opening forecasts for closed months
+#   3. forecast_prophet → Prophet model + actuals
+# Result: One row per (ds, product, sales_market) with ALL models' P50.
+# ══════════════════════════════════════════════════════════════════════════════
+from pyspark.sql import functions as F, Window
+
+CATALOG = "datagroup_mdl"
+SCHEMA = "mdl_sales_analytics"
+WIDE_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_wide"
+
+# ─── 1. CURRENT MODEL PREDICTIONS from forecast_results ───────────────────
+fr = spark.table(f"{CATALOG}.{SCHEMA}.forecast_results")
+latest_run = fr.agg(F.max("run_date")).collect()[0][0]
+print(f"Latest run_date: {latest_run}")
+
+# Actuals from ACTUAL rows
+actuals_src = (fr
+    .filter(f"run_date = '{latest_run}' AND model = 'ACTUAL'")
+    .select("ds", "product", "sales_market", "grain_level",
+            F.col("actual").alias("actuals"))
+)
+
+# Our models' predictions (current run)
+current_preds = (fr
+    .filter(f"""
+        run_date = '{latest_run}'
+        AND model NOT IN ('ACTUAL')
+        AND (forecast_view = 'adaptive' OR forecast_view IS NULL)
+        AND forecast_type IN ('rolling', 'roy', 'forward_1yr')
+    """)
+    .select(
+        "ds", "product", "sales_market", "grain_level",
+        F.col("model").alias("model_name"),
+        F.col("p10").alias("forecast_p10"),
+        F.col("p50").alias("forecast_p50"),
+        F.col("p90").alias("forecast_p90"),
+    )
+)
+print(f"Current predictions: {current_preds.count()} rows")
+print(f"  Models: {sorted([r[0] for r in current_preds.select('model_name').distinct().collect()])}")
+
+# ─── 2. VINTAGE PREDICTIONS for weeks NOT covered by current run ───────
+# Earliest vintage per (ds, model) = the "opening forecast" for closed months
+w = Window.partitionBy("ds", "model", "product_group", "sales_market", "grain_level").orderBy("run_date_utc")
+
+def read_opening_vintage(table_name):
+    vin = spark.table(f"{CATALOG}.{SCHEMA}.{table_name}")
+    return (vin
+        .withColumn("_rn", F.row_number().over(w))
+        .filter("_rn = 1")
+        .select(
+            F.col("ds").cast("date").alias("ds"),
+            F.col("product_group").alias("product"),
+            F.when(F.upper(F.col("sales_market")).isin("ALL", "TOTAL"), F.lit("Total"))
+             .otherwise(F.col("sales_market")).alias("sales_market"),
+            F.col("grain_level"),
+            F.col("model").alias("model_name"),
+            F.col("p10").alias("forecast_p10"),
+            F.col("p50").alias("forecast_p50"),
+            F.col("p90").alias("forecast_p90"),
+        )
+    )
+
+ucc_vin = read_opening_vintage("ucc_forecast_vintages")
+itsg_vin = read_opening_vintage("itsg_forecast_vintages")
+all_vintage = ucc_vin.unionByName(itsg_vin)
+print(f"Vintage rows (all): {all_vintage.count()}")
+
+# Only keep vintage rows for keys NOT already in current predictions
+current_keys = current_preds.select("ds", "product", "sales_market", "grain_level", "model_name").distinct()
+backfill = all_vintage.join(current_keys, on=["ds", "product", "sales_market", "grain_level", "model_name"], how="left_anti")
+print(f"Backfill rows (opening forecasts for closed months): {backfill.count()}")
+
+# ─── 3. PROPHET from forecast_prophet ───────────────────────────────
+prophet_src = spark.table(f"{CATALOG}.{SCHEMA}.forecast_prophet")
+prophet_mkt = (prophet_src
+    .select(
+        F.col("ds").cast("date").alias("ds"),
+        F.col("product"),
+        F.when(F.upper(F.col("sales_market")) == "UNKNOWN", F.lit("Unknown"))
+         .otherwise(F.col("sales_market")).alias("sales_market"),
+        F.lit("Prophet").alias("model_name"),
+        F.col("Forecast_P05").alias("forecast_p10"),
+        F.col("Forecast_Median").alias("forecast_p50"),
+        F.col("Forecast_P95").alias("forecast_p90"),
+        F.when(F.col("Actuals") > 0, F.col("Actuals")).alias("prophet_actuals"),
+    )
+    .withColumn("grain_level", F.lit("market"))
+)
+# Prophet Total rollup
+prophet_total = (prophet_mkt
+    .groupBy("ds", "product", "model_name")
+    .agg(
+        F.sum("forecast_p10").alias("forecast_p10"),
+        F.sum("forecast_p50").alias("forecast_p50"),
+        F.sum("forecast_p90").alias("forecast_p90"),
+        F.sum("prophet_actuals").alias("prophet_actuals"),
+    )
+    .withColumn("sales_market", F.lit("Total"))
+    .withColumn("grain_level", F.lit("total"))
+)
+prophet_all = prophet_mkt.unionByName(prophet_total, allowMissingColumns=True)
+
+# Split prophet forecasts and actuals
+prophet_preds = prophet_all.select("ds", "product", "sales_market", "grain_level",
+                                    "model_name", "forecast_p10", "forecast_p50", "forecast_p90")
+prophet_acts = (prophet_all
+    .filter(F.col("prophet_actuals").isNotNull())
+    .select("ds", "product", "sales_market",
+            F.col("prophet_actuals").alias("actuals"),
+            F.col("grain_level"))
+)
+
+# ─── 4. COMBINE all model predictions ───────────────────────────────
+# Current (rolling+forward) → preferred; Vintage → backfill; Prophet separate
+all_preds = (current_preds
+    .unionByName(backfill)
+    .unionByName(prophet_preds)
+)
+print(f"\nTotal prediction rows: {all_preds.count()}")
+print(f"Models: {sorted([r[0] for r in all_preds.select('model_name').distinct().collect()])}")
+
+# ─── 5. MERGE actuals (CBE from forecast_results + Prophet fallback) ────
+actuals_merged = (actuals_src
+    .select("ds", "product", "sales_market", "grain_level", "actuals")
+    .unionByName(
+        prophet_acts.join(
+            actuals_src.select("ds", "product", "sales_market").distinct(),
+            on=["ds", "product", "sales_market"],
+            how="left_anti"  # only Prophet actuals for weeks CBE doesn't cover
+        )
+    )
+)
+
+# ─── 6. PIVOT to wide format ──────────────────────────────────────
+p50_wide = (all_preds
+    .groupBy("ds", "product", "sales_market", "grain_level")
+    .pivot("model_name")
+    .agg(F.first("forecast_p50", ignorenulls=True))
+)
+
+p10_raw = (all_preds
+    .groupBy("ds", "product", "sales_market")
+    .pivot("model_name")
+    .agg(F.first("forecast_p10", ignorenulls=True))
+)
+p10_cols = p10_raw.columns
+p10_wide = p10_raw.select(
+    *[F.col(c).alias(f"{c}_p05") if c not in ("ds", "product", "sales_market") else F.col(c)
+      for c in p10_cols]
+)
+
+p90_raw = (all_preds
+    .groupBy("ds", "product", "sales_market")
+    .pivot("model_name")
+    .agg(F.first("forecast_p90", ignorenulls=True))
+)
+p90_cols = p90_raw.columns
+p90_wide = p90_raw.select(
+    *[F.col(c).alias(f"{c}_p95") if c not in ("ds", "product", "sales_market") else F.col(c)
+      for c in p90_cols]
+)
+
+actuals_agg = (actuals_merged
+    .groupBy("ds", "product", "sales_market", "grain_level")
+    .agg(F.first("actuals", ignorenulls=True).alias("actuals"))
+)
+
+# ─── 7. JOIN and WRITE ───────────────────────────────────────────
+wide = (p50_wide
+    .join(p10_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(p90_wide, on=["ds", "product", "sales_market"], how="left")
+    .join(actuals_agg.select("ds", "product", "sales_market", "actuals"),
+          on=["ds", "product", "sales_market"], how="left")
+    .withColumn("forecast_type",
+        F.when(F.col("actuals").isNotNull(), F.lit("actuals"))
+         .otherwise(F.lit("forecast")))
+    .withColumn("run_date", F.current_date())
+    .withColumn("published_at_utc", F.current_timestamp())
+)
+
+cnt = wide.count()
+print(f"\nWide table rows: {cnt}")
+print(f"Columns: {sorted(wide.columns)}")
+
+# Quick check: model coverage for UCC Total Jan 2026
+check = wide.filter("product = 'UCC' AND sales_market = 'Total' AND grain_level = 'total' AND ds >= '2026-01-01' AND ds < '2026-02-01'")
+check.select("ds", "actuals", "Adaptive_Ensemble", "Prophet", "MSTL_v2", "DHR_ARIMA", "ETS").show(truncate=False)
+
+wide.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(WIDE_TABLE)
+print(f"\n\u2713 Wrote {cnt} rows to {WIDE_TABLE}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Monthly FY2026 Breakdown — Actuals + Forecast by Product
+# MAGIC %sql --name monthly_summary
+# MAGIC WITH latest AS (
+# MAGIC   SELECT *
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_results
+# MAGIC   WHERE run_date = (SELECT MAX(run_date) FROM datagroup_mdl.mdl_sales_analytics.forecast_results)
+# MAGIC     AND model IN ('Adaptive_Ensemble', 'ACTUAL')
+# MAGIC     AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND (forecast_view = 'adaptive' OR forecast_view IS NULL)
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC ),
+# MAGIC monthly AS (
+# MAGIC   SELECT
+# MAGIC     product,
+# MAGIC     DATE_FORMAT(ds, 'yyyy-MM') AS month,
+# MAGIC     MONTH(ds) AS m_num,
+# MAGIC     CONCAT('Q', QUARTER(ds)) AS quarter,
+# MAGIC     SUM(CASE WHEN model = 'ACTUAL' THEN actual ELSE 0 END) / 1e6 AS actuals_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p50 ELSE 0 END) / 1e6 AS fcst_p50_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p10 ELSE 0 END) / 1e6 AS fcst_p10_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p90 ELSE 0 END) / 1e6 AS fcst_p90_M,
+# MAGIC     COUNT(DISTINCT CASE WHEN model = 'ACTUAL' THEN ds END) AS actual_wks,
+# MAGIC     COUNT(DISTINCT CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr') THEN ds END) AS fcst_wks
+# MAGIC   FROM latest
+# MAGIC   GROUP BY product, DATE_FORMAT(ds, 'yyyy-MM'), MONTH(ds), QUARTER(ds)
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   product,
+# MAGIC   month,
+# MAGIC   quarter,
+# MAGIC   ROUND(actuals_M, 2)                  AS `Actuals ($M)`,
+# MAGIC   ROUND(fcst_p50_M, 2)                 AS `Forecast P50 ($M)`,
+# MAGIC   ROUND(actuals_M + fcst_p50_M, 2)     AS `Landing ($M)`,
+# MAGIC   ROUND(actuals_M + fcst_p10_M, 2)     AS `Low P10 ($M)`,
+# MAGIC   ROUND(actuals_M + fcst_p90_M, 2)     AS `High P90 ($M)`,
+# MAGIC   actual_wks  AS `Act Wks`,
+# MAGIC   fcst_wks    AS `Fwd Wks`,
+# MAGIC   CASE
+# MAGIC     WHEN fcst_wks = 0 THEN 'Closed'
+# MAGIC     WHEN actual_wks > 0 THEN 'Partial'
+# MAGIC     ELSE 'Forecast'
+# MAGIC   END AS status
+# MAGIC FROM monthly
+# MAGIC ORDER BY product, m_num
+
+# COMMAND ----------
+
+# DBTITLE 1,CORRECTED: forecast_results vs arr_forecast_wide (deduplicated)
+# MAGIC %sql --name comparison
+# MAGIC -- Side-by-side: forecast_results (source of truth) vs arr_forecast_wide (Power BI)
+# MAGIC WITH fr AS (
+# MAGIC   -- From forecast_results (what monthly summary showed)
+# MAGIC   SELECT
+# MAGIC     product,
+# MAGIC     DATE_FORMAT(ds, 'yyyy-MM') AS month,
+# MAGIC     MONTH(ds) AS m_num,
+# MAGIC     SUM(CASE WHEN model = 'ACTUAL' THEN actual ELSE 0 END) / 1e6 AS fr_actuals_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p50 ELSE 0 END) / 1e6 AS fr_p50_M
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_results
+# MAGIC   WHERE run_date = (SELECT MAX(run_date) FROM datagroup_mdl.mdl_sales_analytics.forecast_results)
+# MAGIC     AND model IN ('Adaptive_Ensemble', 'ACTUAL')
+# MAGIC     AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND (forecast_view = 'adaptive' OR forecast_view IS NULL)
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC   GROUP BY product, DATE_FORMAT(ds, 'yyyy-MM'), MONTH(ds)
+# MAGIC ),
+# MAGIC pbi_deduped AS (
+# MAGIC   -- Deduplicate: one row per (ds, product) — take actuals from 'actuals' rows,
+# MAGIC   -- ensemble forecast from 'forecast'/'rolling' rows to avoid double-counting
+# MAGIC   SELECT ds, product,
+# MAGIC     MAX(CASE WHEN forecast_type = 'actuals' THEN actuals END) AS actual_val,
+# MAGIC     MAX(CASE WHEN forecast_type != 'actuals' THEN Adaptive_Ensemble END) AS ensemble_val
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_wide
+# MAGIC   WHERE UPPER(TRIM(sales_market)) = 'TOTAL'
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC   GROUP BY ds, product
+# MAGIC ),
+# MAGIC pbi AS (
+# MAGIC   SELECT
+# MAGIC     product,
+# MAGIC     DATE_FORMAT(ds, 'yyyy-MM') AS month,
+# MAGIC     MONTH(ds) AS m_num,
+# MAGIC     SUM(actual_val) / 1e6 AS pbi_actuals_M,
+# MAGIC     SUM(ensemble_val) / 1e6 AS pbi_ensemble_M
+# MAGIC   FROM pbi_deduped
+# MAGIC   GROUP BY product, DATE_FORMAT(ds, 'yyyy-MM'), MONTH(ds)
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   COALESCE(fr.product, pbi.product) AS product,
+# MAGIC   COALESCE(fr.month, pbi.month) AS month,
+# MAGIC   ROUND(fr.fr_actuals_M, 2) AS `FR Actuals ($M)`,
+# MAGIC   ROUND(pbi.pbi_actuals_M, 2) AS `PBI Actuals ($M)`,
+# MAGIC   ROUND(COALESCE(pbi.pbi_actuals_M,0) - COALESCE(fr.fr_actuals_M,0), 3) AS `Actuals Δ ($M)`,
+# MAGIC   ROUND(fr.fr_p50_M, 2) AS `FR Fcst P50 ($M)`,
+# MAGIC   ROUND(pbi.pbi_ensemble_M, 2) AS `PBI Ensemble ($M)`,
+# MAGIC   ROUND(COALESCE(pbi.pbi_ensemble_M,0) - COALESCE(fr.fr_p50_M,0), 3) AS `Fcst Δ ($M)`,
+# MAGIC   ROUND(fr.fr_actuals_M + fr.fr_p50_M, 2) AS `FR Landing ($M)`,
+# MAGIC   ROUND(COALESCE(pbi.pbi_actuals_M,0) + COALESCE(pbi.pbi_ensemble_M,0), 2) AS `PBI Landing ($M)`,
+# MAGIC   ROUND((COALESCE(pbi.pbi_actuals_M,0) + COALESCE(pbi.pbi_ensemble_M,0))
+# MAGIC       - (COALESCE(fr.fr_actuals_M,0) + COALESCE(fr.fr_p50_M,0)), 3) AS `Landing Δ ($M)`
+# MAGIC FROM fr
+# MAGIC FULL OUTER JOIN pbi ON fr.product = pbi.product AND fr.month = pbi.month
+# MAGIC ORDER BY COALESCE(fr.product, pbi.product), COALESCE(fr.m_num, pbi.m_num)
+
+# COMMAND ----------
+
+# DBTITLE 1,arr_forecast_wide — Monthly view (all products)
+# MAGIC %sql --name wide_monthly
+# MAGIC -- arr_forecast_wide monthly summary — what Power BI actually sees
+# MAGIC -- After Sep 17 fix: one row per (ds, product, market) — no dedup needed
+# MAGIC SELECT
+# MAGIC   product,
+# MAGIC   DATE_FORMAT(ds, 'yyyy-MM') AS month,
+# MAGIC   CONCAT('Q', QUARTER(ds)) AS quarter,
+# MAGIC   ROUND(SUM(actuals) / 1e6, 2)              AS `Actuals ($M)`,
+# MAGIC   ROUND(SUM(Adaptive_Ensemble) / 1e6, 2)    AS `Ensemble ($M)`,
+# MAGIC   ROUND(SUM(Prophet) / 1e6, 2)              AS `Prophet ($M)`,
+# MAGIC   ROUND(SUM(MSTL_v2) / 1e6, 2)             AS `MSTL ($M)`,
+# MAGIC   ROUND(SUM(DHR_ARIMA) / 1e6, 2)           AS `DHR ($M)`,
+# MAGIC   ROUND(SUM(COALESCE(Global_LGB_Q50_UCC, Global_LGB_Q50_ITSG)) / 1e6, 2) AS `LGB ($M)`,
+# MAGIC   ROUND(SUM(ETS) / 1e6, 2)                 AS `ETS ($M)`,
+# MAGIC   ROUND(COALESCE(SUM(actuals), 0) / 1e6 + COALESCE(SUM(Adaptive_Ensemble), 0) / 1e6, 2) AS `Landing ($M)`,
+# MAGIC   COUNT(DISTINCT CASE WHEN actuals IS NOT NULL THEN ds END) AS `Act Wks`,
+# MAGIC   COUNT(DISTINCT CASE WHEN Adaptive_Ensemble IS NOT NULL THEN ds END) AS `Fwd Wks`
+# MAGIC FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_wide
+# MAGIC WHERE grain_level = 'total'
+# MAGIC   AND UPPER(TRIM(sales_market)) = 'TOTAL'
+# MAGIC   AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC GROUP BY product, DATE_FORMAT(ds, 'yyyy-MM'), QUARTER(ds)
+# MAGIC ORDER BY product, month
+
+# COMMAND ----------
+
+# DBTITLE 1,Diagnose actuals source mismatch — forecast_prophet vs CBE
+# MAGIC %sql --name actuals_source_compare
+# MAGIC -- Compare ITSG actuals: forecast_prophet (feeds arr_forecast_wide) vs CBE (feeds forecast_results)
+# MAGIC -- Both should be identical for closed weeks — any delta = source mismatch
+# MAGIC WITH prophet_actuals AS (
+# MAGIC   -- What arr_forecast_wide uses (via forecast_all_models → forecast_prophet)
+# MAGIC   SELECT
+# MAGIC     CAST(ds AS DATE) AS ds,
+# MAGIC     product,
+# MAGIC     sales_market,
+# MAGIC     Actuals AS prophet_actual
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_prophet
+# MAGIC   WHERE product = 'ITSG'
+# MAGIC     AND UPPER(TRIM(sales_market)) = 'TOTAL'
+# MAGIC     AND Actuals IS NOT NULL AND Actuals > 0
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-09-30'
+# MAGIC ),
+# MAGIC cbe_actuals AS (
+# MAGIC   -- What forecast_results uses (CBE source in unify pipeline)
+# MAGIC   SELECT
+# MAGIC     ds,
+# MAGIC     product,
+# MAGIC     sales_market,
+# MAGIC     actual AS cbe_actual
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_results
+# MAGIC   WHERE run_date = (SELECT MAX(run_date) FROM datagroup_mdl.mdl_sales_analytics.forecast_results)
+# MAGIC     AND model = 'ACTUAL'
+# MAGIC     AND product = 'ITSG'
+# MAGIC     AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-09-30'
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   COALESCE(p.ds, c.ds) AS ds,
+# MAGIC   DATE_FORMAT(COALESCE(p.ds, c.ds), 'yyyy-MM') AS month,
+# MAGIC   ROUND(p.prophet_actual / 1e6, 4) AS `Prophet Actual ($M)`,
+# MAGIC   ROUND(c.cbe_actual / 1e6, 4) AS `CBE Actual ($M)`,
+# MAGIC   ROUND((COALESCE(p.prophet_actual, 0) - COALESCE(c.cbe_actual, 0)) / 1e6, 4) AS `Delta ($M)`,
+# MAGIC   CASE
+# MAGIC     WHEN p.ds IS NULL THEN 'CBE only'
+# MAGIC     WHEN c.ds IS NULL THEN 'Prophet only'
+# MAGIC     WHEN ABS(p.prophet_actual - c.cbe_actual) < 1 THEN 'Match'
+# MAGIC     ELSE 'MISMATCH'
+# MAGIC   END AS status
+# MAGIC FROM prophet_actuals p
+# MAGIC FULL OUTER JOIN cbe_actuals c ON p.ds = c.ds
+# MAGIC ORDER BY COALESCE(p.ds, c.ds)
+
+# COMMAND ----------
+
+# DBTITLE 1,ITSG actuals: Prophet market rollup vs CBE total
+# MAGIC %sql --name itsg_market_rollup
+# MAGIC -- ITSG: forecast_prophet has no 'Total' row — Cell 14 builds Total by summing markets.
+# MAGIC -- Compare that sum-of-markets vs CBE total actuals
+# MAGIC WITH prophet_by_mkt AS (
+# MAGIC   SELECT
+# MAGIC     CAST(ds AS DATE) AS ds,
+# MAGIC     sales_market,
+# MAGIC     Actuals AS actual_val
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_prophet
+# MAGIC   WHERE product = 'ITSG'
+# MAGIC     AND Actuals IS NOT NULL AND Actuals > 0
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-09-30'
+# MAGIC ),
+# MAGIC prophet_total AS (
+# MAGIC   SELECT ds,
+# MAGIC     SUM(actual_val) AS prophet_sum_markets,
+# MAGIC     COUNT(DISTINCT sales_market) AS n_markets,
+# MAGIC     CONCAT_WS(', ', COLLECT_SET(sales_market)) AS markets
+# MAGIC   FROM prophet_by_mkt
+# MAGIC   GROUP BY ds
+# MAGIC ),
+# MAGIC cbe AS (
+# MAGIC   SELECT ds, actual AS cbe_actual
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_results
+# MAGIC   WHERE run_date = (SELECT MAX(run_date) FROM datagroup_mdl.mdl_sales_analytics.forecast_results)
+# MAGIC     AND model = 'ACTUAL' AND product = 'ITSG'
+# MAGIC     AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-09-30'
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   COALESCE(p.ds, c.ds) AS ds,
+# MAGIC   DATE_FORMAT(COALESCE(p.ds, c.ds), 'yyyy-MM') AS month,
+# MAGIC   p.n_markets,
+# MAGIC   ROUND(p.prophet_sum_markets / 1e6, 4) AS `Prophet Sum-of-Markets ($M)`,
+# MAGIC   ROUND(c.cbe_actual / 1e6, 4) AS `CBE Total ($M)`,
+# MAGIC   ROUND((COALESCE(p.prophet_sum_markets,0) - COALESCE(c.cbe_actual,0)) / 1e6, 4) AS `Delta ($M)`,
+# MAGIC   CASE
+# MAGIC     WHEN p.ds IS NULL THEN 'CBE only'
+# MAGIC     WHEN c.ds IS NULL THEN 'Prophet only'
+# MAGIC     WHEN ABS(p.prophet_sum_markets - c.cbe_actual) < 100 THEN 'Match'
+# MAGIC     ELSE 'MISMATCH'
+# MAGIC   END AS status,
+# MAGIC   p.markets
+# MAGIC FROM prophet_total p
+# MAGIC FULL OUTER JOIN cbe c ON p.ds = c.ds
+# MAGIC ORDER BY COALESCE(p.ds, c.ds)
+
+# COMMAND ----------
+
+# DBTITLE 1,Inspect arr_forecast_wide ITSG Total rows for Feb 2026
+# MAGIC %sql --name wide_itsg_detail
+# MAGIC -- Check raw arr_forecast_wide rows for ITSG Total in Feb 2026
+# MAGIC -- Are there duplicate rows per ds causing actuals double-count?
+# MAGIC SELECT
+# MAGIC   ds,
+# MAGIC   sales_market,
+# MAGIC   grain_level,
+# MAGIC   forecast_type,
+# MAGIC   ROUND(actuals / 1e6, 4) AS actuals_M,
+# MAGIC   ROUND(Adaptive_Ensemble / 1e6, 4) AS ensemble_M,
+# MAGIC   ROUND(Prophet / 1e6, 4) AS prophet_M
+# MAGIC FROM datagroup_mdl.mdl_sales_analytics.arr_forecast_wide
+# MAGIC WHERE product = 'ITSG'
+# MAGIC   AND UPPER(TRIM(sales_market)) = 'TOTAL'
+# MAGIC   AND grain_level = 'total'
+# MAGIC   AND ds >= '2026-02-01' AND ds < '2026-03-01'
+# MAGIC ORDER BY ds, forecast_type
+
+# COMMAND ----------
+
+# DBTITLE 1,Q1–Q4 FY2026 Quarterly Summary
+# MAGIC %sql --name quarterly_summary
+# MAGIC -- Q1–Q4 FY2026: Actuals (closed) + Forecast (open/future) by product
+# MAGIC WITH latest AS (
+# MAGIC   SELECT *
+# MAGIC   FROM datagroup_mdl.mdl_sales_analytics.forecast_results
+# MAGIC   WHERE run_date = (SELECT MAX(run_date) FROM datagroup_mdl.mdl_sales_analytics.forecast_results)
+# MAGIC     AND model IN ('Adaptive_Ensemble', 'ACTUAL')
+# MAGIC     AND UPPER(TRIM(sales_market)) IN ('TOTAL', 'ALL')
+# MAGIC     AND grain_level = 'total'
+# MAGIC     AND (forecast_view = 'adaptive' OR forecast_view IS NULL)
+# MAGIC     AND ds >= '2026-01-01' AND ds <= '2026-12-28'
+# MAGIC ),
+# MAGIC qtr AS (
+# MAGIC   SELECT
+# MAGIC     product,
+# MAGIC     CONCAT('Q', QUARTER(ds)) AS quarter,
+# MAGIC     QUARTER(ds) AS q_num,
+# MAGIC     -- Actuals from ACTUAL rows
+# MAGIC     SUM(CASE WHEN model = 'ACTUAL' THEN actual ELSE 0 END) / 1e6 AS actuals_M,
+# MAGIC     -- Forecast from Ensemble (rolling + roy + forward_1yr)
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p50 ELSE 0 END) / 1e6 AS forecast_p50_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p10 ELSE 0 END) / 1e6 AS forecast_p10_M,
+# MAGIC     SUM(CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr')
+# MAGIC              THEN p90 ELSE 0 END) / 1e6 AS forecast_p90_M,
+# MAGIC     COUNT(DISTINCT CASE WHEN model = 'ACTUAL' THEN ds END) AS actual_weeks,
+# MAGIC     COUNT(DISTINCT CASE WHEN model = 'Adaptive_Ensemble' AND forecast_type IN ('rolling','roy','forward_1yr') THEN ds END) AS forecast_weeks
+# MAGIC   FROM latest
+# MAGIC   GROUP BY product, QUARTER(ds)
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   product,
+# MAGIC   quarter,
+# MAGIC   ROUND(actuals_M, 2) AS `Actuals ($M)`,
+# MAGIC   ROUND(forecast_p50_M, 2) AS `Forecast P50 ($M)`,
+# MAGIC   ROUND(actuals_M + forecast_p50_M, 2) AS `Landing P50 ($M)`,
+# MAGIC   ROUND(actuals_M + forecast_p10_M, 2) AS `Landing P10 ($M)`,
+# MAGIC   ROUND(actuals_M + forecast_p90_M, 2) AS `Landing P90 ($M)`,
+# MAGIC   actual_weeks AS `Closed Wks`,
+# MAGIC   forecast_weeks AS `Open Wks`,
+# MAGIC   CASE
+# MAGIC     WHEN forecast_weeks = 0 THEN 'Closed'
+# MAGIC     WHEN actual_weeks > 0 THEN 'In Progress'
+# MAGIC     ELSE 'Forecast'
+# MAGIC   END AS status
+# MAGIC FROM qtr
+# MAGIC ORDER BY product, q_num
