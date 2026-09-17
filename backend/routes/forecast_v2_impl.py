@@ -1524,64 +1524,43 @@ async def get_monthly(
     fc_sql = None
     if include_forecasts:
         if not source.get("no_run_date"):
-            # Read from arr_forecast_powerbi_wide which has Ensemble P25/P50/P75
-            # for ALL periods — hindcast (Q1/Q2), native V5 (Q3+), and forward.
-            # Uses P25/P75 (interquartile range) for tighter, exec-friendly bands.
-            # product='Total' only exists from Sep onward in powerbi_wide, so
-            # HYBRID: forward months from v2compat (exact V5 P50, ~P30/P70 bands),
-            # historical hindcast from powerbi_wide (P25/P75 bands for Q1/Q2).
-            # powerbi_wide applies reconciliation that shrinks P50 for forward
-            # periods — v2compat passes through the V5 values exactly.
-            _eff_product = _selected_product(product, product_line)
-            _pw_pf = ("AND product IN ('UCC', 'ITSG')"
-                      if _eff_product == 'Total'
-                      else f"AND product = '{_eff_product}'")
+            # Snapshot has BOTH actuals rows (closed weeks with Actuals +
+            # Most_Likely + p30/p70) and forward forecast rows — everything
+            # needed in a single table.  No PBI wide join required.
+            # For closed weeks: use Actuals as p50 (real); for open weeks:
+            # use Most_Likely (ensemble forecast).  Bands: p30/p70.
             fc_sql = f"""
-                SELECT yr, qtr, mth, month_name,
-                    GREATEST(SUM(p50)
-                        - SQRT(SUM(POWER(GREATEST(p50 - p_lower, 0), 2))), 0) AS arr_worst,
+                SELECT
+                    year(ds)                AS yr,
+                    quarter(ds)             AS qtr,
+                    month(ds)               AS mth,
+                    date_format(ds, 'MMMM') AS month_name,
+                    GREATEST(
+                        SUM(p50) - SQRT(SUM(POWER(GREATEST(p50 - p_lower, 0), 2))),
+                        0
+                    ) AS arr_worst,
                     SUM(p50) AS arr_likely,
-                    SUM(p50)
-                        + SQRT(SUM(POWER(GREATEST(p_upper - p50, 0), 2))) AS arr_best
+                    SUM(p50) + SQRT(SUM(POWER(GREATEST(p_upper - p50, 0), 2))) AS arr_best
                 FROM (
-                    -- Forward weeks from v2compat (V5 forecast is authoritative).
-                    -- Do NOT override with powerbi_wide actuals here: the Prophet
-                    -- proxy in powerbi_wide can have actuals ~1 week ahead of CBE,
-                    -- which would replace a real V5 forecast with a stale proxy.
-                    SELECT year(fc.ds) AS yr, quarter(fc.ds) AS qtr, month(fc.ds) AS mth,
-                        date_format(fc.ds, 'MMMM') AS month_name,
-                        COALESCE(CAST(fc.Most_Likely AS DOUBLE), 0) AS p50,
-                        COALESCE(CAST(fc.p30 AS DOUBLE), 0) AS p_lower,
-                        COALESCE(CAST(fc.p70 AS DOUBLE), 0) AS p_upper
-                    FROM {FC_TABLE} fc
-                    WHERE fc.forecast_type IN ('rolling', 'roy', 'forward_1yr')
-                      AND {_latest_run().replace('run_date', 'fc.run_date')} {pf.replace('AND product', 'AND fc.product')} {gf.replace('AND sales_market', 'AND fc.sales_market')} {date_filter.replace('year(ds)', 'year(fc.ds)')}
-                    UNION ALL
-                    -- Historical/gap weeks from powerbi_wide.
-                    -- Week-level NOT IN so transition-month weeks (e.g. Sep 7)
-                    -- are not lost. Uses actuals when available, else Ensemble P50.
-                    SELECT year(ds) AS yr, quarter(ds) AS qtr, month(ds) AS mth,
-                        date_format(ds, 'MMMM') AS month_name,
-                        CASE WHEN COALESCE(actuals, 0) > 0
-                             THEN actuals
-                             ELSE COALESCE(CAST(Adaptive_Ensemble_P50 AS DOUBLE), 0)
+                    SELECT ds,
+                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
+                             THEN CAST(Actuals AS DOUBLE)
+                             ELSE COALESCE(CAST({value_col} AS DOUBLE), 0)
                         END AS p50,
-                        CASE WHEN COALESCE(actuals, 0) > 0
-                             THEN actuals
-                             ELSE COALESCE(CAST(Adaptive_Ensemble_P25 AS DOUBLE), 0)
+                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
+                             THEN CAST(Actuals AS DOUBLE)
+                             ELSE COALESCE(CAST({lower_col} AS DOUBLE), 0)
                         END AS p_lower,
-                        CASE WHEN COALESCE(actuals, 0) > 0
-                             THEN actuals
-                             ELSE COALESCE(CAST(Adaptive_Ensemble_P75 AS DOUBLE), 0)
+                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
+                             THEN CAST(Actuals AS DOUBLE)
+                             ELSE COALESCE(CAST({upper_col} AS DOUBLE), 0)
                         END AS p_upper
-                    FROM {POWERBI_WIDE_TABLE}
-                    WHERE 1=1 {_pw_pf} {gf} {date_filter}
-                      AND CAST(ds AS DATE) NOT IN (
-                        SELECT CAST(ds AS DATE) FROM {FC_TABLE}
-                        WHERE forecast_type IN ('rolling', 'roy', 'forward_1yr')
-                          AND {_latest_run()} {pf} {gf} {date_filter}
-                      )
-                ) combined
+                    FROM {FC_TABLE}
+                    WHERE {_latest_run()}
+                      AND (forecast_type = 'actuals' OR {fc_type_clause})
+                      {pf} {gf}
+                      {date_filter}
+                ) weekly
                 GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth
             """
