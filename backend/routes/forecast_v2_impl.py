@@ -1536,28 +1536,22 @@ async def get_monthly(
                     month(ds)               AS mth,
                     date_format(ds, 'MMMM') AS month_name,
                     GREATEST(
-                        SUM(p50) - SQRT(SUM(POWER(GREATEST(p50 - p_lower, 0), 2))),
+                        SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
+                        - SQRT(SUM(POWER(GREATEST(
+                            COALESCE(CAST({value_col} AS DOUBLE), 0)
+                            - COALESCE(CAST({lower_col} AS DOUBLE), 0), 0), 2))),
                         0
                     ) AS arr_worst,
-                    SUM(p50) AS arr_likely,
-                    SUM(p50) + SQRT(SUM(POWER(GREATEST(p_upper - p50, 0), 2))) AS arr_best
+                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
+                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
+                        + SQRT(SUM(POWER(GREATEST(
+                            COALESCE(CAST({upper_col} AS DOUBLE), 0)
+                            - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
                 FROM (
-                    SELECT ds,
-                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
-                             THEN CAST(Actuals AS DOUBLE)
-                             ELSE COALESCE(CAST({value_col} AS DOUBLE), 0)
-                        END AS p50,
-                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
-                             THEN CAST(Actuals AS DOUBLE)
-                             ELSE COALESCE(CAST({lower_col} AS DOUBLE), 0)
-                        END AS p_lower,
-                        CASE WHEN forecast_type = 'actuals' AND COALESCE(Actuals, 0) > 0
-                             THEN CAST(Actuals AS DOUBLE)
-                             ELSE COALESCE(CAST({upper_col} AS DOUBLE), 0)
-                        END AS p_upper
+                    SELECT ds, {value_col}, {lower_col}, {upper_col}
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
-                      AND (forecast_type = 'actuals' OR {fc_type_clause})
+                      AND {fc_type_clause}
                       {pf} {gf}
                       {date_filter}
                 ) weekly
