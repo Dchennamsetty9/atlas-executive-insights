@@ -2457,7 +2457,18 @@ const ForecastingPanel = () => {
                   truncated by the 13-week window; current quarter stacks
                   realized (orange) + remaining forecast (blue) */}
               {isFieldLoading('yearRows') && <Skeleton height={260} />}
-              {!isFieldLoading('yearRows') && (yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
+              {!isFieldLoading('yearRows') && isDemo && (
+                <CardWrap downloadName="quarterly_summary"
+                          explainKey="quarterly_outlook" explainProductLine={prodLine}
+                          explainRegion={salesMarket} explainYear={selectedYear}>
+                  <SectionTitle>
+                    Quarterly Summary — {selectedYear}
+                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
+                  </SectionTitle>
+                  <EmptyState message="Live forecast data is unavailable; demo values are hidden" />
+                </CardWrap>
+              )}
+              {!isFieldLoading('yearRows') && !isDemo && (yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
                 <CardWrap downloadName="quarterly_summary"
                           explainKey="quarterly_outlook" explainProductLine={prodLine}
                           explainRegion={salesMarket} explainYear={selectedYear}>
