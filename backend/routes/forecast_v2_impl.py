@@ -2738,6 +2738,91 @@ async def get_run_delta(
     }
 
 
+@router.get("/run-history")
+async def get_run_history(
+    product_line: Optional[str] = None,
+    sales_market: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """Return one adjacent-vintage comparison row for every retained run."""
+    if not live_mode:
+        return {"source": "demo", "available": False, "runs": []}
+
+    product_filter = (
+        "AND product IN ('UCC', 'ITSG')"
+        if not product_line or product_line in ("All", "all")
+        else _product_filter(product_line, col="product")
+    )
+    market_filter = _source_geo_filter({}, sales_market) if sales_market else ""
+    norm = _normalized_market_expr("sales_market")
+    sql = f"""
+        WITH ranked_runs AS (
+            SELECT rd, ROW_NUMBER() OVER (ORDER BY rd DESC) AS rn
+            FROM (
+                SELECT DISTINCT CAST(run_date AS DATE) AS rd
+                FROM {FC_TABLE}
+            )
+        ), pairs AS (
+            SELECT current.rd AS current_rd, previous.rd AS previous_rd
+            FROM ranked_runs current
+            JOIN ranked_runs previous ON previous.rn = current.rn + 1
+        ), fc AS (
+            SELECT CAST(run_date AS DATE) AS rd,
+                   product, {norm} AS sales_market,
+                   CAST(ds AS DATE) AS ds,
+                   CAST(Most_Likely AS DOUBLE) AS ml
+            FROM {FC_TABLE}
+            WHERE forecast_type IN ('rolling', 'roy')
+              {product_filter} {market_filter}
+        )
+        SELECT p.current_rd, p.previous_rd,
+               a.product, a.sales_market,
+               SUM(a.ml) AS current_ml,
+               SUM(b.ml) AS previous_ml,
+               COUNT(*) AS overlap_weeks
+        FROM pairs p
+        JOIN fc a ON a.rd = p.current_rd
+        JOIN fc b ON b.rd = p.previous_rd
+          AND a.ds = b.ds
+          AND a.product = b.product
+          AND a.sales_market = b.sales_market
+        GROUP BY p.current_rd, p.previous_rd, a.product, a.sales_market
+        ORDER BY p.current_rd DESC, ABS(SUM(a.ml) - SUM(b.ml)) DESC
+    """
+    try:
+        rows = await _cached_query(sql, endpoint="/run-history", model="ensemble",
+                                   forecast_type="rolling", product=product_line,
+                                   geo=sales_market, year=None, quarter=None)
+    except Exception as exc:
+        logger.warning("[forecast/run-history] query failed: %s", exc)
+        return {"source": "live", "available": False, "runs": [], "error": str(exc)}
+
+    history = {}
+    for row in rows:
+        key = (str(row.get("current_rd")), str(row.get("previous_rd")))
+        current = _f(row.get("current_ml"))
+        previous = _f(row.get("previous_ml"))
+        item = history.setdefault(key, {
+            "run_date": key[0], "previous_run": key[1], "overlap_weeks": 0,
+            "current": 0, "previous": 0, "delta": 0, "delta_pct": None, "drivers": [],
+        })
+        item["current"] += current
+        item["previous"] += previous
+        item["overlap_weeks"] += int(_f(row.get("overlap_weeks")))
+        item["drivers"].append({
+            "product": row.get("product"), "sales_market": row.get("sales_market"),
+            "delta": current - previous,
+        })
+
+    result = []
+    for item in history.values():
+        item["delta"] = item["current"] - item["previous"]
+        item["delta_pct"] = (item["delta"] / item["previous"] * 100) if item["previous"] else None
+        item["drivers"] = sorted(item["drivers"], key=lambda d: abs(d["delta"]), reverse=True)[:3]
+        result.append(item)
+    return {"source": "live", "available": bool(result), "runs": result}
+
+
 # ── GET /model-lab ──────────────────────────────────────────────────────────────
 _MODEL_LAB_MARKETS = {"NA", "EMEA", "APAC", "LATAM", "UNKNOWN"}
 

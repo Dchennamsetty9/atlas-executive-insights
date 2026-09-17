@@ -252,6 +252,13 @@ export const createApiService = (api) => ({
     return api.get('/api/forecast/v2/run-delta', { params });
   },
 
+  getForecastV2RunHistory: (productLine = null, salesMarket = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/run-history', { params });
+  },
+
   // Per-graph "explain this chart" detail (precomputed by forecast_unify_publish),
   // matched to the user's product/region/period selection
   getForecastV2GraphExplanation: (graph, product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {

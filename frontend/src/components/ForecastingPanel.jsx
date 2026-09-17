@@ -855,6 +855,44 @@ const MonthlyTable = ({ months }) => {
   );
 };
 
+const WeeklyChangesTable = ({ data }) => {
+  const runs = data?.runs || [];
+  if (!data?.available || runs.length === 0) {
+    return <EmptyState message="Weekly run history is unavailable until two forecast runs are retained" />;
+  }
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            {['Forecast Run','Compared With','Weeks','Current P50','Previous P50','Change','Change %','Largest Moves'].map(h => (
+              <th key={h} style={{ padding: '6px 12px', textAlign: h === 'Largest Moves' ? 'left' : 'right', fontSize: 10, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map(run => {
+            const delta = run.delta ?? 0;
+            const positive = delta >= 0;
+            return (
+              <tr key={`${run.run_date}-${run.previous_run}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#f1f5f9', fontSize: 12 }}>{fmtDate(run.run_date)}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b', fontSize: 12 }}>{fmtDate(run.previous_run)}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#94a3b8', fontSize: 12 }}>{run.overlap_weeks}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#93c5fd', fontSize: 12 }}>{fmtM(run.current)}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#64748b', fontSize: 12 }}>{fmtM(run.previous)}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: positive ? '#10b981' : '#ef4444', fontWeight: 700, fontSize: 12 }}>{positive ? '+' : ''}{fmtM(delta)}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'right', color: positive ? '#10b981' : '#ef4444', fontSize: 12 }}>{run.delta_pct == null ? '—' : `${positive ? '+' : ''}${run.delta_pct.toFixed(1)}%`}</td>
+                <td style={{ padding: '8px 12px', textAlign: 'left', color: '#64748b', fontSize: 11 }}>{(run.drivers || []).map(driver => `${driver.product}/${driver.sales_market} ${driver.delta >= 0 ? '+' : ''}${fmtM(driver.delta)}`).join(' · ') || '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 const GeoBarChart = ({ rows }) => {
   if (!rows || rows.length === 0) return <EmptyState message="No geo breakdown available" />;
   const data = rows.map(r => ({
@@ -1624,7 +1662,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
 };
 
 // ── Main panel ────────────────────────────────────────────────────────────────
-const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Plan Tracking', 'Exec Mode'];
+const TABS       = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Weekly Changes', 'Accuracy', 'Model Lab', 'AI Insights', 'Plan Tracking', 'Exec Mode'];
 // 6 notebook models: Adaptive_Ensemble, Prophet_trend, ETS, LightGBM (Global_LGB_Q50), MSTL_v2, DHR_ARIMA
 // Chronos removed — not in model suite (arr_chronos / mape_chronos are NULL in live data)
 const MODELS     = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
@@ -1866,6 +1904,7 @@ const ForecastingPanel = () => {
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
   const [runDelta,    setRunDelta]    = useState(null);   // what changed since last run
+  const [runHistory,  setRunHistory]  = useState(null);   // adjacent weekly forecast vintages
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
   const [actionDraft, setActionDraft] = useState({ text: '', owner: '', due_date: '', playbook_action: '', priority: 'medium' });
@@ -1926,6 +1965,7 @@ const ForecastingPanel = () => {
       setMeetingMode(null);
       setConfidenceBands(null);
       setRunDelta(null);
+      setRunHistory(null);
       setActions([]);
       setGovernanceLog([]);
       setScenarioGrid([]);
@@ -1963,6 +2003,7 @@ const ForecastingPanel = () => {
         case 'freshness': setFreshness(value ?? null); break;
         case 'confidenceBands': setConfidenceBands(value ?? null); break;
         case 'runDelta': setRunDelta(value ?? null); break;
+        case 'runHistory': setRunHistory(value ?? null); break;
         case 'yearRows': {
           const base = value.rolling?.rows ?? [];
           const roy = (value.roy?.rows ?? []).filter(row => row.type === 'forecast');
@@ -2636,6 +2677,16 @@ const ForecastingPanel = () => {
                   : 'Monthly Actuals vs Forecast Scenarios'}
               </SectionTitle>
               {loading ? <Skeleton height={300} /> : monthlyView && monthlyView.length > 0 ? <MonthlyTable months={monthlyView} /> : <EmptyState />}
+            </CardWrap>
+          )}
+
+          {tab === 'Weekly Changes' && (
+            <CardWrap explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
+              <SectionTitle>Weekly Forecast Changes</SectionTitle>
+              <p style={{ color: '#64748b', fontSize: 11, margin: '0 0 12px' }}>
+                One row per Tuesday forecast run, compared with the previous retained run. Values use overlapping future weeks only.
+              </p>
+              {loading && isFieldLoading('runHistory') ? <Skeleton height={220} /> : <WeeklyChangesTable data={runHistory} />}
             </CardWrap>
           )}
 
