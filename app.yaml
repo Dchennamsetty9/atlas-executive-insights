@@ -40,15 +40,14 @@ env:
   # forecast_results_v2compat is created daily by forecast_unify_publish and has
   # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
   - name: FORECAST_V2_RESULTS_TABLE
-    value: "forecast_results_v2compat"
+    value: "forecast_app_snapshot"
   - name: FORECAST_V2_LEADERBOARD_TABLE
     value: "forecast_leaderboard_v2compat"
 
-  # The forecast_app_snapshot is refreshed by the Tuesday weekly pipeline.
-  # Cache identical forecast API reads for one publication cycle so tab/filter
-  # refreshes do not repeatedly hit Databricks SQL.
+  # Forecast tables publish daily; cache identical forecast API reads for a day
+  # so tab/filter refreshes do not repeatedly hit Databricks SQL.
   - name: FORECAST_V2_CACHE_TTL_SECONDS
-    value: "604800"
+    value: "300"
   
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.
