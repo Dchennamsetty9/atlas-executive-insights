@@ -1595,6 +1595,11 @@ async def get_monthly(
                 "dhr_arima": "DHR_ARIMA",
                 "lightgbm": "Global_LGB_Q50",
             }[model]
+            wide_product_filter = (
+                "AND product IN ('UCC', 'ITSG')"
+                if _selected_product(product, product_line) == "Total"
+                else pf
+            )
             pred_sql = f"""
                 SELECT
                     year(ds)                     AS yr,
@@ -1606,7 +1611,7 @@ async def get_monthly(
                     SUM(COALESCE(CAST({wide_model}_P95 AS DOUBLE), 0)) AS arr_pred_best
                 FROM {POWERBI_WIDE_TABLE}
                 WHERE 1 = 1
-                  {pf} {gf}
+                                    {wide_product_filter} {gf}
                   {date_filter}
                 GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth

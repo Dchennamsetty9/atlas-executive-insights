@@ -364,7 +364,7 @@ def test_monthly_uses_wide_hindcast_for_primary_scenarios(monkeypatch):
 
     monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
     result = asyncio.run(impl.get_monthly(
-        product=None, product_line="UCC", sales_market=None,
+        product=None, product_line=None, sales_market=None,
         forecast_type="rolling", model="ensemble", year=2026,
         quarter=None, live_mode=True,
     ))
@@ -375,6 +375,7 @@ def test_monthly_uses_wide_hindcast_for_primary_scenarios(monkeypatch):
     assert "Adaptive_Ensemble_P05" in prediction_sql
     assert "Adaptive_Ensemble_P50" in prediction_sql
     assert "Adaptive_Ensemble_P95" in prediction_sql
+    assert "product IN ('UCC', 'ITSG')" in prediction_sql
 
 
 def test_monthly_prophet_uses_native_source_without_run_date(monkeypatch):
