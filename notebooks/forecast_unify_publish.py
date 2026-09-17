@@ -3158,6 +3158,48 @@ print(f"\n✓ All views created and grants applied.")
 
 # COMMAND ----------
 
+# DBTITLE 1,Materialize app snapshot — latest run only (eliminates MAX subquery)
+# ══════════════════════════════════════════════════════════════════════════════
+# APP SNAPSHOT — Materialize latest-run-only copy of v2compat
+# ══════════════════════════════════════════════════════════════════════════════
+# The app backend (forecast_v2_impl.py) reads from this table instead of
+# querying forecast_results_v2compat with `run_date = (SELECT MAX(run_date) ...)`
+# on every API call (~25 occurrences).  This snapshot is written once per
+# weekly pipeline run, so the app does zero subqueries — just direct reads.
+# ══════════════════════════════════════════════════════════════════════════════
+from pyspark.sql import functions as F
+
+CATALOG = "datagroup_mdl"
+SCHEMA = "mdl_sales_analytics"
+V2COMPAT = f"{CATALOG}.{SCHEMA}.forecast_results_v2compat"
+SNAPSHOT_TABLE = f"{CATALOG}.{SCHEMA}.forecast_app_snapshot"
+APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
+
+# Read latest run only
+v2 = spark.table(V2COMPAT)
+max_run = v2.agg(F.max("run_date")).collect()[0][0]
+print(f"Materializing snapshot for run_date = {max_run}")
+
+snapshot = v2.filter(F.col("run_date") == max_run)
+row_count = snapshot.count()
+print(f"Snapshot rows: {row_count}")
+
+# Write (overwrite each run)
+(
+    snapshot.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(SNAPSHOT_TABLE)
+)
+print(f"✓ Wrote {SNAPSHOT_TABLE} ({row_count} rows, run_date={max_run})")
+
+# Grant to app service principal
+spark.sql(f"GRANT SELECT ON TABLE {SNAPSHOT_TABLE} TO `{APP_SERVICE_PRINCIPAL}`")
+print(f"✓ Granted SELECT on {SNAPSHOT_TABLE} to {APP_SERVICE_PRINCIPAL}")
+
+# COMMAND ----------
+
 # DBTITLE 1,Rebuild arr_forecast_wide — ALL models, ALL months (standalone)
 # ══════════════════════════════════════════════════════════════════════════════
 # REBUILD arr_forecast_wide — ALL models for ALL months (Jan–Dec 2026)

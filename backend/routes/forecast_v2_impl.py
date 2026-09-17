@@ -1,8 +1,9 @@
 """
 Forecast v2 — rich endpoints for the ForecastingPanel UI.
 
-Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_results_v2compat
-  (unified compat view over forecast_results, published by forecast_unify_publish).
+Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_app_snapshot
+  (materialized latest-run-only snapshot of forecast_results_v2compat,
+   written by forecast_unify_publish weekly — no MAX(run_date) subquery needed).
   columns: ds, product (Total/UCC/ITSG), sales_market (Total/NA/EMEA/APAC/LATAM),
            Actuals, Most_Likely, Worst_Case, Best_Case,
            arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima,
@@ -42,7 +43,7 @@ PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_all_models`
 # Default to the unified compat views (source of truth from forecast_unify_publish).
 # These views expose exact p10/p50/p90 values from the per-product V5 pipelines.
 # To revert to legacy tables, set env vars to arr_forecast_v2 / arr_forecast_v2_leaderboard.
-FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "forecast_results_v2compat")
+FC_TABLE_NAME = os.getenv("FORECAST_V2_RESULTS_TABLE", "forecast_app_snapshot")
 LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "forecast_leaderboard_v2compat")
 # Default = the unified insights (compat view over forecast_insights, written by
 # forecast_unify_publish daily) so the AI tab matches the rest of the panel.
@@ -296,7 +297,9 @@ def _geo_filter(geo, col="sales_market"):
     return f"AND {_normalized_market_expr(col)} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 def _latest_run():
-    return f"run_date = (SELECT MAX(run_date) FROM {FC_TABLE})"
+    # Snapshot table contains only the latest run (written by forecast_unify_publish).
+    # No subquery needed — return TRUE as a no-op filter.
+    return "TRUE"
 
 
 def _effective_forecast_type(model: str, forecast_type: str) -> str:

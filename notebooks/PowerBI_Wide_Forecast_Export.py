@@ -53,6 +53,13 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Grant snapshot table to app SP
+# MAGIC %sql
+# MAGIC GRANT SELECT ON TABLE datagroup_mdl.mdl_sales_analytics.forecast_app_snapshot 
+# MAGIC TO `324a6ec7-e988-42c7-8a7f-55465f5bea37`
+
+# COMMAND ----------
+
 # DBTITLE 1,arr_forecast_powerbi_wide — Monthly by Product (all models)
 # MAGIC %sql --name pbi_monthly
 # MAGIC SELECT
