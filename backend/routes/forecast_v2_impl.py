@@ -1524,11 +1524,10 @@ async def get_monthly(
     fc_sql = None
     if include_forecasts:
         if not source.get("no_run_date"):
-            # Snapshot has BOTH actuals rows (closed weeks with Actuals +
-            # Most_Likely + p30/p70) and forward forecast rows — everything
-            # needed in a single table.  No PBI wide join required.
-            # For closed weeks: use Actuals as p50 (real); for open weeks:
-            # use Most_Likely (ensemble forecast).  Bands: p30/p70.
+            # Forecast-only rows (rolling + roy).  Closed months have no
+            # rolling/roy rows, so they correctly show "—" in the UI.
+            # The quadrature formula propagates weekly p30/p70 uncertainty
+            # into monthly worst/best bands.
             fc_sql = f"""
                 SELECT
                     year(ds)                AS yr,
@@ -1544,6 +1543,7 @@ async def get_monthly(
                     ) AS arr_worst,
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_likely,
                     SUM(COALESCE(CAST({value_col} AS DOUBLE), 0))
+<<<<<<< Updated upstream
                         + SQRT(SUM(POWER(GREATEST(
                             COALESCE(CAST({upper_col} AS DOUBLE), 0)
                             - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2))) AS arr_best
@@ -1555,6 +1555,17 @@ async def get_monthly(
                       {pf} {gf}
                       {date_filter}
                 ) weekly
+=======
+                    + SQRT(SUM(POWER(GREATEST(
+                        COALESCE(CAST({upper_col} AS DOUBLE), 0)
+                        - COALESCE(CAST({value_col} AS DOUBLE), 0), 0), 2)))
+                    AS arr_best
+                FROM {FC_TABLE}
+                WHERE {_latest_run()}
+                  AND {fc_type_clause}
+                  {pf} {gf}
+                  {date_filter}
+>>>>>>> Stashed changes
                 GROUP BY yr, qtr, mth, month_name
                 ORDER BY yr, mth
             """
