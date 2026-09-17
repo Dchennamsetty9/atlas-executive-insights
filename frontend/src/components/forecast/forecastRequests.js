@@ -10,6 +10,7 @@ export function createForecastRequests(get, { now = Date.now, metadataTtl = 300_
       const controller = new AbortController();
       current = controller;
       const pending = new Map();
+      let publicationId = null;
       if (force) metadata.clear();
 
       return {
@@ -27,7 +28,16 @@ export function createForecastRequests(get, { now = Date.now, metadataTtl = 300_
             return get(url, { ...config, signal: controller.signal });
           }).then(value => {
             controller.signal.throwIfAborted();
-            if (METADATA_PATHS.has(url) && value?.source !== 'demo' && !value?.error) {
+            if (value?.source === 'demo' || value?.source === 'unavailable' || value?.error) {
+              throw new Error(value?.reason || value?.error || 'Data unavailable for this selection');
+            }
+            if (['/api/forecast/v2/weekly', '/api/forecast/v2/monthly', '/api/forecast/v2/confidence-bands'].includes(url) && value?.publication_id) {
+              if (publicationId && publicationId !== value.publication_id) {
+                throw new Error('Publication changed during query; refresh required');
+              }
+              publicationId = value.publication_id;
+            }
+            if (METADATA_PATHS.has(url)) {
               metadata.set(key, { time: now(), value });
             }
             return value;

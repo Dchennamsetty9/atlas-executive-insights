@@ -30,6 +30,10 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   response => {
     const data = response.data
+    if (response.config.url?.startsWith('/api/forecast/') &&
+        (data?.source === 'demo' || data?.source === 'unavailable' || data?.error)) {
+      return Promise.reject(new Error(data.reason || data.error || 'Data unavailable for this selection'))
+    }
     // If backend fell back to demo due to a timeout/connection error and this
     // is the first attempt, retry once after 5 s (warehouse should be waking).
     if (
@@ -201,26 +205,26 @@ export const createApiService = (api) => ({
   },
   getForecastV2Models: () => api.get('/api/forecast/v2/models'),
   getForecastV2Freshness: () => api.get('/api/forecast/v2/freshness'),
-  getForecastV2Confidence: (model = 'ensemble', year = null, quarter = null) => {
-    const params = { model }
+  getForecastV2Confidence: (model = 'ensemble', year = null, quarter = null, productLine = null, salesMarket = null) => {
+    const params = { model, product_line: productLine, sales_market: salesMarket }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/confidence', { params })
   },
-  getForecastV2DriverBridge: (year = null, quarter = null, model = 'ensemble') => {
-    const params = { model }
+  getForecastV2DriverBridge: (year = null, quarter = null, model = 'ensemble', productLine = null, salesMarket = null) => {
+    const params = { model, product_line: productLine, sales_market: salesMarket }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/driver-bridge', { params })
   },
-  getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20, model = 'ensemble') => {
-    const params = { forecast_type: forecastType, limit, model }
+  getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20, model = 'ensemble', productLine = null, salesMarket = null) => {
+    const params = { forecast_type: forecastType, limit, model, product_line: productLine, sales_market: salesMarket }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/risk-radar', { params })
   },
-  getForecastV2MeetingMode: (model = 'ensemble', year = null, quarter = null) => {
-    const params = { model }
+  getForecastV2MeetingMode: (model = 'ensemble', year = null, quarter = null, productLine = null, salesMarket = null) => {
+    const params = { model, product_line: productLine, sales_market: salesMarket }
     if (year) params.year = year
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/meeting-mode', { params })
@@ -228,8 +232,8 @@ export const createApiService = (api) => ({
   getForecastV2GovernanceLog: () => api.get('/api/forecast/v2/governance/log'),
   createForecastV2GovernanceLog: (payload) => api.post('/api/forecast/v2/governance/log', payload),
 
-  getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null, model = 'ensemble') => {
-    const params = { forecast_type: forecastType, model };
+  getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null, model = 'ensemble', salesMarket = null) => {
+    const params = { forecast_type: forecastType, model, sales_market: salesMarket };
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (year) params.year = year;
     if (quarter) params.quarter = quarter;
@@ -290,8 +294,8 @@ export const createApiService = (api) => ({
   },
 
   // v2 intelligence — unified forecast_insights, scoped to the selected product
-  getForecastV2Intelligence: (productLine = null, salesMarket = null) => {
-    const params = {};
+  getForecastV2Intelligence: (productLine = null, salesMarket = null, model = 'ensemble', year = null, quarter = null) => {
+    const params = { model, year, quarter };
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
     return api.get('/api/forecast/v2/intelligence', { params });

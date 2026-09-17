@@ -43,7 +43,9 @@ test('one failed exec request does not discard successful sections', async () =>
   const published = [];
   const errors = [];
   await loadForecastTab(api, { ...selection, tab: 'Exec Mode' }, field => published.push(field), field => errors.push(field));
-  assert.equal(published.length, 10);
+  assert.equal(published.length, 12);
+  assert.ok(published.includes('weekly'));
+  assert.ok(published.includes('confidenceBands'));
   assert.deepEqual(errors, ['actions']);
 });
 
@@ -64,6 +66,20 @@ test('data tabs publish their dedicated payloads', async () => {
     const published = [];
     await loadForecastTab(api, { ...selection, tab }, value => published.push(value), assert.fail);
     assert.ok(published.includes(field), `${tab} did not publish ${field}`);
+    if (tab === 'Multi-Year') assert.ok(published.includes('weekly'));
     assert.ok(called.length > 0, `${tab} did not call an API method`);
   }
+});
+
+test('executive requests carry product and region scope', async () => {
+  const calls = new Map();
+  const api = new Proxy({}, { get: (_, method) => (...args) => {
+    calls.set(method, args);
+    return Promise.resolve({ rows: [] });
+  } });
+  await loadForecastTab(api, { ...selection, tab: 'Exec Mode' }, () => {}, assert.fail);
+  for (const method of ['getForecastV2Confidence', 'getForecastV2DriverBridge', 'getForecastV2RiskRadar', 'getForecastV2MeetingMode']) {
+    assert.deepEqual(calls.get(method).slice(-2), ['UCC', 'NA']);
+  }
+  assert.equal(calls.get('getForecastV2ConfidenceBands').at(-1), 'NA');
 });

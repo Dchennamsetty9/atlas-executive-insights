@@ -64,7 +64,17 @@ test('failed and demo metadata are not cached', async () => {
     return { source: 'demo' };
   });
   await assert.rejects(requests.start().get('/api/forecast/v2/freshness'));
-  await requests.start().get('/api/forecast/v2/freshness');
-  await requests.start().get('/api/forecast/v2/freshness');
+  await assert.rejects(requests.start().get('/api/forecast/v2/freshness'), /Data unavailable/);
+  await assert.rejects(requests.start().get('/api/forecast/v2/freshness'), /Data unavailable/);
   assert.equal(calls, 3);
+});
+
+test('core forecast requests cannot mix publications in the same batch', async () => {
+  const requests = createForecastRequests(async url => ({ source: 'live',
+    publication_id: url.endsWith('/weekly') ? '2026-09-15' : '2026-09-22' }));
+  const batch = requests.start();
+  await batch.get('/api/forecast/v2/weekly');
+  await assert.rejects(batch.get('/api/forecast/v2/confidence-bands'), /Publication changed/);
+  const nextBatch = requests.start();
+  assert.equal((await nextBatch.get('/api/forecast/v2/confidence-bands')).publication_id, '2026-09-22');
 });

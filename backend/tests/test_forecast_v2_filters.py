@@ -33,6 +33,112 @@ sys.modules["services.user_preferences_service"] = fake_prefs
 from routes import forecast_v2_impl as impl  # noqa: E402
 
 
+def test_canonical_rows_exclude_actualized_forecasts_and_deduplicate():
+    sql = impl._normalized_forecast_sql("ensemble", "roy", None, "ITSG", "NA", 2026)
+    assert "Actuals IS NOT NULL" in sql
+    assert "CAST(ds AS DATE) >" in sql
+    assert "forecast_type IN ('rolling', 'roy')" in sql
+    assert "PARTITION BY ds" in sql
+    assert "product = 'ITSG'" in sql
+    assert "SQRT" not in sql
+
+
+def test_missing_periods_are_unavailable_not_zero():
+    months = impl._fill_monthly_gaps([], 2026, True, True)
+    assert len(months) == 12
+    assert all(row["arr_actual"] is None and row["arr_likely"] is None for row in months)
+
+
+def test_executive_metrics_do_not_invent_confidence_or_plan(monkeypatch):
+    monkeypatch.setattr(impl, "execute_query", lambda sql: pytest.fail("Must not borrow portfolio data"))
+    confidence = asyncio.run(impl.get_confidence(model="ets", product_line="ITSG", sales_market="NA", live_mode=True))
+    bridge = asyncio.run(impl.get_driver_bridge(model="ets", product=None, product_line="ITSG", sales_market="NA", live_mode=True))
+    assert confidence["confidence_score"] is None
+    assert bridge["variance"] is None
+    for result in (confidence, bridge):
+        assert result["source"] == "unavailable"
+        assert result["product"] == "ITSG"
+        assert result["sales_market"] == "NA"
+
+
+def test_intelligence_never_falls_back_to_unscoped_text(monkeypatch):
+    calls = []
+    async def query(sql, **kwargs):
+        calls.append(sql)
+        return []
+    monkeypatch.setattr(impl, "_cached_query", query)
+    regional = asyncio.run(impl.get_intelligence(product_line="ITSG", sales_market="NA", live_mode=True))
+    assert regional["source"] == "unavailable" and calls == []
+    product = asyncio.run(impl.get_intelligence(product_line="ITSG", live_mode=True))
+    assert product["source"] == "unavailable"
+    assert len(calls) == 1 and "product = 'ITSG'" in calls[0]
+
+
+def test_risk_radar_scopes_product_region_and_actual_cutoff(monkeypatch):
+    calls = []
+    async def query(sql, **kwargs):
+        calls.append((sql, kwargs))
+        return []
+    monkeypatch.setattr(impl, "_cached_query", query)
+    asyncio.run(impl.get_risk_radar(forecast_type="roy", model="ensemble", year=2026,
+        quarter=4, limit=20, product_line="ITSG", sales_market="NA", live_mode=True))
+    sql, scope = calls[0]
+    assert "product = 'ITSG'" in sql and "= 'NA'" in sql
+    assert "actual.run_date = forecast.run_date" in sql
+    assert "actual.product = forecast.product" in sql
+    assert scope["product"] == "ITSG" and scope["geo"] == "NA"
+
+
+@pytest.mark.parametrize("model", ["ensemble", "prophet", "ets"])
+def test_canonical_queries_parse_as_databricks_sql(monkeypatch, model):
+    import sqlglot
+    queries = []
+    async def query(sql, **kwargs):
+        queries.append(sql)
+        return []
+    monkeypatch.setattr(impl, "_cached_query", query)
+    options = dict(product=None, product_line="ITSG", sales_market="NA", model=model,
+                   year=2026, quarter=4, forecast_type="rolling", live_mode=True)
+    asyncio.run(impl.get_weekly(**options))
+    asyncio.run(impl.get_monthly(**options))
+    asyncio.run(impl.get_confidence_bands(**options))
+    for sql in queries:
+        assert "<<<<<<<" not in sql and ">>>>>>>" not in sql
+        assert len(sqlglot.parse(sql, read="databricks")) == 1
+
+
+def test_weekly_actuals_and_forecasts_reconcile_with_kpis(monkeypatch):
+    async def query(sql, **kwargs):
+        if kwargs["endpoint"] == "/_period_landings":
+            return []
+        if kwargs["forecast_type"] == "actuals":
+            return [{"ds": "2026-09-07", "actual": 100, "forecast_type": "actuals", "publication_id": "2026-09-15"}]
+        return [{"ds": "2026-09-07", "value": 999, "lower": 900, "upper": 1100, "publication_id": "2026-09-15"},
+                {"ds": "2026-09-14", "value": 40, "lower": 30, "upper": 50, "publication_id": "2026-09-15"}]
+    monkeypatch.setattr(impl, "_cached_query", query)
+    result = asyncio.run(impl.get_weekly(product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="ensemble", year=2026, quarter=3, live_mode=True))
+    assert len(result["rows"]) == 2
+    assert result["kpis"] == {"most_likely": 140, "worst_case": 130, "best_case": 150, "ytd_actuals": 100}
+    assert result["publication_id"] == "2026-09-15"
+
+
+def test_monthly_history_failure_keeps_current_data(monkeypatch):
+    async def query(sql, **kwargs):
+        if kwargs["forecast_type"] == "prediction":
+            raise RuntimeError("wide table unavailable")
+        if kwargs["forecast_type"] == "actuals":
+            return [{"yr": 2026, "qtr": 3, "mth": 9, "arr_actual": 100}]
+        return [{"yr": 2026, "qtr": 3, "mth": 9, "arr_likely": 40, "arr_worst": 30, "arr_best": 50}]
+    monkeypatch.setattr(impl, "_cached_query", query)
+    result = asyncio.run(impl.get_monthly(product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="ensemble", year=2026, quarter=3, live_mode=True))
+    month = next(row for row in result["months"] if row["month"] == 9)
+    assert month["arr_actual"] == 100 and month["arr_likely"] == 40
+    assert month["arr_predicted"] is None and month["accuracy"] is None
+    assert result["historical_status"] == "Historical estimate unavailable for this publication"
+
+
 def test_quarterly_badges_preserve_zero_and_published_precision():
     values = impl._leaderboard_error_values({
         "qtr_ensemble": 0, "mape_ensemble": 17.8,
@@ -292,11 +398,12 @@ def test_monthly_rolling_uses_all_periods_and_separates_actuals(monkeypatch):
     actuals_sql = next(sql for sql in captured_sql if "AS arr_actual" in sql)
     predicted_sql = next(sql for sql in captured_sql if "AS arr_predicted" in sql)
 
-    assert "forecast_results_v2compat" in forecast_sql
+    assert impl.FC_TABLE in forecast_sql
     assert "forecast_prophet" not in forecast_sql
     assert "forecast_type IN ('rolling', 'roy', 'forward_1yr')" in forecast_sql
     assert "WHERE forecast_type = 'actuals'" in actuals_sql
-    assert "WHERE forecast_type = 'actuals'" in predicted_sql
+    assert impl.POWERBI_WIDE_TABLE in predicted_sql
+    assert "SQRT" not in forecast_sql
 
     # Rolling full-year mode should use the quarter-anchored next-12-month window.
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in forecast_sql
@@ -309,7 +416,7 @@ def test_monthly_rolling_uses_all_periods_and_separates_actuals(monkeypatch):
     ("rolling", 0, "forecast_type IN ('rolling', 'roy')"),
     ("rolling", 1, "forecast_type = 'forward_1yr'"),
     ("forward_1yr", 1, "forecast_type = 'forward_1yr'"),
-    ("roy", 0, "forecast_type = 'roy'"),
+    ("roy", 0, "forecast_type IN ('rolling', 'roy')"),
 ])
 def test_monthly_selected_period_uses_publication_filter(monkeypatch, forecast_type, year_offset, expected):
     captured_sql = []
@@ -327,7 +434,8 @@ def test_monthly_selected_period_uses_publication_filter(monkeypatch, forecast_t
 
     assert result["source"] == "live"
     forecast_sql = next(sql for sql in captured_sql if "AS arr_likely" in sql)
-    assert f"WHERE {expected}" in forecast_sql
+    assert f"AND {expected}" in forecast_sql
+    assert impl._latest_run() in forecast_sql
 
 
 def test_monthly_merges_actuals_predictions_and_remaining_forecast(monkeypatch):
@@ -448,8 +556,8 @@ def test_prophet_source_uses_forecast_all_models_without_run_date():
 
     assert "forecast_all_models" in forecast_sql
     assert "forecast_p50" in forecast_sql
-    assert "forecast_p05" in forecast_sql
-    assert "forecast_p95" in forecast_sql
+    assert "forecast_p05" not in forecast_sql
+    assert "forecast_p95" not in forecast_sql
     assert "SUM(COALESCE(CAST(forecast_p50 AS DOUBLE), 0)) AS value" in forecast_sql
     assert "GROUP BY ds, forecast_type" in forecast_sql
     assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in forecast_sql
@@ -482,7 +590,7 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
         )
     )
 
-    assert result["source"] == "live"
+    assert result["source"] == "unavailable"
     kpi_sql = captured_sql[2]
     assert "forecast_all_models" in kpi_sql
     assert "forecast_p50" in kpi_sql
@@ -490,9 +598,9 @@ def test_prophet_weekly_kpis_use_forecast_prophet_without_run_date(monkeypatch):
     assert "is_current = TRUE" in kpi_sql
     assert "run_date" not in kpi_sql
     assert "LOWER(TRIM(CAST(forecast_type AS STRING))) <> 'actuals'" in kpi_sql
-    assert "THEN NULL ELSE CAST(forecast_p50 AS DOUBLE) END AS Most_Likely" in kpi_sql
-    assert "THEN NULL ELSE CAST(forecast_p05 AS DOUBLE) END AS Worst_Case" in kpi_sql
-    assert "THEN NULL ELSE CAST(forecast_p95 AS DOUBLE) END AS Best_Case" in kpi_sql
+    assert "forecast_p05" not in kpi_sql
+    assert "forecast_p95" not in kpi_sql
+    assert result["kpis"] is None
 
 
 def test_prophet_weekly_all_regions_uses_total_market_rollup(monkeypatch):
@@ -517,8 +625,8 @@ def test_prophet_weekly_all_regions_uses_total_market_rollup(monkeypatch):
         )
     )
 
-    assert result["source"] == "live"
-    assert len(captured_sql) == 4
+    assert result["source"] == "unavailable"
+    assert len(captured_sql) == 3
     assert all("forecast_all_models" in sql for sql in captured_sql)
     assert all("product = 'UCC'" in sql for sql in captured_sql)
     assert all("sales_market" in sql for sql in captured_sql)
@@ -547,7 +655,8 @@ def test_period_landings_reconciles_quarters_and_fy(monkeypatch):
     )
 
     assert result["fy_landing"] == 200
-    assert sum(q["landing"] for q in result["quarters"]) == result["fy_landing"]
+    assert sum(q["landing"] or 0 for q in result["quarters"]) == result["fy_landing"]
+    assert result["quarters"][2]["status"] == "unavailable"
     assert result["quarters"][0]["landing"] == result["quarters"][0]["actual"] + result["quarters"][0]["forecast"]
     assert result["quarters"][1]["landing"] == result["quarters"][1]["actual"] + result["quarters"][1]["forecast"]
 
@@ -618,12 +727,13 @@ def test_prophet_confidence_bands_use_native_interval_columns(monkeypatch):
         )
     )
 
-    assert result["source"] == "live"
+    assert result["source"] == "unavailable"
+    assert result["p30"] is None and result["p70"] is None
     sql = captured_sql[0]
     assert "forecast_all_models" in sql
-    assert "forecast_p05" in sql
+    assert "forecast_p05" not in sql
     assert "forecast_p50" in sql
-    assert "forecast_p95" in sql
+    assert "forecast_p95" not in sql
     assert "model_name = 'Prophet'" in sql
     assert "is_current = TRUE" in sql
     assert "run_date" not in sql
@@ -800,7 +910,7 @@ def test_confidence_bands_full_year_includes_rolling_and_roy(monkeypatch):
 
     async def fake_cached_query(sql, **_kwargs):
         captured_sql.append(sql)
-        return []
+        return [{"ds": "2026-10-05", "value": 100, "lower": 80, "upper": 120}]
 
     monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
 
@@ -828,7 +938,7 @@ def test_confidence_bands_future_year_uses_forward_1yr_only(monkeypatch):
 
     async def fake_cached_query(sql, **_kwargs):
         captured_sql.append(sql)
-        return []
+        return [{"ds": "2027-01-04", "value": 100, "lower": 80, "upper": 120}]
 
     monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
 
@@ -855,7 +965,7 @@ def test_confidence_bands_quarter_uses_effective_forecast_type(monkeypatch):
 
     async def fake_cached_query(sql, **_kwargs):
         captured_sql.append(sql)
-        return []
+        return [{"ds": "2026-10-05", "value": 100, "lower": 80, "upper": 120}]
 
     monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
 
@@ -874,8 +984,10 @@ def test_confidence_bands_quarter_uses_effective_forecast_type(monkeypatch):
 
     assert result["source"] == "live"
     forecast_sql = captured_sql[0]
-    assert "forecast_type = 'rolling'" in forecast_sql
-    assert "forecast_type IN ('rolling', 'roy')" not in forecast_sql
+    assert "forecast_type IN ('rolling', 'roy')" in forecast_sql
+    assert result["p30"] == 80
+    assert result["p70"] == 120
+    assert "p10" not in result and "p90" not in result
 
 
 def test_by_product_rolling_uses_all_future_periods(monkeypatch):

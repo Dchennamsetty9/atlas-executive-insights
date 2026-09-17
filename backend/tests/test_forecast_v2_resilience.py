@@ -64,7 +64,7 @@ def _mock_live_true():
 # ---------------------------------------------------------------------------
 
 class TestForecastV2Resilience:
-    """All v2 endpoints degrade to 200+demo on DB failure, never 500."""
+    """Data routes return explicit unavailable states on DB failure."""
 
     def _get(self, path: str, params: dict = None):
         return client.get(path, params=params or {})
@@ -74,7 +74,7 @@ class TestForecastV2Resilience:
             r = self._get("/api/forecast/v2/weekly", {"model": "prophet"})
         assert r.status_code == 200
         body = r.json()
-        assert body["source"] == "demo"
+        assert body["source"] == "unavailable"
         assert "error" in body
         assert "PERMISSION_DENIED" in body["error"]
 
@@ -82,37 +82,37 @@ class TestForecastV2Resilience:
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/weekly", {"model": "ensemble"})
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_monthly_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/monthly")
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_ytd_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/ytd")
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_by_product_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/by-product", {"model": "prophet"})
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_historical_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/historical")
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_leaderboard_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
             r = self._get("/api/forecast/v2/leaderboard")
         assert r.status_code == 200
-        assert r.json()["source"] == "demo"
+        assert r.json()["source"] == "unavailable"
 
     def test_graph_explanation_route_is_registered(self):
         r = self._get("/api/forecast/v2/graph-explanation", {"graph": "weekly", "product_line": "UCC"})
