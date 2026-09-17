@@ -355,6 +355,28 @@ def test_monthly_merges_actuals_predictions_and_remaining_forecast(monkeypatch):
     assert month["arr_best"] == 50
 
 
+def test_monthly_uses_wide_hindcast_for_primary_scenarios(monkeypatch):
+    captured = {}
+
+    async def fake_cached_query(sql, **kwargs):
+        captured[kwargs["forecast_type"]] = sql
+        return []
+
+    monkeypatch.setattr(impl, "_cached_query", fake_cached_query)
+    result = asyncio.run(impl.get_monthly(
+        product=None, product_line="UCC", sales_market=None,
+        forecast_type="rolling", model="ensemble", year=2026,
+        quarter=None, live_mode=True,
+    ))
+
+    assert result["source"] == "live"
+    prediction_sql = captured["prediction"]
+    assert "arr_forecast_powerbi_wide" in prediction_sql
+    assert "Adaptive_Ensemble_P05" in prediction_sql
+    assert "Adaptive_Ensemble_P50" in prediction_sql
+    assert "Adaptive_Ensemble_P95" in prediction_sql
+
+
 def test_monthly_prophet_uses_native_source_without_run_date(monkeypatch):
     captured_sql = []
 

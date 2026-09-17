@@ -1587,18 +1587,25 @@ async def get_monthly(
     pred_sql = None
     if include_actuals:
         if not source.get("no_run_date"):
+            wide_model = {
+                "ensemble": "Adaptive_Ensemble",
+                "prophet": "Prophet",
+                "ets": "ETS",
+                "mstl_v2": "MSTL_v2",
+                "dhr_arima": "DHR_ARIMA",
+                "lightgbm": "Global_LGB_Q50",
+            }[model]
             pred_sql = f"""
                 SELECT
                     year(ds)                     AS yr,
                     quarter(ds)                  AS qtr,
                     month(ds)                    AS mth,
                     date_format(ds, 'MMMM')      AS month_name,
-                    SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr_predicted,
-                    SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS arr_pred_worst,
-                    SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS arr_pred_best
-                FROM {FC_TABLE}
-                WHERE forecast_type = 'actuals'
-                  AND {_latest_run()}
+                    SUM(COALESCE(CAST({wide_model}_P50 AS DOUBLE), 0)) AS arr_predicted,
+                    SUM(COALESCE(CAST({wide_model}_P05 AS DOUBLE), 0)) AS arr_pred_worst,
+                    SUM(COALESCE(CAST({wide_model}_P95 AS DOUBLE), 0)) AS arr_pred_best
+                FROM {POWERBI_WIDE_TABLE}
+                WHERE 1 = 1
                   {pf} {gf}
                   {date_filter}
                 GROUP BY yr, qtr, mth, month_name
@@ -1675,9 +1682,9 @@ async def get_monthly(
             "month":      mth,
             "month_name": str(src.get("month_name") or ""),
             "arr_actual": _f(a.get("arr_actual")) if a else None,
-            "arr_worst":  _f(f.get("arr_worst")) if f else None,
-            "arr_likely": _f(f.get("arr_likely")) if f else None,
-            "arr_best":   _f(f.get("arr_best")) if f else None,
+            "arr_worst":  _f((f or p).get("arr_worst" if f else "arr_pred_worst")) if (f or p) else None,
+            "arr_likely": _f((f or p).get("arr_likely" if f else "arr_predicted")) if (f or p) else None,
+            "arr_best":   _f((f or p).get("arr_best" if f else "arr_pred_best")) if (f or p) else None,
             "arr_predicted":  _f(p.get("arr_predicted")) if p else None,
             "arr_pred_worst": _f(p.get("arr_pred_worst")) if p else None,
             "arr_pred_best":  _f(p.get("arr_pred_best")) if p else None,
