@@ -372,9 +372,9 @@ def test_monthly_uses_wide_hindcast_for_primary_scenarios(monkeypatch):
     assert result["source"] == "live"
     prediction_sql = captured["prediction"]
     assert "arr_forecast_powerbi_wide" in prediction_sql
-    assert "Adaptive_Ensemble_P05" in prediction_sql
+    assert "Adaptive_Ensemble_P25" in prediction_sql
     assert "Adaptive_Ensemble_P50" in prediction_sql
-    assert "Adaptive_Ensemble_P95" in prediction_sql
+    assert "Adaptive_Ensemble_P75" in prediction_sql
     assert "product IN ('UCC', 'ITSG')" in prediction_sql
 
 

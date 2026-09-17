@@ -1607,8 +1607,8 @@ async def get_monthly(
                     month(ds)                    AS mth,
                     date_format(ds, 'MMMM')      AS month_name,
                     SUM(COALESCE(CAST({wide_model}_P50 AS DOUBLE), 0)) AS arr_predicted,
-                    SUM(COALESCE(CAST({wide_model}_P05 AS DOUBLE), 0)) AS arr_pred_worst,
-                    SUM(COALESCE(CAST({wide_model}_P95 AS DOUBLE), 0)) AS arr_pred_best
+                    SUM(COALESCE(CAST({wide_model}_P25 AS DOUBLE), 0)) AS arr_pred_worst,
+                    SUM(COALESCE(CAST({wide_model}_P75 AS DOUBLE), 0)) AS arr_pred_best
                 FROM {POWERBI_WIDE_TABLE}
                 WHERE 1 = 1
                                     {wide_product_filter} {gf}
