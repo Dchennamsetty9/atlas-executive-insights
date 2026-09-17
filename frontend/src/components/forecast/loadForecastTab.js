@@ -28,8 +28,8 @@ export function loadForecastTab(api, selection, publish, onError) {
     add('byProduct', api.getForecastV2ByProduct(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'Monthly') {
     add('monthly', api.getForecastV2Monthly(forecastType, null, productLine, salesMarket, year, quarter, model));
-  } else if (tab === 'Weekly Changes') {
-    add('runHistory', api.getForecastV2RunHistory(productLine, salesMarket));
+  } else if (tab === 'Weekly') {
+    add('weeklyChanges', api.getForecastV2Weekly(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'Exec Mode') {
     add('confidence', api.getForecastV2Confidence(model, year, quarter));
     add('driverBridge', api.getForecastV2DriverBridge(year, quarter, model));
