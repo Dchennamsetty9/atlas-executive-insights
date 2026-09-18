@@ -2214,6 +2214,65 @@ for i in range(1, len(_qcols)):
 
 print(f'  V5 quantiles enriched: p10-p90 (full fan, {len(_v5_factors)} models)')
 
+# ── CONFORMAL INTERVAL CALIBRATION ─────────────────────────────────────────────
+# Native intervals from CV residuals / quantile regression tend to be too
+# narrow (~50-60% empirical coverage instead of 80%).  This step measures
+# holdout residual sigma and scales intervals outward to match.  Only
+# widens, never narrows.  Applied to all quantiles (p10-p90) uniformly.
+CONFORMAL_Z10 = 1.2816  # normal Z for p10/p90
+
+_conf_lines = []
+for _mn in production_output['model'].unique():
+    if _mn == 'Adaptive_Ensemble':
+        if ensemble_holdout.empty:
+            continue
+        _resid = (ensemble_holdout['actual'] - ensemble_holdout['forecast']).dropna()
+    else:
+        _h = holdout_benchmark_predictions[holdout_benchmark_predictions['model'] == _mn]
+        if _h.empty or 'actual' not in _h.columns:
+            continue
+        _resid = (_h['actual'] - _h['forecast']).dropna()
+    if len(_resid) < 10:
+        continue
+
+    sigma_emp = float(_resid.std())
+    _fwd = production_output[(production_output['model'] == _mn) &
+                              (production_output['grain_level'] == 'total')]
+    if _fwd.empty:
+        continue
+    sigma_cur = float((_fwd['p90'] - _fwd['p10']).median() / (2 * CONFORMAL_Z10))
+    if sigma_cur <= 0:
+        continue
+
+    scale = max(sigma_emp / sigma_cur, 1.0)
+    if scale <= 1.05:
+        _conf_lines.append(f'  {_mn}: OK (scale={scale:.2f}, no change)')
+        continue
+
+    _mask = production_output['model'] == _mn
+    for _q in [10, 20, 30, 40]:
+        _c = f'p{_q}'
+        production_output.loc[_mask, _c] = (
+            production_output.loc[_mask, 'p50'] -
+            scale * (production_output.loc[_mask, 'p50'] - production_output.loc[_mask, _c]))
+    for _q in [60, 70, 80, 90]:
+        _c = f'p{_q}'
+        production_output.loc[_mask, _c] = (
+            production_output.loc[_mask, 'p50'] +
+            scale * (production_output.loc[_mask, _c] - production_output.loc[_mask, 'p50']))
+    # Re-enforce monotonic + floor at zero
+    for i in range(1, len(_qcols)):
+        production_output.loc[_mask, _qcols[i]] = np.maximum(
+            production_output.loc[_mask, _qcols[i]],
+            production_output.loc[_mask, _qcols[i-1]])
+    for _c in _qcols:
+        production_output.loc[_mask, _c] = production_output.loc[_mask, _c].clip(lower=0)
+    _conf_lines.append(f'  {_mn}: scale={scale:.2f} (empσ={sigma_emp:,.0f} vs nativeσ={sigma_cur:,.0f})')
+
+print('Conformal interval calibration (ITSG):')
+for _l in _conf_lines:
+    print(_l)
+
 production_output['product_group'] = PRODUCT_SCOPE
 production_output['run_timestamp_utc'] = RUN_TIMESTAMP_UTC
 production_output['run_date_utc'] = RUN_DATE_UTC

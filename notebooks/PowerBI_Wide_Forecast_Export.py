@@ -60,7 +60,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,arr_forecast_powerbi_wide — Monthly by Product (all models)
+# DBTITLE 1,arr_forecast_powerbi_wide — Monthly by Product (V2 quantiles)
 # MAGIC %sql --name pbi_monthly
 # MAGIC SELECT
 # MAGIC   product,
@@ -68,10 +68,10 @@
 # MAGIC   CONCAT('Q', quarter) AS qtr,
 # MAGIC   ROUND(SUM(actuals) / 1e6, 2)                   AS `Actuals ($M)`,
 # MAGIC   ROUND(SUM(Adaptive_Ensemble_P50) / 1e6, 2)      AS `Ensemble ($M)`,
-# MAGIC   ROUND(SUM(Prophet_P50) / 1e6, 2)                AS `Prophet ($M)`,
-# MAGIC   ROUND(SUM(MSTL_v2_P50) / 1e6, 2)               AS `MSTL ($M)`,
+# MAGIC   ROUND(SUM(Prophet_P50) / 1e6, 2)                 AS `Prophet ($M)`,
+# MAGIC   ROUND(SUM(MSTL_v2_P50) / 1e6, 2)                AS `MSTL ($M)`,
 # MAGIC   ROUND(SUM(DHR_ARIMA_P50) / 1e6, 2)              AS `DHR ($M)`,
-# MAGIC   ROUND(SUM(Global_LGB_Q50_P50) / 1e6, 2) AS `LGB ($M)`,
+# MAGIC   ROUND(SUM(Global_LGB_Q50_P50) / 1e6, 2)         AS `LGB ($M)`,
 # MAGIC   ROUND(SUM(ETS_P50) / 1e6, 2)                    AS `ETS ($M)`,
 # MAGIC   ROUND(SUM(most_likely) / 1e6, 2)                AS `Most Likely ($M)`,
 # MAGIC   ROUND(SUM(worst_case) / 1e6, 2)                 AS `Worst ($M)`,
@@ -88,101 +88,219 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 2 - Config
+# DBTITLE 1,Cell 2 - Config (V2 — sourced from pure predictions)
 # ============================================================================
-# CONFIG
+# CONFIG  (V2 — sourced from forecast_pure_predictions)
+# ============================================================================
+# CHANGED vs V1:
+#   - Source: forecast_pure_predictions (calibrated bands, all models unified)
+#   - Quantiles: P10/P30/P50/P70/P90 (was P05/P25/P50/P75/P95)
+#   - No hindcast backfill needed (already in static table)
+#   - No conformal recalibration needed (already calibrated)
+#   - Market-level actuals from forecast_all_models (forecasts suppressed)
 # ============================================================================
 
 CATALOG = "datagroup_mdl"
 SCHEMA  = "mdl_sales_analytics"
 
-SOURCE_TABLE = f"{CATALOG}.{SCHEMA}.forecast_all_models"
-OUTPUT_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_powerbi_wide"
-UCC_HINDCAST_TABLE = f"{CATALOG}.{SCHEMA}.ucc_backtest_results"
-ITSG_HINDCAST_TABLE = f"{CATALOG}.{SCHEMA}.itsg_backtest_results"
+PURE_TABLE       = f"{CATALOG}.{SCHEMA}.forecast_pure_predictions"
+MARKET_SOURCE    = f"{CATALOG}.{SCHEMA}.forecast_all_models"
+OUTPUT_TABLE     = f"{CATALOG}.{SCHEMA}.arr_forecast_powerbi_wide"
+LONG_TABLE       = f"{CATALOG}.{SCHEMA}.arr_forecast_long"
 
 APP_SERVICE_PRINCIPAL = "324a6ec7-e988-42c7-8a7f-55465f5bea37"
 
+# Normalized model names for PowerBI columns (LGB merged, Prophet_trend → Prophet)
 MODELS = [
     "Adaptive_Ensemble",
     "DHR_ARIMA",
     "ETS",
-    "Global_LGB_Q50_ITSG",
-    "Global_LGB_Q50_UCC",
+    "Global_LGB_Q50",
     "MSTL_v2",
     "Prophet",
 ]
 
-QUANTILES = ["P05", "P25", "P50", "P75", "P95"]
+# V2 quantile grid — maps to static table's p10-p90
+QUANTILES = ["P10", "P30", "P50", "P70", "P90"]
+QUANTILE_MAP = {
+    "P10": "p10", "P30": "p30", "P50": "p50", "P70": "p70", "P90": "p90",
+}
 
-print(f"Source: {SOURCE_TABLE}")
+# Model name normalization (static table → PowerBI column name)
+MODEL_RENAME = {
+    'Global_LGB_Q50_UCC':  'Global_LGB_Q50',
+    'Global_LGB_Q50_ITSG': 'Global_LGB_Q50',
+    'Prophet_trend':       'Prophet',
+}
+
+print(f"Source: {PURE_TABLE}")
+print(f"Market actuals: {MARKET_SOURCE}")
 print(f"Output: {OUTPUT_TABLE}")
-print(f"UCC hindcast: {UCC_HINDCAST_TABLE}")
-print(f"ITSG hindcast: {ITSG_HINDCAST_TABLE}")
 print(f"Models: {len(MODELS)}, Quantiles: {len(QUANTILES)}")
 print(f"Expected model columns: {len(MODELS) * len(QUANTILES)} = {len(MODELS)}x{len(QUANTILES)}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 3 - Read source and add calendar columns
+# DBTITLE 1,Cell 3 - Read static table, pivot, add shared columns + scenarios
+# ============================================================================
+# V2: READ STATIC TABLE → PIVOT → SHARED COLUMNS → SCENARIOS
+# ============================================================================
+# Replaces old cells 3-5b. Everything from one source: forecast_pure_predictions.
+# Market-level actuals added from forecast_all_models (forecasts suppressed).
+# ============================================================================
 from pyspark.sql import functions as F, Window
 
-# ============================================================================
-# READ SOURCE (current forecasts only)
-# ============================================================================
-raw = spark.table(SOURCE_TABLE).filter(F.col("is_current") == True)
-print(f"Source rows (is_current=True): {raw.count()}")
-print(f"Distinct models: {sorted([r[0] for r in raw.select('model_name').distinct().collect()])}")
+import pandas as pd, numpy as np
 
 # ============================================================================
-# DERIVED CALENDAR COLUMNS
+# A. READ STATIC TABLE (Total-level, all models, calibrated bands)
 # ============================================================================
-global_min_ds = raw.agg(F.min("ds")).collect()[0][0]
-print(f"Global min(ds): {global_min_ds}")
+pure_raw = spark.table(PURE_TABLE).toPandas()
+pure_raw['ds'] = pd.to_datetime(pure_raw['ds'])
 
-src = (
-    raw
-    .withColumn("year", F.year("ds"))
-    .withColumn("ISOWeek", F.col("iso_week"))
-    .withColumn("quarter", F.quarter("ds"))
-    .withColumn("month", F.month("ds"))
-    .withColumn(
-        "RelWeekNumber",
-        (F.datediff(F.col("ds"), F.lit(global_min_ds)) / 7).cast("int") + 1
-    )
-    .withColumn("WeekLabel", F.concat(F.lit("W"), F.col("RelWeekNumber")))
-    .withColumn("Product_group", F.col("product"))
-)
+# Normalize model names
+pure_raw['model_name'] = pure_raw['model'].replace(MODEL_RENAME)
+print(f"Static table: {len(pure_raw)} rows, {pure_raw['ds'].nunique()} weeks")
+print(f"Models (after rename): {sorted(pure_raw['model_name'].unique())}")
 
 # ============================================================================
-# NORMALIZE sales_market labels for Power BI clarity
-# - "NA" IS North America (avg actuals $546k, 76% of total) — NOT a null.
-#   Rename to "North America" so it can't be confused with pandas NA/null.
-# - "Unknown" is the genuine catch-all (avg actuals $9.8k) — rename to
-#   "Unassigned" for an unambiguous label in reports.
-# - Coalesce actual nulls/blanks into "Unassigned" as well.
+# B. PIVOT: 6 models × 5 quantiles = 30 model columns
 # ============================================================================
-before_markets = sorted([r[0] for r in src.select("sales_market").distinct().collect()])
-print(f"sales_market values before normalization: {before_markets}")
+KEY_COLS = ['ds', 'product']
+pivot_rows = []
+for (ds, prod), grp in pure_raw.groupby(KEY_COLS):
+    row = {'ds': ds, 'product': prod}
+    for _, r in grp.iterrows():
+        m = r['model_name']
+        if m not in MODELS:
+            continue
+        for q_label, q_col in QUANTILE_MAP.items():
+            row[f'{m}_{q_label}'] = r[q_col]
+    # Ensemble metadata for this week
+    ens = grp[grp['model_name'] == 'Adaptive_Ensemble']
+    if not ens.empty:
+        e = ens.iloc[0]
+        row['actuals'] = e.get('actual', np.nan)
+        row['blended_p50'] = e.get('blended_p50', np.nan)
+        row['source'] = e.get('source', None)
+        row['bands_method'] = e.get('bands_method', None)
+    pivot_rows.append(row)
 
-src = src.withColumn("sales_market",
-    F.when(F.col("sales_market") == "NA", F.lit("North America"))
-     .when(
-        F.trim(F.coalesce(F.col("sales_market"), F.lit(""))).isin("", "Unknown"),
-        F.lit("Unassigned")
-    ).otherwise(F.col("sales_market"))
-)
+wide_total = pd.DataFrame(pivot_rows)
+wide_total['sales_market'] = 'Total'
+wide_total['grain_level'] = 'total'
+print(f"Pivoted total rows: {len(wide_total)}")
 
-after_markets = sorted([r[0] for r in src.select("sales_market").distinct().collect()])
-print(f"sales_market values after normalization:  {after_markets}")
+# ============================================================================
+# C. SHARED COLUMNS: scenarios, calendar, forecast_type
+# ============================================================================
+# Scenarios from Ensemble (matching dynamic table: p30/p70 for tighter exec range)
+wide_total['most_likely'] = wide_total['blended_p50']  # actual where closed, forecast where future
+wide_total['worst_case']  = wide_total['Adaptive_Ensemble_P30']
+wide_total['best_case']   = wide_total['Adaptive_Ensemble_P70']
 
-print(f"Enriched rows: {src.count()}")
-print(f"Sample calendar:")
-display(src.select("ds", "year", "ISOWeek", "quarter", "month", "RelWeekNumber", "WeekLabel", "Product_group").limit(5))
+# forecast_type: consistent per date
+wide_total['forecast_type'] = np.where(
+    wide_total['actuals'].notna(), 'actuals', 'forecast')
+
+# Calendar
+wide_total['year']    = wide_total['ds'].dt.year
+wide_total['quarter'] = wide_total['ds'].dt.quarter
+wide_total['month']   = wide_total['ds'].dt.month
+wide_total['ISOWeek'] = wide_total['ds'].dt.isocalendar().week.astype(int)
+global_min = wide_total['ds'].min()
+wide_total['RelWeekNumber'] = ((wide_total['ds'] - global_min).dt.days // 7) + 1
+wide_total['WeekLabel']     = 'W' + wide_total['RelWeekNumber'].astype(str)
+wide_total['Product_group'] = wide_total['product']
+
+# model_fill_source from static table's source column
+wide_total['model_fill_source'] = wide_total['source']
+
+# ARR_YTD: running sum of actuals within year (NULL past last actual)
+wide_total = wide_total.sort_values(['product', 'ds'])
+for prod in wide_total['product'].unique():
+    mask = wide_total['product'] == prod
+    act = wide_total.loc[mask, 'actuals']
+    ytd = act.groupby(wide_total.loc[mask, 'year']).cumsum()
+    # NULL past last actual
+    last_act = wide_total.loc[mask & wide_total['actuals'].notna(), 'ds'].max()
+    ytd[wide_total.loc[mask, 'ds'] > last_act] = np.nan
+    wide_total.loc[mask, 'ARR_YTD'] = ytd
+
+# mc_actuals and miradore_plan: not in static table, set NULL
+wide_total['mc_actuals'] = np.nan
+wide_total['miradore_plan'] = np.nan
+
+# ============================================================================
+# D. MARKET-LEVEL ACTUALS (from forecast_all_models, forecasts suppressed)
+# ============================================================================
+mkt = spark.sql(f"""
+    SELECT CAST(ds AS DATE) AS ds, product, sales_market,
+           MAX(actuals) AS actuals,
+           MAX(magna_carta_actuals) AS mc_actuals,
+           MAX(miradore_plan) AS miradore_plan
+    FROM {MARKET_SOURCE}
+    WHERE is_current = TRUE AND actuals IS NOT NULL
+      AND sales_market != 'Total'
+    GROUP BY ds, product, sales_market
+""").toPandas()
+mkt['ds'] = pd.to_datetime(mkt['ds'])
+mkt['grain_level'] = 'market'
+mkt['forecast_type'] = 'actuals'
+mkt['sales_market'] = mkt['sales_market'].replace({'UNKNOWN': 'Unknown'})
+for col in ['year', 'quarter', 'month']:
+    mkt[col] = getattr(mkt['ds'].dt, col if col != 'quarter' else col)
+mkt['year'] = mkt['ds'].dt.year
+mkt['quarter'] = mkt['ds'].dt.quarter
+mkt['month'] = mkt['ds'].dt.month
+mkt['ISOWeek'] = mkt['ds'].dt.isocalendar().week.astype(int)
+mkt['RelWeekNumber'] = ((mkt['ds'] - global_min).dt.days // 7) + 1
+mkt['WeekLabel'] = 'W' + mkt['RelWeekNumber'].astype(str)
+mkt['Product_group'] = mkt['product']
+mkt['model_fill_source'] = 'historical'
+print(f"Market-level actuals: {len(mkt)} rows")
+
+# ============================================================================
+# E. UNION TOTAL + MARKET → STAGING VIEW
+# ============================================================================
+wide = pd.concat([wide_total, mkt], ignore_index=True)
+wide = wide.sort_values(['product', 'sales_market', 'ds']).reset_index(drop=True)
+
+# Metadata
+wide['run_date'] = pd.Timestamp.today().normalize()
+wide['published_at_utc'] = pd.Timestamp.utcnow()
+
+# Null model columns at market grain (forecasts unreliable)
+model_cols = [c for c in wide.columns if any(c.startswith(m + '_') for m in MODELS)]
+scenario_cols = ['most_likely', 'worst_case', 'best_case', 'ARR_YTD']
+mkt_mask = wide['grain_level'] == 'market'
+for c in model_cols + scenario_cols:
+    if c in wide.columns:
+        wide.loc[mkt_mask, c] = np.nan
+
+print(f"\nWide rows: {len(wide)}, columns: {len(wide.columns)}")
+print(f"  Total-level: {(wide['grain_level']=='total').sum()}, Market-level: {mkt_mask.sum()}")
+print(f"  Actuals: {(wide['forecast_type']=='actuals').sum()}, Forecast: {(wide['forecast_type']=='forecast').sum()}")
+
+# Register as staging view for SQL write
+sdf = spark.createDataFrame(wide)
+sdf.createOrReplaceTempView('_powerbi_wide_staging')
+print(f"\u2713 Registered _powerbi_wide_staging")
+
+# Bypass old cells 4-5b (all logic consolidated here)
+pivoted = sdf  # compatibility if old cells reference this
+print('Old cells 4-5b are now no-ops — all processing done here.')
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 4 - Pivot all models into wide columns
+# DBTITLE 1,Cell 4 - [V2 NO-OP] Pivot (consolidated into Cell 3)
+# ============================================================================
+# [V2 NO-OP] Old pivot logic consolidated into Cell 3 above.
+# ============================================================================
+pass  # All pivot logic now in Cell 3
+# OLD CODE BELOW (kept for reference, not executed)
+if False:  # pragma: no cover
+    _OLD = """
 # ============================================================================
 # PIVOT: 7 models x 5 quantiles = 35 model columns
 # ============================================================================
@@ -224,10 +342,18 @@ print(f"Model columns ({len(model_cols)}): {sorted(model_cols)[:10]} ...")
 assert len(model_cols) == len(MODELS) * len(QUANTILES), (
     f"Expected {len(MODELS)*len(QUANTILES)} model cols, got {len(model_cols)}"
 )
+"""
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 5 - Shared columns + data quality fixes (Issues 1-7)
+# DBTITLE 1,Cell 5 - [V2 NO-OP] Shared columns (consolidated into Cell 3)
+# ============================================================================
+# [V2 NO-OP] Old shared-columns + backfill logic consolidated into Cell 3.
+# ============================================================================
+pass
+print('V2: Shared columns, scenarios, backfill, YTD all handled in Cell 3.')
+if False:  # pragma: no cover
+    _OLD = """
 # ============================================================================
 # SHARED (non-pivoted) COLUMNS
 # ============================================================================
@@ -424,6 +550,7 @@ wide = (
     .withColumn("Worst_Case_Miradore_Adj",
                 F.col("worst_case") + F.coalesce(F.col("miradore_plan"), F.lit(0)))
 )
+"""
 
 # ============================================================================
 # FIX Issue 7: mc_actuals flag (monthly broadcast, not weekly)
@@ -479,11 +606,17 @@ print(f"Wide rows: {wide.count()}, columns: {len(wide.columns)}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 5b - Conformal recalibration + top-down reconciliation + LGB merge + Grand Total synthesis
-import numpy as np
-from pyspark.sql.types import DoubleType, StringType, StructType, StructField
-
+# DBTITLE 1,Cell 5b - [V2 NO-OP] Conformal + reconciliation (consolidated into Cell 3)
 # ============================================================================
+# [V2 NO-OP] Old conformal recalibration + top-down reconciliation + LGB merge.
+# All calibration now handled upstream in forecast_pure_predictions.
+# ============================================================================
+pass
+print('V2: Conformal calibration is upstream. LGB merge done in Cell 3. Reconciliation dropped (market forecasts suppressed).')
+if False:  # pragma: no cover
+    import numpy as np
+    from pyspark.sql.types import DoubleType, StringType, StructType, StructField
+    _OLD = """
 # A. CONFORMAL RECALIBRATION: Replace model-native P05/P95 with empirical bands
 # ============================================================================
 # Prophet P05-P95 only covers ~30% of actuals — basically useless as a CI.
@@ -735,8 +868,15 @@ print(f"Final columns: {len(wide.columns)}, rows: {wide.count()}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 6 - Add metadata, suppress market-grain forecasts, register temp view
+# DBTITLE 1,Cell 6 - [V2 NO-OP] Metadata (consolidated into Cell 3)
 # ============================================================================
+# [V2 NO-OP] Metadata + market suppression consolidated into Cell 3.
+# ============================================================================
+pass
+print('V2: Metadata and staging view registered in Cell 3.')
+print(f'Staging view row count: {spark.sql("SELECT COUNT(*) FROM _powerbi_wide_staging").collect()[0][0]}')
+if False:  # pragma: no cover
+    _OLD = """
 # METADATA + REGISTER TEMP VIEW FOR SQL WRITE
 # ============================================================================
 
@@ -812,55 +952,44 @@ display(final.limit(5))
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 6a - Long-format fact table (Power BI best practice)
+# DBTITLE 1,Cell 6a - Long-format fact table (V2)
 # ============================================================================
-# LONG-FORMAT FACT TABLE (Power BI best practice: unpivoted)
+# LONG-FORMAT FACT TABLE  (V2 — sourced from _powerbi_wide_staging)
 # ============================================================================
-# Wide format is an anti-pattern for Power BI:
-# - Can't build a "select model" slicer without SWITCH()
-# - 50+ columns compress poorly in VertiPaq
-# - Adding a new model means schema change
-#
-# This cell creates a normalized long table:
+# Unpivots wide staging view into:
 #   ds | product | sales_market | model | quantile | forecast_value
-# Plus shared columns (actuals, mc_actuals, etc.) joined once.
-
-LONG_TABLE = f"{CATALOG}.{SCHEMA}.arr_forecast_long"
-
-# Models in the merged schema (Global_LGB_Q50 is already merged)
-LONG_MODELS = ["Adaptive_Ensemble", "DHR_ARIMA", "ETS", "Global_LGB_Q50", "MSTL_v2", "Prophet"]
-
-# Build union of all model×quantile
+# Plus shared columns (actuals, mc_actuals, etc.)
+# ============================================================================
+from pyspark.sql import functions as F
 from functools import reduce
 
-final_columns = final.columns  # Cache once to avoid repeated Analyze RPCs (SCPAP001)
+staging = spark.table('_powerbi_wide_staging')
+staging_cols = staging.columns  # Cache to avoid repeated Analyze RPCs
+
+LONG_MODELS = MODELS  # Same 6 models from Config
+
+# Build union of model × quantile stacks
 stacks = []
 for m in LONG_MODELS:
     for q in QUANTILES:
         col = f"{m}_{q}"
-        if col in final_columns:
+        if col in staging_cols:
             stacks.append(
-                final.select(
+                staging.select(
                     "ds", "product", "sales_market", "grain_level",
                     "forecast_type", "model_fill_source",
                     "year", "quarter", "month", "ISOWeek",
                     F.lit(m).alias("model"),
                     F.lit(q).alias("quantile"),
                     F.col(col).alias("forecast_value"),
-                    # Flag: is this model's forecast genuinely distinct, or a
-                    # Prophet-proxy copy?  For proxy rows, only Prophet is real;
-                    # the other 5 models carry identical values.
-                    F.when(
-                        (F.col("model_fill_source") == "native") | (F.lit(m) == "Prophet"),
-                        F.lit(True)
-                    ).otherwise(F.lit(False)).alias("is_distinct_forecast"),
+                    # V2: all forecasts are genuine (no proxy backfill)
+                    F.lit(True).alias("is_distinct_forecast"),
                 )
             )
 
 long_forecasts = reduce(lambda a, b: a.unionByName(b), stacks)
 
-# Per-model holdout WAPE from monitoring baseline (replaces flat constant)
-# Map long-table model names → baseline model names (they differ slightly)
+# Per-model holdout WAPE from monitoring baseline
 _model_map = spark.createDataFrame([
     ("Adaptive_Ensemble", "Adaptive_Ensemble"),
     ("DHR_ARIMA", "DHR_ARIMA"),
@@ -870,28 +999,31 @@ _model_map = spark.createDataFrame([
     ("Prophet", "Prophet_trend"),
 ], ["model", "bl_model"])
 
-_bl_wape = (
-    _ucc_baseline.filter(F.col("run_date_utc") == _latest_bl_date)
-    .select(F.col("model").alias("bl_model"),
-            F.round("holdout_wape_baseline", 1).alias("model_holdout_wape"))
-    .dropDuplicates(["bl_model"])  # multiple run_timestamps per date — keep one per model
-)
+try:
+    _ucc_baseline = spark.table(f"{CATALOG}.{SCHEMA}.ucc_forecast_monitoring_baseline")
+    _latest_bl_date = _ucc_baseline.agg(F.max("run_date_utc")).collect()[0][0]
+    _bl_wape = (
+        _ucc_baseline.filter(F.col("run_date_utc") == _latest_bl_date)
+        .select(F.col("model").alias("bl_model"),
+                F.round("holdout_wape_baseline", 1).alias("model_holdout_wape"))
+        .dropDuplicates(["bl_model"])
+    )
+    long_forecasts = (
+        long_forecasts
+        .join(_model_map, on="model", how="left")
+        .join(_bl_wape, on="bl_model", how="left")
+        .drop("bl_model")
+    )
+    print(f"Per-model holdout WAPE joined ({_bl_wape.count()} models from baseline {_latest_bl_date})")
+except Exception as e:
+    print(f"Monitoring baseline not available, skipping WAPE join: {e}")
+    long_forecasts = long_forecasts.withColumn("model_holdout_wape", F.lit(None).cast("double"))
 
-long_forecasts = (
-    long_forecasts
-    .join(_model_map, on="model", how="left")
-    .join(_bl_wape, on="bl_model", how="left")
-    .drop("bl_model")
-)
-print(f"Per-model holdout WAPE joined ({_bl_wape.count()} models from baseline {_latest_bl_date})")
-
-# Add shared columns from final (one row per ds×product×market)
+# Add shared columns
 shared_cols = (
-    final.select(
+    staging.select(
         "ds", "product", "sales_market",
         "actuals", "mc_actuals", "miradore_plan",
-        "ARR_YTD", "reconciled_p50", "reconciled_p05", "reconciled_p95",
-        "is_native_model", "ensemble_holdout_wape", "holdout_eval_start",
         "run_date", "published_at_utc",
     )
     .distinct()
@@ -899,22 +1031,15 @@ shared_cols = (
 
 long_fact = long_forecasts.join(shared_cols, on=["ds", "product", "sales_market"], how="left")
 
-# Drop facade rows: for proxy periods, only Prophet is a real forecast —
-# the other 5 models carry identical P50s copied from Prophet. Keeping
-# them inflates the table 3× and misleads any model-level slicer.
-pre_filter_count = long_fact.count()
-long_fact = long_fact.filter(F.col("is_distinct_forecast"))
-
+# Filter: only rows with actual forecast values (drop market-grain nulls)
+pre_filter = long_fact.count()
+long_fact = long_fact.filter(F.col("forecast_value").isNotNull())
 long_count = long_fact.count()
-wide_count = final.count()
-facade_dropped = pre_filter_count - long_count
-print(f"Long-format rows: {long_count:,} (dropped {facade_dropped:,} facade rows, "
-      f"{facade_dropped / pre_filter_count:.1%} of pre-filter)")
+print(f"Long-format rows: {long_count:,} (dropped {pre_filter - long_count:,} null-forecast rows)")
 print(f"Long-format columns: {len(long_fact.columns)}")
 
-# Register as temp view
 long_fact.createOrReplaceTempView("_long_format_staging")
-print(f"Registered temp view _long_format_staging")
+print(f"\u2713 Registered _long_format_staging")
 print(f"\nSample:")
 display(long_fact.limit(5))
 
