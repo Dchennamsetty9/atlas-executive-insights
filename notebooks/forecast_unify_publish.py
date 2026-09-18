@@ -3219,6 +3219,16 @@ s['Best_Case']     = s['p70']                      # FIX #4: p70 = tighter exec 
 s['forecast_type'] = np.where(
     s['actual'].notna(), 'actuals',                # FIX #9: simplified types
     np.where(s['source'] == 'boq_forward', 'boq_forward', 'forecast'))
+
+# FIX D2: Propagate boq_forward to Total product.
+# Total rows have source='total_rollup' (never 'boq_forward'), so the tag above
+# misses them. Derive from child products: if ANY child (UCC/ITSG) is boq_forward
+# for a given ds, Total should also be boq_forward for that ds.
+_boq_dates = set(s.loc[
+    s['product'].isin(['UCC', 'ITSG']) & (s['forecast_type'] == 'boq_forward'), 'ds'])
+_total_boq = (s['product'] == 'Total') & s['ds'].isin(_boq_dates) & (s['forecast_type'] != 'actuals')
+s.loc[_total_boq, 'forecast_type'] = 'boq_forward'
+
 s['forecast_view'] = 'adaptive'
 s['sales_market']  = 'Total'
 s['run_date']      = RUN
