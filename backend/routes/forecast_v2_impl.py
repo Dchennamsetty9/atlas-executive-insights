@@ -8,7 +8,7 @@ Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_app_snapshot
            Actuals, Most_Likely, Worst_Case, Best_Case,
            arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima,
            mape_ets, mape_prophet, mape_lightgbm, mape_mstl_v2, mape_dhr_arima,
-           forecast_type (actuals|rolling|roy|forward_1yr), run_date
+           forecast_type (actuals|forecast|boq_forward), run_date
   NOTE: All values (Most_Likely, Worst_Case, Best_Case, p10, p90) are EXACT
         pass-throughs from the published forecast. No band math, no sqrt
         reconstruction, no * 0.90/1.10 approximations.
@@ -94,7 +94,9 @@ _ACC_MODEL = {
 }
 INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_insights_latest.json"
 
-VALID_FORECAST_TYPES = {"actuals", "rolling", "roy", "forward_1yr"}
+VALID_FORECAST_TYPES = {"actuals", "forecast", "boq_forward"}
+# V1 → V2 backward-compat mapping (frontend may still send V1 values)
+_V1_TO_V2_FORECAST_TYPE = {"rolling": "forecast", "roy": "forecast", "forward_1yr": "forecast"}
 CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "300"))
 _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
@@ -211,6 +213,7 @@ async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str
 
 def _validate_forecast_type(forecast_type: str) -> str:
     ft = (forecast_type or "").strip().lower()
+    ft = _V1_TO_V2_FORECAST_TYPE.get(ft, ft)  # V1 → V2 compat
     if ft not in VALID_FORECAST_TYPES:
         raise HTTPException(status_code=400, detail="Invalid forecast_type")
     return ft
@@ -281,7 +284,7 @@ def _source_forecast_type_filter(source: Dict[str, Any], actuals: bool = False, 
     if source.get("no_run_date"):
         expr = f"LOWER(TRIM(CAST({col} AS STRING)))"
         return f"{expr} = 'actuals'" if actuals else f"{expr} <> 'actuals'"
-    return f"{col} = 'actuals'" if actuals else f"{col} IN ('rolling', 'roy')"
+    return f"{col} = 'actuals'" if actuals else f"{col} IN ('forecast', 'boq_forward')"
 
 
 def _normalize_market_value(value: Optional[str]) -> str:
@@ -318,7 +321,14 @@ def _effective_forecast_type(model: str, forecast_type: str) -> str:
     if source["has_forecast_type"]:
         return forecast_type
     # Backward-compat fallback if a model source does not expose forecast_type.
-    return "actuals" if forecast_type == "actuals" else "rolling"
+    return "actuals" if forecast_type == "actuals" else "forecast"
+
+
+def _fc_type_predicate(ft: str, col: str = "forecast_type") -> str:
+    """SQL predicate for forecast_type. Non-actuals includes both 'forecast' and 'boq_forward'."""
+    if ft == "actuals":
+        return f"{col} = 'actuals'"
+    return f"{col} IN ('forecast', 'boq_forward')"
 
 
 def _monthly_forecast_type_condition(
@@ -326,13 +336,10 @@ def _monthly_forecast_type_condition(
     rolling_next_year: bool,
     selected_year: int,
 ) -> str:
+    # V2: snapshot table uses 'actuals', 'forecast', 'boq_forward' only.
     if forecast_type == "actuals":
-        return f"forecast_type = '{forecast_type}'"
-    if rolling_next_year:
-        return "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
-    if selected_year > datetime.date.today().year:
-        return "forecast_type = 'forward_1yr'"
-    return "forecast_type IN ('rolling', 'roy')"
+        return "forecast_type = 'actuals'"
+    return "forecast_type IN ('forecast', 'boq_forward')"
 
 
 def _normalized_forecast_sql(
@@ -397,7 +404,7 @@ def _normalized_forecast_sql(
         date_filter = f"AND {qf}" if qf else (f"AND {rolling_filter}" if rolling_filter else f"AND {yf}")
         type_filter = ("forecast_type = 'actuals' AND Actuals IS NOT NULL"
                        if forecast_type == "actuals" else
-                       _monthly_forecast_type_condition("rolling", rolling_next_year, year or datetime.date.today().year)
+                       _monthly_forecast_type_condition("forecast", rolling_next_year, year or datetime.date.today().year)
                        + f" AND {_forecast_after_actuals_pred(pf, gf)}")
         return f"""
             SELECT
@@ -422,7 +429,7 @@ def _normalized_forecast_sql(
               {pf} {gf}
               {date_filter}
                         QUALIFY ROW_NUMBER() OVER (PARTITION BY ds ORDER BY
-                                CASE forecast_type WHEN 'actuals' THEN 0 WHEN 'rolling' THEN 1 WHEN 'roy' THEN 2 ELSE 3 END) = 1
+                                CASE forecast_type WHEN 'actuals' THEN 0 WHEN 'forecast' THEN 1 WHEN 'boq_forward' THEN 2 ELSE 3 END) = 1
             ORDER BY ds
         """
 
@@ -441,7 +448,7 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
         entry = {
             "ds": ds,
             "model": model,
-            "forecast_type": str(row.get("forecast_type") or "rolling"),
+            "forecast_type": str(row.get("forecast_type") or "forecast"),
             "value": _f(row.get("value")),
             "lower": _f(row.get("lower")) if row.get("lower") is not None and model == "ensemble" else None,
             "upper": _f(row.get("upper")) if row.get("upper") is not None and model == "ensemble" else None,
@@ -625,7 +632,7 @@ async def _period_landings(
     model = next(key for key, candidate in MODEL_SOURCES.items()
                  if candidate["most_likely_col"] == source["most_likely_col"])
     actual_sql = _normalized_forecast_sql(model, "actuals", product, product_line, sales_market, year, quarter)
-    forecast_sql = _normalized_forecast_sql(model, "rolling", product, product_line, sales_market, year, quarter)
+    forecast_sql = _normalized_forecast_sql(model, "forecast", product, product_line, sales_market, year, quarter)
     sql = f"""
         WITH actual_weeks AS ({actual_sql}), forecast_weeks AS ({forecast_sql}),
         weeks AS (SELECT * FROM actual_weeks UNION ALL SELECT * FROM forecast_weeks)
@@ -966,7 +973,7 @@ async def _backtest_rows_from_accuracy_history(
             sql,
             endpoint="/backtest/accuracy-history",
             model=model,
-            forecast_type="rolling",
+            forecast_type="forecast",
             product=_selected_product(product, product_line),
             geo=_normalize_market_value(sales_market),
             year=None,
@@ -1038,7 +1045,7 @@ async def get_intelligence(
                         WHERE product = '{prod.replace(chr(39), chr(39)*2)}'
                             AND run_date = (SELECT MAX(run_date) FROM {FC_TABLE})
             LIMIT 1
-        """, endpoint="/intelligence", model="ensemble", forecast_type="rolling", product=prod, geo="Total", year=None, quarter=None, variant="unified")
+        """, endpoint="/intelligence", model="ensemble", forecast_type="forecast", product=prod, geo="Total", year=None, quarter=None, variant="unified")
         if rows and rows[0].get("insights_json"):
             payload = json.loads(rows[0]["insights_json"])
             if isinstance(payload, dict):
@@ -1058,7 +1065,7 @@ async def get_weekly(
     product:       Optional[str] = Query(None),
     product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
-    forecast_type: str           = Query("rolling"),
+    forecast_type: str           = Query("forecast"),
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
@@ -1075,14 +1082,14 @@ async def get_weekly(
     model = _validate_model(model)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    rolling_next_year = (forecast_type == "forecast" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
 
     # 2027+ data lives under forecast_type='forward_1yr' in the unified view.
     # Override eff_forecast_type so queries find the correct rows.
     _is_future_year = (year > datetime.date.today().year)
     if _is_future_year:
-        eff_forecast_type = "forward_1yr"
+        eff_forecast_type = "forecast"
     if quarter:
         qtr_filter = _quarter_filter(quarter, year)
     elif rolling_next_year:
@@ -1178,7 +1185,7 @@ async def get_weekly(
                         FROM {FC_TABLE}
                         WHERE {_latest_run()}
                                 {_pf} {_gf}
-                          AND forecast_type = 'forward_1yr'
+                          AND forecast_type IN ('forecast', 'boq_forward')
                           AND {qtr_filter}
                         ORDER BY ds
                     """
@@ -1194,7 +1201,7 @@ async def get_weekly(
                                 {_pf} {_gf}
                           AND (
                                 (forecast_type = 'actuals' AND {qtr_filter})
-                                OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter}
+                                OR (forecast_type IN ('forecast', 'boq_forward') AND {qtr_filter}
                                     AND {_forecast_after_actuals_pred(_pf, _gf)})
                               )
                         ORDER BY ds
@@ -1215,7 +1222,7 @@ async def get_weekly(
                     FROM {FC_TABLE}
                     WHERE {_latest_run()}
                                     {_pf} {_gf}
-                      AND forecast_type = 'forward_1yr'
+                      AND forecast_type IN ('forecast', 'boq_forward')
                       AND {qtr_filter}
                     ORDER BY ds
                 """
@@ -1246,7 +1253,7 @@ async def get_weekly(
                                         {_pf} {_gf}
                           AND (
                                 (forecast_type = 'actuals' AND {qtr_filter})
-                                OR (forecast_type IN ('rolling', 'roy') AND {qtr_filter}
+                                OR (forecast_type IN ('forecast', 'boq_forward') AND {qtr_filter}
                                     AND {_forecast_after_actuals_pred(_pf, _gf)})
                               )
                     ) q
@@ -1331,7 +1338,7 @@ async def get_monthly(
     product:       Optional[str] = Query(None),
     product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
-    forecast_type: str           = Query("rolling"),
+    forecast_type: str           = Query("forecast"),
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
@@ -1351,7 +1358,7 @@ async def get_monthly(
     lower_col = source["lower_col"]
     upper_col = source["upper_col"]
 
-    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    rolling_next_year = (forecast_type == "forecast" and year is None and quarter is None)
     selected_year = year if year else datetime.date.today().year
 
     # Include ALL disjoint forecast periods so the monthly view shows complete
@@ -1616,7 +1623,7 @@ async def get_ytd(
     product:       Optional[str] = Query(None),
     product_line:  Optional[str] = Query(None),
     sales_market:  Optional[str] = Query(None),
-    forecast_type: str           = Query("rolling"),
+    forecast_type: str           = Query("forecast"),
     model:         str           = Query("ensemble"),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
@@ -1636,12 +1643,12 @@ async def get_ytd(
     table = source["table"]
     actuals_col = source.get("actuals_col", "Actuals")
 
-    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    rolling_next_year = (forecast_type == "forecast" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
     # 2027+ data lives under forecast_type='forward_1yr'.
     _is_future_year = (year > datetime.date.today().year)
     if _is_future_year:
-        eff_forecast_type = "forward_1yr"
+        eff_forecast_type = "forecast"
     pf   = _source_product_filter(source, product, product_line)
     gf   = _source_geo_filter(source, sales_market)
     yf   = _year_filter(year)
@@ -1690,9 +1697,9 @@ async def get_ytd(
         # are inherently beyond any closed actual week.
         _after_pred = "" if _is_future_year else f"AND {_forecast_after_actuals_pred(pf, gf)}"
         if rolling_next_year:
-            fc_type_clause = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+            fc_type_clause = "forecast_type IN ('forecast', 'boq_forward')"
         elif quarter is None and not _is_future_year:
-            fc_type_clause = "forecast_type IN ('rolling', 'roy')"
+            fc_type_clause = "forecast_type IN ('forecast', 'boq_forward')"
         else:
             fc_type_clause = f"forecast_type = '{eff_forecast_type}'"
         if not source.get("no_run_date"):
@@ -1817,7 +1824,7 @@ async def get_by_product(
     product:       Optional[str] = Query(None),
     product_line:  Optional[str] = Query(None),
     model:         str = Query("ensemble"),
-    forecast_type: str = Query("rolling"),
+    forecast_type: str = Query("forecast"),
     sales_market:  Optional[str] = Query(None),
     year:          Optional[int] = Query(None),
     quarter:       Optional[int] = Query(None),
@@ -1831,7 +1838,7 @@ async def get_by_product(
     forecast_type = _validate_forecast_type(forecast_type)
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
 
-    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    rolling_next_year = (forecast_type == "forecast" and year is None and quarter is None)
     year = year if year else datetime.date.today().year
     # 2027+ data lives under forecast_type='forward_1yr' in the unified view.
     _is_future_year = (year > datetime.date.today().year)
@@ -1847,11 +1854,11 @@ async def get_by_product(
     # using only 'rolling' misses the rest-of-year chunk beyond the 13-week window.
     # Future years (2027+) use 'forward_1yr' exclusively.
     if rolling_next_year:
-        _fc_type_pred = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+        _fc_type_pred = "forecast_type IN ('forecast', 'boq_forward')"
     elif _is_future_year:
-        _fc_type_pred = "forecast_type = 'forward_1yr'"
+        _fc_type_pred = "forecast_type IN ('forecast', 'boq_forward')"
     else:
-        _fc_type_pred = "forecast_type IN ('rolling', 'roy')"
+        _fc_type_pred = "forecast_type IN ('forecast', 'boq_forward')"
 
     # Totals are the period LANDING: actuals for closed weeks + forecast spliced
     # after the last actual (matches the Overview KPI and the AI insight). A
@@ -1993,7 +2000,7 @@ async def get_models(
             f"SELECT MAX(CAST(run_date AS STRING)) AS freshness FROM {FC_TABLE}",
             endpoint="/models",
             model="ensemble",
-            forecast_type="rolling",
+            forecast_type="forecast",
             product="Total",
             geo="Total",
             year=None,
@@ -2015,7 +2022,7 @@ async def get_models(
             else f"SELECT MAX(CAST(ds AS STRING)) AS freshness FROM {table}"
         )
         try:
-            rows = await _cached_query(freshness_sql, endpoint="/models", model=key, forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, metric="table_refresh")
+            rows = await _cached_query(freshness_sql, endpoint="/models", model=key, forecast_type="forecast", product="Total", geo="Total", year=None, quarter=None, metric="table_refresh")
             freshness_cache[table] = str((rows[0] if rows else {}).get("freshness") or "")[:10] or None
         except Exception:
             freshness_cache[table] = None
@@ -2031,7 +2038,7 @@ async def get_models(
             "latest_refresh": canonical_refresh or table_refresh,
             "table_latest_refresh": table_refresh,
             "has_forecast_type": source["has_forecast_type"],
-            "supported_forecast_types": ["actuals", "rolling", "roy"] if source["has_forecast_type"] else ["actuals", "rolling"],
+            "supported_forecast_types": ["actuals", "forecast", "boq_forward"] if source["has_forecast_type"] else ["actuals", "forecast"],
         })
 
     return {"source": "live", "models": models}
@@ -2144,7 +2151,7 @@ async def get_historical(
                 quarter(ds)                 AS quarter,
                 SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr
             FROM {FC_TABLE}
-            WHERE forecast_type IN ('rolling', 'roy')
+            WHERE forecast_type IN ('forecast', 'boq_forward')
               AND {_latest_run()}
               AND YEAR(ds) = {current_year}
               AND {_forecast_after_actuals_pred(pf, gf)}
@@ -2200,7 +2207,7 @@ async def get_confidence_bands(
     product:      Optional[str] = Query(None),
     product_line: Optional[str] = Query(None),
     sales_market: Optional[str] = Query(None),
-    forecast_type: str          = Query("rolling"),
+    forecast_type: str          = Query("forecast"),
     model:        str           = Query("ensemble"),
     year:         Optional[int] = Query(None),
     quarter:      Optional[int] = Query(None),
@@ -2221,7 +2228,7 @@ async def get_confidence_bands(
     eff_forecast_type = _effective_forecast_type(model, forecast_type)
     pf = _source_product_filter(source, product, product_line)
     gf = _source_geo_filter(source, sales_market)
-    rolling_next_year = (forecast_type == "rolling" and year is None and quarter is None)
+    rolling_next_year = (forecast_type == "forecast" and year is None and quarter is None)
     selected_year = year if year else datetime.date.today().year
     date_filter = (
         f"AND {_quarter_filter(quarter, selected_year)}"
@@ -2238,11 +2245,11 @@ async def get_confidence_bands(
     if quarter is not None:
         cb_fc_pred = f"forecast_type = '{eff_forecast_type}'"
     elif rolling_next_year:
-        cb_fc_pred = "forecast_type IN ('rolling', 'roy', 'forward_1yr')"
+        cb_fc_pred = "forecast_type IN ('forecast', 'boq_forward')"
     elif selected_year > datetime.date.today().year:
-        cb_fc_pred = "forecast_type = 'forward_1yr'"
+        cb_fc_pred = "forecast_type IN ('forecast', 'boq_forward')"
     else:
-        cb_fc_pred = "forecast_type IN ('rolling', 'roy')"
+        cb_fc_pred = "forecast_type IN ('forecast', 'boq_forward')"
 
     sql = _normalized_forecast_sql(model, forecast_type, product, product_line,
                                    sales_market, selected_year, quarter, rolling_next_year)
@@ -2522,7 +2529,7 @@ async def get_run_delta(
                    CAST(ds AS DATE) AS ds,
                    CAST(Most_Likely AS DOUBLE) AS ml
             FROM {FC_TABLE}
-            WHERE forecast_type IN ('rolling', 'roy')
+            WHERE forecast_type IN ('forecast', 'boq_forward')
               AND CAST(run_date AS DATE) IN (SELECT rd FROM runs)
               AND CAST(ds AS DATE) >= (SELECT MAX(rd) FROM runs)
         )
@@ -2540,7 +2547,7 @@ async def get_run_delta(
         GROUP BY a.product, a.sales_market
     """
     try:
-        rows = await _cached_query(sql, endpoint="/run-delta", model="ensemble", forecast_type="rolling", product=effective, geo=effective_geo, year=None, quarter=None)
+        rows = await _cached_query(sql, endpoint="/run-delta", model="ensemble", forecast_type="forecast", product=effective, geo=effective_geo, year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/run-delta] query failed: %s", exc)
         return {**_demo_run_delta(), "error": str(exc)}
@@ -2637,7 +2644,7 @@ async def get_run_history(
                    CAST(ds AS DATE) AS ds,
                    CAST(Most_Likely AS DOUBLE) AS ml
             FROM {FC_TABLE}
-            WHERE forecast_type IN ('rolling', 'roy')
+            WHERE forecast_type IN ('forecast', 'boq_forward')
               {product_filter} {market_filter}
         )
         SELECT p.current_rd, p.previous_rd,
@@ -2656,7 +2663,7 @@ async def get_run_history(
     """
     try:
         rows = await _cached_query(sql, endpoint="/run-history", model="ensemble",
-                                   forecast_type="rolling", product=product_line,
+                                   forecast_type="forecast", product=product_line,
                                    geo=sales_market, year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/run-history] query failed: %s", exc)
@@ -2878,7 +2885,7 @@ async def get_forward_outlook(
 
     return {
         "source": "live",
-        "forecast_type": "forward_1yr",
+        "forecast_type": "forecast",
         "product": product,
         "sales_market": market,
         "rows": rows,
@@ -2965,7 +2972,7 @@ async def get_monthly_combined(
 
     return {
         "source": "live",
-        "forecast_type": "forward_1yr",
+        "forecast_type": "forecast",
         "product": product,
         "sales_market": market,
         "months": months,
@@ -3045,7 +3052,7 @@ async def get_weekly_all_models(
 
     try:
         rows_raw = await _cached_query(sql, endpoint="/weekly-all-models",
-                                       model="ensemble", forecast_type="rolling",
+                                       model="ensemble", forecast_type="forecast",
                                        product=_selected_product(None, product_line),
                                        geo="Total", year=eff_year, quarter=quarter)
     except Exception as exc:
@@ -3364,7 +3371,7 @@ async def get_leaderboard(
     """
 
     try:
-        rows_raw = await _cached_query(sql, endpoint="/leaderboard", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None)
+        rows_raw = await _cached_query(sql, endpoint="/leaderboard", model="ensemble", forecast_type="forecast", product="Total", geo="Total", year=None, quarter=None)
     except Exception as exc:
         logger.warning("[forecast/leaderboard] query failed: %s", exc)
         return _demo("data", error=str(exc))
@@ -3418,7 +3425,7 @@ async def get_leaderboard(
                            ORDER BY CAST(run_date AS DATE) DESC
                        ) AS rn
                 FROM {FC_TABLE}
-                WHERE forecast_type IN ('rolling', 'roy')
+                WHERE forecast_type IN ('forecast', 'boq_forward')
                   AND CAST(run_date AS DATE) < CAST(ds AS DATE)
             )
             SELECT f.product, f.sales_market,
@@ -3429,7 +3436,7 @@ async def get_leaderboard(
             WHERE f.rn = 1
             GROUP BY f.product, f.sales_market
         """
-        ens_rows = await _cached_query(ens_sql, endpoint="/leaderboard", model="ensemble", forecast_type="rolling", product="Total", geo="Total", year=None, quarter=None, metric="ensemble_realized_mape")
+        ens_rows = await _cached_query(ens_sql, endpoint="/leaderboard", model="ensemble", forecast_type="forecast", product="Total", geo="Total", year=None, quarter=None, metric="ensemble_realized_mape")
         ens_map = {
             (str(r.get("product") or ""), _normalize_market_value(str(r.get("sales_market") or ""))):
                 _f(r.get("mape_ensemble"), 999)
@@ -3467,7 +3474,7 @@ async def get_freshness(
             f"SELECT MAX(CAST(run_date AS DATE)) AS freshness FROM {FC_TABLE}",
             endpoint="/freshness",
             model="ensemble",
-            forecast_type="rolling",
+            forecast_type="forecast",
             product="Total",
             geo="Total",
             year=None,
@@ -3531,7 +3538,7 @@ async def get_driver_bridge(
 
 @router.get("/risk-radar")
 async def get_risk_radar(
-    forecast_type: str = Query("rolling"),
+    forecast_type: str = Query("forecast"),
     model: str = Query("ensemble"),
     year: Optional[int] = Query(None),
     quarter: Optional[int] = Query(None),
@@ -3576,7 +3583,7 @@ async def get_risk_radar(
                                                                     AND actual.sales_market = forecast.sales_market
                                                             ), DATE'1900-01-01')
                                                         QUALIFY ROW_NUMBER() OVER (PARTITION BY ds, product, sales_market ORDER BY
-                                                                CASE forecast_type WHEN 'rolling' THEN 1 WHEN 'roy' THEN 2 ELSE 3 END) = 1
+                                                                CASE forecast_type WHEN 'forecast' THEN 1 WHEN 'boq_forward' THEN 2 ELSE 3 END) = 1
                                                 ) scoped
                         GROUP BY product, {_normalized_market_expr('sales_market')}
         """, endpoint="/risk-radar", model=model, forecast_type=eff_forecast_type, product=_selected_product(None, product_line), geo=_normalize_market_value(sales_market), year=selected_year, quarter=quarter, limit=limit)
@@ -3626,7 +3633,7 @@ async def get_meeting_mode(
         bridge = await get_driver_bridge(model=model, product=None, year=year, quarter=quarter, product_line=product_line, sales_market=sales_market, live_mode=live_mode)
         # Explicitly pass forecast_type to avoid FastAPI Query default objects when
         # this endpoint calls get_risk_radar as a plain Python function.
-        radar = await get_risk_radar(forecast_type="rolling", model=model, year=year, quarter=quarter, limit=20, product_line=product_line, sales_market=sales_market, live_mode=live_mode)
+        radar = await get_risk_radar(forecast_type="forecast", model=model, year=year, quarter=quarter, limit=20, product_line=product_line, sales_market=sales_market, live_mode=live_mode)
         freshness = await get_freshness(live_mode=live_mode)
         top_risks = (radar.get("items") or [])[:3]
         moves = []
