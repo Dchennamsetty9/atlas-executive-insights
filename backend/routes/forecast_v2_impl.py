@@ -35,11 +35,12 @@ router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
+# DEPRECATED: V1 tables below are no longer used by any endpoint. Kept for reference.
 FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
 # PowerBI wide table — has Ensemble P25/P50/P75 for ALL periods incl. hindcast.
 # Used by /monthly for forecast scenarios so closed months show real model predictions.
 POWERBI_WIDE_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_powerbi_wide`"
-PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_all_models`"
+PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_all_models`"  # DEPRECATED
 # Default to the unified compat views (source of truth from forecast_unify_publish).
 # These views expose exact p10/p50/p90 values from the per-product V5 pipelines.
 # To revert to legacy tables, set env vars to arr_forecast_v2 / arr_forecast_v2_leaderboard.
@@ -62,9 +63,9 @@ ACCURACY_HISTORY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{ACCURACY_H
 # APP_TABLE is the unified app-facing table both notebooks are designed to write,
 # partitioned by product_group and refreshed each weekly run (run_date_utc).
 # ITSG populates it today; UCC writes the same shape to ucc_forecast_v5.
-APP_TABLE      = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_app_latest`"
-UCC_V5_TABLE   = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_v5`"
-ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"
+APP_TABLE      = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`arr_forecast_app_latest`"  # DEPRECATED
+UCC_V5_TABLE   = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_v5`"  # DEPRECATED
+ITSG_V5_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`itsg_forecast_v5`"  # DEPRECATED
 # Retained forecast-vs-actual vintages produced by the UCC V5 notebook — powers
 # the Forecast-vs-Reality (backtest) view with real history. UCC-only, no geo split.
 UCC_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`ucc_forecast_accuracy_history`"
@@ -80,6 +81,8 @@ SCENARIO_GRID_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_scena
 SENSITIVITY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_sensitivity`"
 MODEL_SCENARIOS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_model_scenarios`"
 HIST_SCENARIOS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_historical_scenarios`"
+# Per-model static predictions with calibrated p10-p90 (latest run only, no MAX subquery needed).
+PURE_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_pure_predictions`"
 
 _GRAPH_KEYS = {"weekly", "ytd", "seasonality", "by_product", "monthly",
                "accuracy", "model_lab", "backtest",
@@ -106,15 +109,12 @@ MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
     },
     "prophet": {
         "display_name": "Prophet",
-        "table": PROPHET_TABLE,
-        "most_likely_col": "forecast_p50",
-        "lower_col": "forecast_p05",
-        "upper_col": "forecast_p95",
+        "table": FC_TABLE,
+        "most_likely_col": "arr_prophet",
+        "lower_col": "p30",
+        "upper_col": "p70",
         "mape_field": "Prophet",
         "has_forecast_type": True,
-        "actuals_col": "actuals",
-        "model_filter": "model_name = 'Prophet'",
-        "no_run_date": True,
     },
     "lightgbm": {
         "display_name": "LightGBM",
@@ -744,69 +744,42 @@ def _v5_next_year_filter() -> str:
     )
 
 
-def _v5_forward_sql(table: str, has_pg: bool, product: str, market: str, grain: str) -> str:
-    latest_col = _v5_latest_col(has_pg)
-    pg_clause = ""
-    if has_pg and product in {"UCC", "ITSG"}:
-        pg_clause = f"AND product_group = '{product}'"
-
-    market_clause = ""
-    if grain == "market" and market != "Total":
-        market_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
-
+def _v5_forward_sql(product: str, market: str) -> str:
+    """V2: Forward outlook from forecast_app_snapshot (Ensemble scenarios pre-computed)."""
+    pf = _product_filter(None, product)
+    gf = _geo_filter(market)
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            SUM((COALESCE(CAST(p10 AS DOUBLE), 0) + COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) / 2) AS arr_worst,
-            SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
-            SUM((COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0) + COALESCE(CAST(p90 AS DOUBLE), 0)) / 2) AS arr_best
-        FROM {table}
-        WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
-          AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
-          {pg_clause}
-          {market_clause}
-          AND {latest_col} = (
-                SELECT MAX({latest_col})
-                FROM {table}
-                WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
-                  {pg_clause}
-          )
+            CAST(Worst_Case AS DOUBLE) AS arr_worst,
+            CAST(Most_Likely AS DOUBLE) AS arr_likely,
+            CAST(Best_Case AS DOUBLE) AS arr_best
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          {pf} {gf}
+          AND {_fc_type_predicate('forecast')}
           AND {_v5_next_year_filter()}
-        GROUP BY ds
         ORDER BY ds
     """
 
 
-def _v5_monthly_sql(table: str, has_pg: bool, product: str, market: str, grain: str) -> str:
-    latest_col = _v5_latest_col(has_pg)
-    pg_clause = ""
-    if has_pg and product in {"UCC", "ITSG"}:
-        pg_clause = f"AND product_group = '{product}'"
-
-    market_clause = ""
-    if grain == "market" and market != "Total":
-        market_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
-
+def _v5_monthly_sql(product: str, market: str) -> str:
+    """V2: Monthly Ensemble scenarios from forecast_app_snapshot."""
+    pf = _product_filter(None, product)
+    gf = _geo_filter(market)
     return f"""
         SELECT
             YEAR(ds) AS yr,
             QUARTER(ds) AS qtr,
             MONTH(ds) AS mth,
             DATE_FORMAT(ds, 'MMMM') AS month_name,
-            SUM((COALESCE(CAST(p10 AS DOUBLE), 0) + COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) / 2) AS arr_worst,
-            SUM(COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0)) AS arr_likely,
-            SUM((COALESCE(CAST(p50 AS DOUBLE), CAST(forecast AS DOUBLE), 0) + COALESCE(CAST(p90 AS DOUBLE), 0)) / 2) AS arr_best
-        FROM {table}
-        WHERE UPPER(TRIM(CAST(model AS STRING))) = 'ADAPTIVE_ENSEMBLE'
-          AND LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
-          {pg_clause}
-          {market_clause}
-          AND {latest_col} = (
-                SELECT MAX({latest_col})
-                FROM {table}
-                WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
-                  {pg_clause}
-          )
+            SUM(CAST(Worst_Case AS DOUBLE)) AS arr_worst,
+            SUM(CAST(Most_Likely AS DOUBLE)) AS arr_likely,
+            SUM(CAST(Best_Case AS DOUBLE)) AS arr_best
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          {pf} {gf}
+          AND {_fc_type_predicate('forecast')}
           AND {_v5_next_year_filter()}
         GROUP BY yr, qtr, mth, month_name
         ORDER BY yr, mth
@@ -2751,28 +2724,27 @@ def _demo_model_lab(product: str, grain: str):
     }
 
 
-def _model_lab_sql(table: str, has_pg: bool, product: str, grain: str, market: Optional[str]) -> str:
-    latest_col = "run_date_utc" if has_pg else "run_timestamp_utc"
-    pg_clause = f"AND product_group = '{product}'" if has_pg else ""
-    mkt_clause = ""
-    if grain == "market" and market and market != "All":
-        mkt_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
+def _model_lab_sql(product: str) -> str:
+    """Per-model forecast from forecast_pure_predictions (latest run, calibrated bands).
+    Normalizes model names (Prophet_trend→Prophet, LGB variants→Global_LGB_Q50).
+    Only Adaptive_Ensemble is recommended_for_exec."""
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
-            CAST(model AS STRING) AS model,
-            CAST(sales_market AS STRING) AS sales_market,
-            COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) AS forecast,
+            CASE
+                WHEN model = 'Prophet_trend' THEN 'Prophet'
+                WHEN model LIKE 'Global_LGB_Q50_%' THEN 'Global_LGB_Q50'
+                ELSE model
+            END AS model,
+            COALESCE(CAST(blended_p50 AS DOUBLE), CAST(p50 AS DOUBLE)) AS forecast,
             CAST(p10 AS DOUBLE) AS p10,
             CAST(p50 AS DOUBLE) AS p50,
             CAST(p90 AS DOUBLE) AS p90,
-            CAST(recommended_for_exec AS INT) AS recommended,
-            CAST({latest_col} AS STRING) AS run_date
-        FROM {table}
-        WHERE grain_level = '{grain}'
-          {pg_clause}
-          {mkt_clause}
-          AND {latest_col} = (SELECT MAX({latest_col}) FROM {table} WHERE grain_level = '{grain}' {pg_clause})
+            CASE WHEN model = 'Adaptive_Ensemble' THEN 1 ELSE 0 END AS recommended,
+            CAST(run_date AS STRING) AS run_date
+        FROM {PURE_TABLE}
+        WHERE product = '{product}'
+          AND model NOT IN ('Global_LGB_Q50')
         ORDER BY model, ds
     """
 
@@ -2806,30 +2778,27 @@ async def get_model_lab(
     if not live_mode:
         return _demo_model_lab(product, grain)
 
-    # Try the unified app table first, then the per-product V5 table.
-    candidates = [(APP_TABLE, True)]
-    candidates.append((UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False))
+    # V2: read per-model bands from forecast_pure_predictions (total grain only).
+    # Market-grain model lab is not available (pure_predictions has no sales_market).
+    if grain == "market":
+        return _demo_model_lab(product, grain)
 
     rows_raw, err = None, None
-    for table, has_pg in candidates:
-        try:
-            rows_raw = await _cached_query(
-                _model_lab_sql(table, has_pg, product, grain, mkt),
-                endpoint="/model-lab",
-                model="ensemble",
-                forecast_type="rolling",
-                product=product,
-                geo=mkt or "Total",
-                year=None,
-                quarter=None,
-                grain=grain,
-                table=table,
-            )
-            if rows_raw:
-                break
-        except Exception as exc:
-            err = str(exc)
-            logger.warning("[forecast/model-lab] %s query failed: %s", table, exc)
+    try:
+        rows_raw = await _cached_query(
+            _model_lab_sql(product),
+            endpoint="/model-lab",
+            model="ensemble",
+            forecast_type="forecast",
+            product=product,
+            geo="Total",
+            year=None,
+            quarter=None,
+            grain=grain,
+        )
+    except Exception as exc:
+        err = str(exc)
+        logger.warning("[forecast/model-lab] pure_predictions query failed: %s", exc)
 
     if not rows_raw:
         demo = _demo_model_lab(product, grain)
@@ -2873,29 +2842,23 @@ async def get_forward_outlook(
         return _demo("rows")
 
     product, market, grain = _v5_scope(product_line, sales_market)
-    candidates = [(APP_TABLE, True), (UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False)]
 
     rows_raw = None
     err = None
-    for table, has_pg in candidates:
-        try:
-            rows_raw = await _cached_query(
-                _v5_forward_sql(table, has_pg, product, market, grain),
-                endpoint="/forward-outlook",
-                model="ensemble",
-                forecast_type="forward_1yr",
-                product=product,
-                geo=market,
-                year=None,
-                quarter=None,
-                grain=grain,
-                table=table,
-            )
-            if rows_raw:
-                break
-        except Exception as exc:
-            err = str(exc)
-            logger.warning("[forecast/forward-outlook] %s query failed: %s", table, exc)
+    try:
+        rows_raw = await _cached_query(
+            _v5_forward_sql(product, market),
+            endpoint="/forward-outlook",
+            model="ensemble",
+            forecast_type="forecast",
+            product=product,
+            geo=market,
+            year=None,
+            quarter=None,
+        )
+    except Exception as exc:
+        err = str(exc)
+        logger.warning("[forecast/forward-outlook] snapshot query failed: %s", exc)
 
     if not rows_raw:
         return _demo("rows", error=err or "No V5 forward outlook rows")
@@ -2937,29 +2900,23 @@ async def get_monthly_combined(
         return _demo("months")
 
     product, market, grain = _v5_scope(product_line, sales_market)
-    candidates = [(APP_TABLE, True), (UCC_V5_TABLE if product == "UCC" else ITSG_V5_TABLE, False)]
 
     fc_rows_raw = None
     err = None
-    for table, has_pg in candidates:
-        try:
-            fc_rows_raw = await _cached_query(
-                _v5_monthly_sql(table, has_pg, product, market, grain),
-                endpoint="/monthly-combined",
-                model="ensemble",
-                forecast_type="forward_1yr",
-                product=product,
-                geo=market,
-                year=None,
-                quarter=None,
-                grain=grain,
-                table=table,
-            )
-            if fc_rows_raw:
-                break
-        except Exception as exc:
-            err = str(exc)
-            logger.warning("[forecast/monthly-combined] %s query failed: %s", table, exc)
+    try:
+        fc_rows_raw = await _cached_query(
+            _v5_monthly_sql(product, market),
+            endpoint="/monthly-combined",
+            model="ensemble",
+            forecast_type="forecast",
+            product=product,
+            geo=market,
+            year=None,
+            quarter=None,
+        )
+    except Exception as exc:
+        err = str(exc)
+        logger.warning("[forecast/monthly-combined] snapshot query failed: %s", exc)
 
     if not fc_rows_raw:
         return _demo("months", error=err or "No V5 monthly combined rows")
