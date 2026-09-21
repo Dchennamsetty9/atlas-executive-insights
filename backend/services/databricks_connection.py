@@ -3,11 +3,10 @@ databricks_connection.py
 Lightweight connection module for Databricks SQL Warehouse.
 Shared by data_fetcher and gaim_data_service.
 
-Auth priority (first usable wins):
-    1. Request/user token via x-forwarded-access-token
-    2. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
-    3. Databricks SDK auto-discovery (handles Apps SP auth automatically)
-    4. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
+Auth policy:
+    User-facing SQL requires the request token supplied by
+    x-forwarded-access-token. Background SQL without a user session is
+    intentionally rejected.
 """
 
 import hashlib
@@ -123,28 +122,15 @@ def _prefer_sdk_credentials() -> bool:
 
 
 def token_available() -> bool:
-    """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
-    if not DATABRICKS_AVAILABLE:
-        return False
-    if bool(_resolve_token()) or _oauth_m2m_available():
-        return True
-    provider, _ = _sdk_credentials_provider()
-    return provider is not None
+    """Return True only when a forwarded user token is available."""
+    return DATABRICKS_AVAILABLE and bool(_request_token.get())
 
 
 def query_cache_scope() -> str | None:
-    token = _resolve_token()
-    sdk_token, sdk_host = _sdk_credentials_provider()
-    if _prefer_sdk_credentials() and sdk_token:
-        credentials = ("sdk-auto", sdk_host or HOST)
-    elif token:
-        credentials = ("token", token)
-    elif _oauth_m2m_available():
-        credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
-    elif sdk_token:
-        credentials = ("sdk-auto", sdk_host or HOST)
-    else:
+    token = _request_token.get()
+    if not token:
         return None
+    credentials = ("forwarded-user", token)
     identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
     return hashlib.sha256(identity).hexdigest()
 
@@ -165,17 +151,7 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    sdk_token, sdk_host = _sdk_credentials_provider()
-    if _prefer_sdk_credentials() and sdk_token:
-        return sql.connect(
-            server_hostname=sdk_host or HOST,
-            http_path=HTTP_PATH,
-            access_token=sdk_token,
-            _socket_timeout=10,
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
-        )
-
-    token = _resolve_token()
+    token = _request_token.get()
     if token:
         return sql.connect(
             server_hostname=HOST,
@@ -185,30 +161,8 @@ def get_connection():
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
-    # SDK auto-discovery: handles Databricks Apps SP auth, notebook runtime, etc.
-    if sdk_token:
-        return sql.connect(
-            server_hostname=sdk_host or HOST,
-            http_path=HTTP_PATH,
-            access_token=sdk_token,
-            _socket_timeout=10,
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
-        )
-
-    if _oauth_m2m_available():
-        return sql.connect(
-            server_hostname=HOST,
-            http_path=HTTP_PATH,
-            auth_type="oauth-m2m",
-            oauth_client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
-            oauth_client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
-            _socket_timeout=10,
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
-        )
-
     raise RuntimeError(
-        "No Databricks credentials found. Set DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN "
-        "or DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET."
+        "No forwarded user token found. Databricks SQL requires an authenticated user request."
     )
 
 
