@@ -100,8 +100,11 @@ def _sdk_credentials_provider():
         return None, None
     try:
         cfg = _SdkConfig()
-        headers = {}
-        cfg.authenticate(headers)
+        try:
+            headers = cfg.authenticate()
+        except TypeError:
+            headers = {}
+            cfg.authenticate(headers)
         auth_value = headers.get("Authorization", "")
         if not auth_value:
             return None, None

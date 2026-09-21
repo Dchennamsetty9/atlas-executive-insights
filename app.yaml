@@ -60,6 +60,11 @@ env:
   - name: FORCE_LIVE_DATA
     value: "true"
 
+  # Use the App service principal for SQL warehouse access. The SDK discovers
+  # this credential from the Databricks Apps runtime.
+  - name: DATABRICKS_PREFER_SDK_CREDENTIALS
+    value: "true"
+
   # Model-serving endpoints used by backend/services/ai_service.py
   - name: DATABRICKS_AI_PRIMARY_ENDPOINT
     value: "databricks-claude-sonnet-4-5"
