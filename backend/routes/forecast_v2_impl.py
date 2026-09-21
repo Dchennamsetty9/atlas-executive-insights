@@ -97,7 +97,28 @@ INSIGHTS_PATH = "/Volumes/datagroup_mdl/mdl_sales_analytics/forecast_assets/ai_i
 VALID_FORECAST_TYPES = {"actuals", "forecast", "boq_forward"}
 # V1 → V2 backward-compat mapping (frontend may still send V1 values)
 _V1_TO_V2_FORECAST_TYPE = {"rolling": "forecast", "roy": "forecast", "forward_1yr": "forecast"}
-CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "300"))
+# Default to a full weekly snapshot window so the app serves the same forecast
+# publication for the entire refresh cycle (Tue job -> next Tue). This can be
+# overridden explicitly in the environment if a different TTL is required.
+CACHE_TTL_SECONDS = int(os.getenv("FORECAST_V2_CACHE_TTL_SECONDS", "604800"))
+DEFAULT_WEEKLY_SNAPSHOT_TTL = 7 * 24 * 60 * 60
+# Forecast reads are split into two classes:
+# 1) published-snapshot endpoints that should stay cached for the full weekly
+#    refresh cycle to reduce Databricks spend.
+# 2) live-only endpoints that must bypass caching because they are freshness- or
+#    governance-sensitive (leaderboards, freshness checks, audit trails).
+WEEKLY_SNAPSHOT_ENDPOINTS = {
+    "/intelligence", "/weekly", "/monthly", "/ytd", "/by-product",
+    "/models", "/historical", "/confidence-bands", "/graph-explanation",
+    "/run-delta", "/run-history", "/model-lab", "/forward-outlook",
+    "/monthly-combined", "/weekly-all-models", "/accuracy-by-quarter",
+    "/scenario-grid", "/sensitivity", "/model-scenarios",
+    "/historical-scenarios",
+}
+LIVE_ONLY_ENDPOINTS = {
+    "/leaderboard", "/leaderboard/columns", "/freshness", "/backtest",
+    "/governance/log",
+}
 _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
     "ets": {
@@ -182,13 +203,33 @@ def _cache_key(endpoint: str, sql: str, **params: Any) -> str:
     return f"{endpoint}|{sql}|{encoded}"
 
 
+def _is_live_only_endpoint(endpoint: str) -> bool:
+    normalized = (endpoint or "").strip().lower()
+    return normalized in LIVE_ONLY_ENDPOINTS
+
+
+def _effective_cache_ttl(endpoint: str) -> int:
+    """Use a weekly snapshot TTL for published dashboard reads and bypass live-only checks.
+
+    The upstream forecast tables are refreshed on a weekly publication cadence, so
+    the app should keep serving one snapshot for the full refresh window instead of
+    re-querying Databricks every time the same chart is rendered.
+    """
+    if _is_live_only_endpoint(endpoint):
+        return 0
+    if CACHE_TTL_SECONDS <= 0:
+        return 0
+    if endpoint in WEEKLY_SNAPSHOT_ENDPOINTS:
+        return max(int(CACHE_TTL_SECONDS), DEFAULT_WEEKLY_SNAPSHOT_TTL)
+    return max(int(CACHE_TTL_SECONDS), DEFAULT_WEEKLY_SNAPSHOT_TTL)
+
+
 async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str, Any]]:
-    """Small in-process TTL cache for repeated identical read queries."""
+    """Cache forecast snapshot reads for one full weekly publication cycle."""
     from routes import forecast_v2 as forecast_v2_pkg
 
-    # Accuracy publication checks must see the latest successful daily write, not
-    # the deployment's 24-hour forecast cache. This also avoids cross-user reuse.
-    if endpoint in ("/leaderboard", "/leaderboard/columns") or CACHE_TTL_SECONDS <= 0:
+    ttl = _effective_cache_ttl(endpoint)
+    if ttl <= 0:
         return await asyncio.to_thread(forecast_v2_pkg.execute_query, sql)
 
     scope = query_cache_scope()
@@ -197,11 +238,11 @@ async def _cached_query(sql: str, endpoint: str, **params: Any) -> list[Dict[str
 
     key = f"{scope}|{_cache_key(endpoint, sql, **params)}"
     now = time.time()
-    expired_keys = [key for key, (created, _) in _QUERY_CACHE.items() if (now - created) >= CACHE_TTL_SECONDS]
+    expired_keys = [cached_key for cached_key, (created, _) in _QUERY_CACHE.items() if (now - created) >= ttl]
     for expired_key in expired_keys:
         _QUERY_CACHE.pop(expired_key, None)
     hit = _QUERY_CACHE.get(key)
-    if hit and (now - hit[0]) < CACHE_TTL_SECONDS:
+    if hit and (now - hit[0]) < ttl:
         return hit[1]
 
     rows = await asyncio.to_thread(forecast_v2_pkg.execute_query, sql)
@@ -240,8 +281,14 @@ def _f(v, default: float = 0.0) -> float:
         return default
 
 def _demo(key: str, error: str = "Databricks unavailable"):
-    return {"source": "unavailable", "live_mode_available": False,
-            "error": error, key: []}
+    logger.warning("[forecast] data unavailable: %s", error)
+    return {
+        "source": "unavailable",
+        "live_mode_available": False,
+        "availability_code": "DATABRICKS_CONNECTION_UNAVAILABLE",
+        "reason": "Forecast data is unavailable because Databricks cannot be reached. Verify the workspace, warehouse path, and credentials.",
+        key: [],
+    }
 
 def _selected_product(product, product_line=None):
     selected = product_line if product_line not in (None, "", "All", "all") else product

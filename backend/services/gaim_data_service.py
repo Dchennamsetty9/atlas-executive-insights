@@ -19,6 +19,7 @@ IMPORTANT — Close Rate vs Win Rate:
 import asyncio
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -231,10 +232,16 @@ class GAIMDataService:
             filter_clause=filter_clause,
         )
 
-        # Execute supported federated queries
-        pipe_rows    = execute_query(pipeline_sql, (start_date, end_date, start_date, end_date))
-        created_rows = execute_query(created_sql, (start_date, end_date))
-        target_rows  = execute_query(targets_sql, (start_date,))
+        # Execute the independent GAIM subqueries concurrently — these hit
+        # different tables and are safe to fan out in parallel, which keeps the
+        # KPI page responsive instead of serializing a full extra round-trip.
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_pipe = executor.submit(execute_query, pipeline_sql, (start_date, end_date, start_date, end_date))
+            future_created = executor.submit(execute_query, created_sql, (start_date, end_date))
+            future_target = executor.submit(execute_query, targets_sql, (start_date,))
+            pipe_rows = future_pipe.result()
+            created_rows = future_created.result()
+            target_rows = future_target.result()
 
         p = pipe_rows[0]    if pipe_rows    else {}
         c_ = created_rows[0] if created_rows else {}

@@ -8,6 +8,7 @@ import asyncio
 import datetime
 import pathlib
 import sys
+import time
 import types
 from contextvars import ContextVar
 
@@ -17,7 +18,9 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 fake_services = types.ModuleType("services")
+fake_services.__path__ = [str(pathlib.Path(__file__).parent.parent / "services")]
 fake_db = types.ModuleType("services.databricks_connection")
+fake_db.DATABRICKS_AVAILABLE = False
 fake_db.execute_query = lambda _sql: []
 fake_db.token_available = lambda: False
 fake_db.set_request_token = lambda _token: None
@@ -72,6 +75,66 @@ def test_intelligence_never_falls_back_to_unscoped_text(monkeypatch):
     product = asyncio.run(impl.get_intelligence(product_line="ITSG", live_mode=True))
     assert product["source"] == "unavailable"
     assert len(calls) == 1 and "product = 'ITSG'" in calls[0]
+
+
+def test_forecast_cache_defaults_to_one_week_for_snapshot_queries():
+    assert impl._effective_cache_ttl("/weekly") >= 7 * 24 * 60 * 60
+    assert impl._effective_cache_ttl("/monthly") >= 7 * 24 * 60 * 60
+    assert impl._effective_cache_ttl("/leaderboard") == 0
+    assert impl._effective_cache_ttl("/leaderboard/columns") == 0
+    assert impl._effective_cache_ttl("/freshness") == 0
+
+
+def test_forecast_cache_uses_weekly_snapshot_ttl_when_env_is_shorter(monkeypatch):
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 60)
+    assert impl._effective_cache_ttl("/weekly") >= 7 * 24 * 60 * 60
+    assert impl._effective_cache_ttl("/monthly") >= 7 * 24 * 60 * 60
+    monkeypatch.setattr(impl, "CACHE_TTL_SECONDS", 60)
+    assert impl._effective_cache_ttl("/leaderboard") == 0
+    assert impl._effective_cache_ttl("/freshness") == 0
+
+
+def test_kpi_dashboard_cache_defaults_to_weekly_snapshot_window():
+    import importlib
+    data_cache_module = importlib.import_module("services.data_cache")
+    assert data_cache_module.data_cache.refresh_interval.total_seconds() >= 7 * 24 * 60 * 60
+
+
+def test_gaim_kpis_execute_independent_queries_in_parallel(monkeypatch):
+    import services.gaim_data_service as gaim_data_service
+
+    def fake_load_query(name, **kwargs):
+        return name
+
+    def fake_execute_query(sql, params=None):
+        time.sleep(0.25)
+        if sql == "kpis/pipeline_snapshot":
+            return [{"won_pipeline": 10, "won_volume": 5, "prev_won_pipeline": 8, "prev_won_volume": 4, "ads": 2.0}]
+        if sql == "kpis/created_pipeline":
+            return [{"opps_created": 20, "created_pipeline": 15}]
+        if sql == "kpis/targets":
+            return [{"target_won_pipeline": 50, "target_won_volume": 25, "target_pipeline": 40, "target_pipeline_volume": 30}]
+        return []
+
+    monkeypatch.setattr(gaim_data_service, "load_query", fake_load_query)
+    monkeypatch.setattr(gaim_data_service, "execute_query", fake_execute_query)
+
+    service = gaim_data_service.GAIMDataService()
+    started = time.perf_counter()
+    rows = service._query_kpis("2026-01-01", "2026-01-31", {})
+    elapsed = time.perf_counter() - started
+
+    assert rows
+    assert elapsed < 0.7
+
+
+def test_endpoint_groups_follow_cheapest_snapshot_policy():
+    assert "/weekly" in impl.WEEKLY_SNAPSHOT_ENDPOINTS
+    assert "/monthly" in impl.WEEKLY_SNAPSHOT_ENDPOINTS
+    assert "/leaderboard" in impl.LIVE_ONLY_ENDPOINTS
+    assert "/freshness" in impl.LIVE_ONLY_ENDPOINTS
+    assert impl._is_live_only_endpoint("/leaderboard") is True
+    assert impl._is_live_only_endpoint("/weekly") is False
 
 
 def test_risk_radar_scopes_product_region_and_actual_cutoff(monkeypatch):

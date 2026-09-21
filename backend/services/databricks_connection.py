@@ -40,10 +40,9 @@ HTTP_PATH = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH") \
          or os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
 
 # Maximum total time the SDK retry loop will run before giving up.
-# Default is 900 s — far too long for a web request; but 12 s is too aggressive
-# when the SQL warehouse is cold (auto-suspended). 45 s tolerates a cold start
-# while still failing reasonably fast if the warehouse is truly unreachable.
-_RETRY_TIMEOUT = 45.0
+# Default is 900 s — far too long for an interactive request. Deployments that
+# need a longer cold-start allowance can override the bounded timeout.
+_RETRY_TIMEOUT = float(os.getenv("DATABRICKS_QUERY_TIMEOUT_SECONDS", "20"))
 
 # Per-request token (set by inject_forwarded_token middleware in main.py).
 # Databricks Apps forwards the active user's OAuth token as
@@ -115,6 +114,11 @@ def _sdk_credentials_provider():
         return None, None
 
 
+def _prefer_sdk_credentials() -> bool:
+    """Use the Apps service principal for warehouse access when available."""
+    return os.getenv("DATABRICKS_PREFER_SDK_CREDENTIALS", "false").lower() == "true"
+
+
 def token_available() -> bool:
     """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
     if not DATABRICKS_AVAILABLE:
@@ -127,12 +131,15 @@ def token_available() -> bool:
 
 def query_cache_scope() -> str | None:
     token = _resolve_token()
-    if token:
+    sdk_token, sdk_host = _sdk_credentials_provider()
+    if _prefer_sdk_credentials() and sdk_token:
+        credentials = ("sdk-auto", sdk_host or HOST)
+    elif token:
         credentials = ("token", token)
     elif _oauth_m2m_available():
         credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
-    elif _sdk_credentials_provider()[0] is not None:
-        credentials = ("sdk-auto",)
+    elif sdk_token:
+        credentials = ("sdk-auto", sdk_host or HOST)
     else:
         return None
     identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
@@ -155,6 +162,16 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
+    sdk_token, sdk_host = _sdk_credentials_provider()
+    if _prefer_sdk_credentials() and sdk_token:
+        return sql.connect(
+            server_hostname=sdk_host or HOST,
+            http_path=HTTP_PATH,
+            access_token=sdk_token,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
     token = _resolve_token()
     if token:
         return sql.connect(
@@ -166,7 +183,6 @@ def get_connection():
         )
 
     # SDK auto-discovery: handles Databricks Apps SP auth, notebook runtime, etc.
-    sdk_token, sdk_host = _sdk_credentials_provider()
     if sdk_token:
         return sql.connect(
             server_hostname=sdk_host or HOST,
@@ -197,7 +213,7 @@ def execute_query(
     query: str,
     params=None,
     *,
-    max_attempts: int = 2,   # Retry once on cold-start failures (was 1)
+    max_attempts: int = 1,
     backoff: float = 3.0,
     max_rows: int | None = None,
 ) -> List[Dict[str, Any]]:

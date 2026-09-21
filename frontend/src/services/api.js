@@ -11,7 +11,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 55000,  // 55 s — backend retry budget is 45 s * 2 attempts; allow headroom
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   }
@@ -26,7 +26,8 @@ api.interceptors.request.use(
   error => Promise.reject(error)
 )
 
-// Response interceptor: retry on demo-mode caused by cold-start timeouts
+// Response interceptor: forecast availability failures are already represented
+// as a structured payload by the backend, so do not prolong them with retries.
 api.interceptors.response.use(
   response => {
     const data = response.data
@@ -34,38 +35,9 @@ api.interceptors.response.use(
         (data?.source === 'demo' || data?.source === 'unavailable' || data?.error)) {
       return Promise.reject(new Error(data.reason || data.error || 'Data unavailable for this selection'))
     }
-    // If backend fell back to demo due to a timeout/connection error and this
-    // is the first attempt, retry once after 5 s (warehouse should be waking).
-    if (
-      data?.source === 'demo' &&
-      data?.error &&
-      !response.config.__retried &&
-      /timeout|connect|unavailable|reset/i.test(data.error)
-    ) {
-      console.warn('[api] Demo-mode fallback detected (cold start?) — retrying in 5 s...')
-      return new Promise(resolve => {
-        setTimeout(() => {
-          response.config.__retried = true
-          resolve(api.request(response.config))
-        }, 5000)
-      })
-    }
     return data
   },
   error => {
-    // On network timeout, retry once after 5 s if not already retried
-    if (
-      (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) &&
-      !error.config?.__retried
-    ) {
-      console.warn('[api] Request timeout — retrying in 5 s...')
-      return new Promise(resolve => {
-        setTimeout(() => {
-          error.config.__retried = true
-          resolve(api.request(error.config))
-        }, 5000)
-      })
-    }
     console.error('API Error:', error.response?.data || error.message)
     return Promise.reject(error)
   }

@@ -16,6 +16,7 @@ Usage
 
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -92,5 +93,15 @@ class DataCache:
         return (datetime.now(timezone.utc) - ts).total_seconds()
 
 
+# Default to the weekly published-snapshot cadence so dashboard reads stay stable
+# across the entire forecast refresh cycle instead of re-querying every page load.
+DEFAULT_WEEKLY_SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
+DATA_REFRESH_INTERVAL_MINUTES = int(os.getenv("DATA_REFRESH_INTERVAL_MINUTES", "10080"))
+
+# Prefer the explicit env override when provided; otherwise default to a 7-day
+# snapshot window to match the weekly publication pattern used by forecast_v2.
+if DATA_REFRESH_INTERVAL_MINUTES <= 0:
+    DATA_REFRESH_INTERVAL_MINUTES = 10080
+
 # Singleton used throughout the backend
-data_cache = DataCache(refresh_interval_minutes=15)
+data_cache = DataCache(refresh_interval_minutes=DATA_REFRESH_INTERVAL_MINUTES)

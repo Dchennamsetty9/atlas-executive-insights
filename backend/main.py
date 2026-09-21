@@ -431,7 +431,10 @@ async def cache_status(user_id: str = Depends(require_authenticated_user)):
             "age_seconds": round(age, 1) if age is not None else None,
             "is_stale": data_cache.is_stale(key),
         })
-    return {"entries": entries, "refresh_interval_minutes": 15}
+    return {
+        "entries": entries,
+        "refresh_interval_minutes": round(data_cache.refresh_interval.total_seconds() / 60, 2),
+    }
 
 
 @app.get("/api/charts/{chart_type}")

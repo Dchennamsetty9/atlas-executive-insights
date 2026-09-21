@@ -90,32 +90,36 @@ const ForecastingPanelContainer = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
 
   const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd] = await Promise.allSettled([
-      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter),
+    try {
+      const weeklyResponse = await apiService.getForecastV2Weekly(
+        model, fcType, null, activePl, activeGeo, selectedYear, selectedQuarter,
+      );
+      setWeekly(weeklyResponse?.rows ?? []);
+      setWeeklyKpis(weeklyResponse?.kpis ?? null);
+      setSource(weeklyResponse?.source ?? null);
+      if (weeklyResponse?.source === 'unavailable') {
+        setError(weeklyResponse?.reason || 'Forecast data is unavailable because Databricks cannot be reached.');
+      } else if (weeklyResponse?.source === 'demo' && weeklyResponse?.error) {
+        setError(`Forecast data fallback: ${weeklyResponse.error}`);
+      }
+    } catch (requestError) {
+      setSource('unavailable');
+      setError(requestError?.message || 'Forecast data is unavailable because Databricks cannot be reached.');
+    }
+
+    void Promise.allSettled([
       apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, selectedYear, selectedQuarter, model),
       apiService.getForecastV2Models(),
       apiService.getForecastV2Freshness(),
       apiService.getForecastV2ConfidenceBands(fcType, activePl, selectedYear, selectedQuarter, model),
       apiService.getForecastV2RunDelta(activePl, activeGeo),
-    ]);
-
-    if (wk.status === 'fulfilled') {
-      setWeekly(wk.value?.rows ?? []);
-      setWeeklyKpis(wk.value?.kpis ?? null);
-      setSource(wk.value?.source ?? null);
-      if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) setError(`Forecast data fallback: ${wk.value.error}`);
-    }
-    if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
-    if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
-    if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
-    if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
-    if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-
-    const firstReject = [wk, yt].find((r) => r.status === 'rejected');
-    if (firstReject) {
-      setSource('demo');
-      setError(firstReject.reason?.message || 'Some endpoints failed to load');
-    }
+    ]).then(([yt, modelsRes, fr, cb, rd]) => {
+      if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
+      if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
+      if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
+      if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
+      if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
+    });
   }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter]);
 
   const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
@@ -202,7 +206,7 @@ const ForecastingPanelContainer = () => {
     color: active ? (color ?? '#f1f5f9') : '#475569',
   });
 
-  const isDemo = source !== 'live';
+  const isDemo = source === 'demo';
   const demoPayload = useMemo(() => {
     const dWeekly = buildDemoWeekly(fcType);
     return {
@@ -399,6 +403,13 @@ const ForecastingPanelContainer = () => {
           </>
         );
       })()}
+
+      {source === 'unavailable' && error && (
+        <div role="alert" style={{ padding: '10px 12px', marginBottom: 10, borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', color: '#fecaca', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <span><b>Databricks connection unavailable.</b> {error}</span>
+          <button onClick={refreshCurrentTab} disabled={loading} style={{ padding: '4px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', color: '#fecaca', cursor: loading ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>{loading ? 'Checking…' : 'Try again'}</button>
+        </div>
+      )}
 
       <div style={{ padding: '10px 14px', marginBottom: 10, borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
         <div><div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>PRODUCT</div><div style={{ display: 'flex', gap: 4 }}>{PROD_LINES.map((pl) => <button key={pl} onClick={() => setProdLine(pl)} style={pill(prodLine === pl, pl === 'UCC' ? '#3b82f6' : pl === 'ITSG' ? '#10b981' : null)}>{pl}</button>)}</div></div>

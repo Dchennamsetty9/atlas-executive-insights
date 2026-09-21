@@ -75,8 +75,9 @@ class TestForecastV2Resilience:
         assert r.status_code == 200
         body = r.json()
         assert body["source"] == "unavailable"
-        assert "error" in body
-        assert "PERMISSION_DENIED" in body["error"]
+        assert body["availability_code"] == "DATABRICKS_CONNECTION_UNAVAILABLE"
+        assert "Databricks cannot be reached" in body["reason"]
+        assert "error" not in body
 
     def test_weekly_ensemble_returns_200_on_db_error(self):
         with _mock_live_true(), _mock_execute_query_raises():
