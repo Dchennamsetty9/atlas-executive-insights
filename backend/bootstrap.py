@@ -75,6 +75,11 @@ async def inject_forwarded_token(request: Request, call_next):
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
     set_request_token(token)
+    if request.url.path.startswith("/api/forecast/"):
+        logger.info(
+            "Forecast request credential source: forwarded_token=%s",
+            bool(token),
+        )
     response = await call_next(request)
     return response
 
