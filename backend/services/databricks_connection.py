@@ -6,7 +6,8 @@ Shared by data_fetcher and gaim_data_service.
 Auth priority (first usable wins):
     1. Request/user token via x-forwarded-access-token
     2. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
-    3. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
+    3. Databricks SDK auto-discovery (handles Apps SP auth automatically)
+    4. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
 import hashlib
@@ -24,6 +25,12 @@ try:
     DATABRICKS_AVAILABLE = True
 except ImportError:
     DATABRICKS_AVAILABLE = False
+
+try:
+    from databricks.sdk.core import Config as _SdkConfig
+    _SDK_AVAILABLE = True
+except ImportError:
+    _SDK_AVAILABLE = False
 
 HOST      = os.getenv("DATABRICKS_SERVER_HOSTNAME") \
          or os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com")
@@ -81,9 +88,32 @@ def _oauth_m2m_available() -> bool:
     return bool(os.environ.get("DATABRICKS_CLIENT_ID") and os.environ.get("DATABRICKS_CLIENT_SECRET"))
 
 
+def _sdk_credentials_provider():
+    """Return (credentials_provider, hostname) via the Databricks SDK, or (None, None).
+
+    In Databricks Apps the SDK auto-discovers the service-principal credentials
+    injected by the runtime, eliminating the need for a static DATABRICKS_TOKEN
+    or explicit M2M secrets.
+    """
+    if not _SDK_AVAILABLE:
+        return None, None
+    try:
+        cfg = _SdkConfig()
+        provider = cfg.authenticate
+        host = (cfg.host or "").removeprefix("https://").removeprefix("http://").rstrip("/")
+        return provider, host
+    except Exception:
+        return None, None
+
+
 def token_available() -> bool:
-    """Return True if PAT/user-token auth or OAuth M2M auth is configured."""
-    return DATABRICKS_AVAILABLE and (bool(_resolve_token()) or _oauth_m2m_available())
+    """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
+    if not DATABRICKS_AVAILABLE:
+        return False
+    if bool(_resolve_token()) or _oauth_m2m_available():
+        return True
+    provider, _ = _sdk_credentials_provider()
+    return provider is not None
 
 
 def query_cache_scope() -> str | None:
@@ -92,6 +122,8 @@ def query_cache_scope() -> str | None:
         credentials = ("token", token)
     elif _oauth_m2m_available():
         credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
+    elif _sdk_credentials_provider()[0] is not None:
+        credentials = ("sdk-auto",)
     else:
         return None
     identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
@@ -122,6 +154,17 @@ def get_connection():
             access_token=token,
             _socket_timeout=10,                      # 10 s per socket op (was 5; tolerates cold-start)
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
+        )
+
+    # SDK auto-discovery: handles Databricks Apps SP auth, notebook runtime, etc.
+    provider, sdk_host = _sdk_credentials_provider()
+    if provider is not None:
+        return sql.connect(
+            server_hostname=sdk_host or HOST,
+            http_path=HTTP_PATH,
+            credentials_provider=provider,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
 
     if _oauth_m2m_available():
