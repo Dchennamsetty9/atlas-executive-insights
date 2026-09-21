@@ -321,13 +321,13 @@ resources:
 
       max_concurrent_runs: 1
 
-    # ── V5 Forecast Pipeline (daily — UCC + ITSG + Unify/Publish) ─────────────
+    # ── V5 Forecast Pipeline (weekly — UCC + ITSG + Unify/Publish) ────────────
     forecast_v5_daily:
       name: Forecast V5 — Weekly Pipeline (UCC + ITSG + Publish)
       description: >
         Production V5 forecast pipeline. Chains three notebooks sequentially: 1. UCC Forecast Foundation V5 — trains 5-model ensemble, writes ucc_forecast_v5/boq/cbe 2. ITSG Growth ARR Forecasting V5 — same for ITSG product, writes itsg_forecast_v5/boq/cbe 3. forecast_unify_publish — consolidates both into forecast_results + compat views App reads from forecast_results_v2compat which is refreshed by step 3.
 
-      # ── Schedule: daily at 07:00 AM Eastern ────────────────────────────────
+      # ── Schedule: Tuesdays at 07:00 AM Eastern ──────────────────────────────
       schedule:
         quartz_cron_expression: 0 0 7 ? * TUE
         timezone_id: America/New_York
@@ -359,7 +359,7 @@ resources:
 
         - task_key: powerbi_wide_forecast_export
           depends_on:
-            - task_key: hindcast_all_models
+            - task_key: forecast_unify_publish
           notebook_task:
             notebook_path: /Users/dileep.chennamsetty@goto.com/gaim-executive-app/notebooks/PowerBI_Wide_Forecast_Export
             source: WORKSPACE
