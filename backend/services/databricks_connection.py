@@ -3,10 +3,11 @@ databricks_connection.py
 Lightweight connection module for Databricks SQL Warehouse.
 Shared by data_fetcher and gaim_data_service.
 
-Auth policy:
-    User-facing SQL requires the request token supplied by
-    x-forwarded-access-token. Background SQL without a user session is
-    intentionally rejected.
+Auth priority (first usable wins):
+    1. Databricks SDK auto-discovery (Apps service principal)
+    2. Request/user token via x-forwarded-access-token
+    3. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
+    4. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
 import hashlib
@@ -39,9 +40,9 @@ HTTP_PATH = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH") \
          or os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
 
 # Maximum total time the SDK retry loop will run before giving up.
-# Default is 900 s — far too long for an interactive request. Deployments that
-# need a longer cold-start allowance can override the bounded timeout.
-_RETRY_TIMEOUT = float(os.getenv("DATABRICKS_QUERY_TIMEOUT_SECONDS", "20"))
+# Default is 900 s — far too long for an interactive request. Keep a generous
+# interactive default for cold warehouses, but allow deployments to override it.
+_RETRY_TIMEOUT = float(os.getenv("DATABRICKS_QUERY_TIMEOUT_SECONDS", "45"))
 
 # Per-request token (set by inject_forwarded_token middleware in main.py).
 # Databricks Apps forwards the active user's OAuth token as
@@ -117,15 +118,25 @@ def _sdk_credentials_provider():
 
 
 def token_available() -> bool:
-    """Return True only when a forwarded user token is available."""
-    return DATABRICKS_AVAILABLE and bool(_request_token.get())
+    """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
+    if not DATABRICKS_AVAILABLE:
+        return False
+    if bool(_resolve_token()) or _oauth_m2m_available():
+        return True
+    provider, _ = _sdk_credentials_provider()
+    return provider is not None
 
 
 def query_cache_scope() -> str | None:
-    token = _request_token.get()
-    if not token:
+    token = _resolve_token()
+    if token:
+        credentials = ("token", token)
+    elif _oauth_m2m_available():
+        credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
+    elif _sdk_credentials_provider()[0] is not None:
+        credentials = ("sdk-auto",)
+    else:
         return None
-    credentials = ("forwarded-user", token)
     identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
     return hashlib.sha256(identity).hexdigest()
 
@@ -146,7 +157,21 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    token = _request_token.get()
+    # SDK auto-discovery FIRST: the app SP token is the reliable auth path in
+    # Databricks Apps. The forwarded user token often lacks the sql scope
+    # required by the warehouse, so prefer the SP identity for SQL connections.
+    sdk_token, sdk_host = _sdk_credentials_provider()
+    if sdk_token:
+        return sql.connect(
+            server_hostname=sdk_host or HOST,
+            http_path=HTTP_PATH,
+            access_token=sdk_token,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # Fallback: per-request user token or PAT
+    token = _resolve_token()
     if token:
         return sql.connect(
             server_hostname=HOST,
@@ -156,8 +181,20 @@ def get_connection():
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
+    if _oauth_m2m_available():
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            auth_type="oauth-m2m",
+            oauth_client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
+            oauth_client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
     raise RuntimeError(
-        "No forwarded user token found. Databricks SQL requires an authenticated user request."
+        "No Databricks credentials found. Set DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN "
+        "or DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET."
     )
 
 
@@ -165,7 +202,7 @@ def execute_query(
     query: str,
     params=None,
     *,
-    max_attempts: int = 1,
+    max_attempts: int = 2,   # Retry once on cold-start failures (was 1)
     backoff: float = 3.0,
     max_rows: int | None = None,
 ) -> List[Dict[str, Any]]:
