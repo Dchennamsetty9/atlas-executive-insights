@@ -89,19 +89,28 @@ def _oauth_m2m_available() -> bool:
 
 
 def _sdk_credentials_provider():
-    """Return (credentials_provider, hostname) via the Databricks SDK, or (None, None).
+    """Return (access_token, hostname) via the Databricks SDK, or (None, None).
 
     In Databricks Apps the SDK auto-discovers the service-principal credentials
     injected by the runtime, eliminating the need for a static DATABRICKS_TOKEN
-    or explicit M2M secrets.
+    or explicit M2M secrets.  Returns a fresh bearer token string rather than
+    a credentials_provider callable — this avoids the 'dict' object is not
+    callable incompatibility between SDK 0.140+ and sql-connector 4.x.
     """
     if not _SDK_AVAILABLE:
         return None, None
     try:
         cfg = _SdkConfig()
-        provider = cfg.authenticate
+        headers = {}
+        cfg.authenticate(headers)
+        auth_value = headers.get("Authorization", "")
+        if not auth_value:
+            return None, None
+        token = auth_value.removeprefix("Bearer ").strip()
+        if not token:
+            return None, None
         host = (cfg.host or "").removeprefix("https://").removeprefix("http://").rstrip("/")
-        return provider, host
+        return token, host
     except Exception:
         return None, None
 
@@ -157,12 +166,12 @@ def get_connection():
         )
 
     # SDK auto-discovery: handles Databricks Apps SP auth, notebook runtime, etc.
-    provider, sdk_host = _sdk_credentials_provider()
-    if provider is not None:
+    sdk_token, sdk_host = _sdk_credentials_provider()
+    if sdk_token:
         return sql.connect(
             server_hostname=sdk_host or HOST,
             http_path=HTTP_PATH,
-            credentials_provider=provider,
+            access_token=sdk_token,
             _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
