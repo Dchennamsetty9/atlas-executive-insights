@@ -13,6 +13,12 @@ command:
 # Python dependencies
 requirements: requirements.txt
 
+# User API scopes — sql is required for SQL warehouse access
+user_api_scopes:
+  - sql
+  - iam.access-control:read
+  - iam.current-user:read
+
 # Environment configuration
 env:
   # Port for the application (required by Databricks Apps)
