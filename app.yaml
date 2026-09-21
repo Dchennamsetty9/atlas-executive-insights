@@ -60,11 +60,6 @@ env:
   - name: FORCE_LIVE_DATA
     value: "true"
 
-  # Warehouse queries use the App service principal. This avoids relying on a
-  # forwarded browser token that may not carry the SQL OAuth scope.
-  - name: DATABRICKS_PREFER_SDK_CREDENTIALS
-    value: "true"
-
   # Model-serving endpoints used by backend/services/ai_service.py
   - name: DATABRICKS_AI_PRIMARY_ENDPOINT
     value: "databricks-claude-sonnet-4-5"
