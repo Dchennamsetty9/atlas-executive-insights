@@ -42,6 +42,11 @@ env:
   - name: DATABRICKS_SQL_WAREHOUSE_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
 
+  # Use the app service principal for forecast SQL instead of the forwarded
+  # browser token, which may not be authorized for this SQL warehouse.
+  - name: DATABRICKS_PREFER_SDK_CREDENTIALS
+    value: "true"
+
   # Use the unified V5-notebook compat view as the forecast table.
   # forecast_results_v2compat is created daily by forecast_unify_publish and has
   # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
