@@ -157,20 +157,30 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    # PAT / forwarded user token FIRST — explicit credentials take priority over
-    # SDK auto-discovery. DATABRICKS_TOKEN is now sourced from the gaim-app-secrets
-    # secret scope (sql + unity-catalog scopes), so it has the permissions needed.
-    token = _resolve_token()
-    if token:
+    # 1. Explicit PAT from secret scope — checked directly from env so the
+    #    forwarded user token (which gets 403 at OpenSession) cannot shadow it.
+    explicit_pat = os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
+    if explicit_pat:
         return sql.connect(
             server_hostname=HOST,
             http_path=HTTP_PATH,
-            access_token=token,
+            access_token=explicit_pat,
             _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
 
-    # Fallback: SDK auto-discovery (app service principal)
+    # 2. Forwarded user token (x-forwarded-access-token from Apps proxy)
+    forwarded = _request_token.get()
+    if forwarded:
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            access_token=forwarded,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # 3. SDK auto-discovery (app service principal — last resort)
     sdk_token, sdk_host = _sdk_credentials_provider()
     if sdk_token:
         return sql.connect(
