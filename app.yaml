@@ -13,23 +13,12 @@ command:
 # Python dependencies
 requirements: requirements.txt
 
-# User API scopes — sql required for warehouse access
-user_api_scopes:
-  - sql
-
 # Environment configuration
 env:
   # Port for the application (required by Databricks Apps)
   - name: PORT
     value: "8000"
-  
-  # PAT for SQL warehouse — read from secret scope under a non-reserved name
-  # to avoid the Apps runtime overwriting DATABRICKS_TOKEN.
-  - name: GAIM_SQL_PAT
-    valueFrom:
-      secretScope: gaim-app-secrets
-      secretKey: DATABRICKS_TOKEN
-  
+
   # Data source configuration
   - name: DATABRICKS_CATALOG
     value: "datagroup_mdl"
