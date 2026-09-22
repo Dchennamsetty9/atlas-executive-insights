@@ -157,9 +157,9 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    # 1. Explicit PAT from secret scope — checked directly from env so the
-    #    forwarded user token (which gets 403 at OpenSession) cannot shadow it.
-    explicit_pat = os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
+    # 1. Explicit PAT from secret scope — GAIM_SQL_PAT avoids the reserved
+    #    DATABRICKS_TOKEN name that the Apps runtime may overwrite.
+    explicit_pat = os.environ.get("GAIM_SQL_PAT") or os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
     if explicit_pat:
         return sql.connect(
             server_hostname=HOST,
