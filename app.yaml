@@ -23,8 +23,12 @@ env:
   - name: PORT
     value: "8000"
   
-  # Note: DATABRICKS_HOST and DATABRICKS_TOKEN are automatically provided by Databricks Apps
-  # Do NOT set them here - they are injected at runtime
+  # DATABRICKS_TOKEN is read from the gaim-app-secrets secret scope.
+  # Previously auto-injected by the Apps runtime; now explicitly referenced.
+  - name: DATABRICKS_TOKEN
+    valueFrom:
+      secretScope: gaim-app-secrets
+      secretKey: DATABRICKS_TOKEN
   
   # Data source configuration
   - name: DATABRICKS_CATALOG
