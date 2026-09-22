@@ -157,9 +157,20 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    # SDK auto-discovery FIRST: the app SP token is the reliable auth path in
-    # Databricks Apps. The forwarded user token often lacks the sql scope
-    # required by the warehouse, so prefer the SP identity for SQL connections.
+    # PAT / forwarded user token FIRST — explicit credentials take priority over
+    # SDK auto-discovery. DATABRICKS_TOKEN is now sourced from the gaim-app-secrets
+    # secret scope (sql + unity-catalog scopes), so it has the permissions needed.
+    token = _resolve_token()
+    if token:
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            access_token=token,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # Fallback: SDK auto-discovery (app service principal)
     sdk_token, sdk_host = _sdk_credentials_provider()
     if sdk_token:
         return sql.connect(
@@ -168,17 +179,6 @@ def get_connection():
             access_token=sdk_token,
             _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
-        )
-
-    # Fallback: per-request user token or PAT
-    token = _resolve_token()
-    if token:
-        return sql.connect(
-            server_hostname=HOST,
-            http_path=HTTP_PATH,
-            access_token=token,
-            _socket_timeout=10,                      # 10 s per socket op (was 5; tolerates cold-start)
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
     if _oauth_m2m_available():

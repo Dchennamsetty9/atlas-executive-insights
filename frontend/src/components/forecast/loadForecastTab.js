@@ -23,14 +23,12 @@ export function loadForecastTab(api, selection, publish, onError) {
     }));
     if (tab === 'Plan Tracking') add('driverBridge', api.getForecastV2DriverBridge(year, quarter, model, productLine, salesMarket));
   } else if (tab === 'Multi-Year') {
-    add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null));
+    add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null, model));
     add('weekly', api.getForecastV2Weekly(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'By Product') {
     add('byProduct', api.getForecastV2ByProduct(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'Monthly') {
     add('monthly', api.getForecastV2Monthly(forecastType, null, productLine, salesMarket, year, quarter, model));
-  } else if (tab === 'Weekly') {
-    add('weeklyChanges', api.getForecastV2Weekly(model, forecastType, null, productLine, salesMarket, year, quarter));
   } else if (tab === 'Exec Mode') {
     add('weekly', api.getForecastV2Weekly(model, forecastType, null, productLine, salesMarket, year, quarter));
     add('confidenceBands', api.getForecastV2ConfidenceBands(forecastType, productLine, year, quarter, model, salesMarket));

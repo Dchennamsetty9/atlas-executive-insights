@@ -11,7 +11,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 55000,  // 55 s — backend retry budget is 45 s * 2 attempts; allow headroom
   headers: {
     'Content-Type': 'application/json',
   }
@@ -26,18 +26,42 @@ api.interceptors.request.use(
   error => Promise.reject(error)
 )
 
-// Response interceptor: forecast availability failures are already represented
-// as a structured payload by the backend, so do not prolong them with retries.
+// Response interceptor: retry on demo-mode caused by cold-start timeouts
 api.interceptors.response.use(
   response => {
     const data = response.data
-    if (response.config.url?.startsWith('/api/forecast/') &&
-        (data?.source === 'demo' || data?.source === 'unavailable' || data?.error)) {
-      return Promise.reject(new Error(data.reason || data.error || 'Data unavailable for this selection'))
+    // If backend fell back to demo due to a timeout/connection error and this
+    // is the first attempt, retry once after 5 s (warehouse should be waking).
+    if (
+      data?.source === 'demo' &&
+      data?.error &&
+      !response.config.__retried &&
+      /timeout|connect|unavailable|reset/i.test(data.error)
+    ) {
+      console.warn('[api] Demo-mode fallback detected (cold start?) — retrying in 5 s...')
+      return new Promise(resolve => {
+        setTimeout(() => {
+          response.config.__retried = true
+          resolve(api.request(response.config))
+        }, 5000)
+      })
     }
     return data
   },
   error => {
+    // On network timeout, retry once after 5 s if not already retried
+    if (
+      (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) &&
+      !error.config?.__retried
+    ) {
+      console.warn('[api] Request timeout — retrying in 5 s...')
+      return new Promise(resolve => {
+        setTimeout(() => {
+          error.config.__retried = true
+          resolve(api.request(error.config))
+        }, 5000)
+      })
+    }
     console.error('API Error:', error.response?.data || error.message)
     return Promise.reject(error)
   }
@@ -115,7 +139,7 @@ export const createApiService = (api) => ({
   // AI endpoints
   getInsights: () => api.get('/api/insights'),
 
-  // ── Forecast V2 endpoints — weekly Tuesday publication cycle ──
+  // ── Forecast V2 endpoints — arr_forecast_v2 table (scheduled Mondays 03:00 UTC) ──
   getForecastV2Weekly: (model = 'ensemble', forecastType = 'rolling', product = null, productLine = null, salesMarket = null, year = null, quarter = null) => {
     const params = { model, forecast_type: forecastType };
     if (product && product !== 'All') params.product = product;
@@ -205,8 +229,9 @@ export const createApiService = (api) => ({
   createForecastV2GovernanceLog: (payload) => api.post('/api/forecast/v2/governance/log', payload),
 
   getForecastV2ConfidenceBands: (forecastType = 'rolling', productLine = null, year = null, quarter = null, model = 'ensemble', salesMarket = null) => {
-    const params = { forecast_type: forecastType, model, sales_market: salesMarket };
+    const params = { forecast_type: forecastType, model };
     if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
     if (year) params.year = year;
     if (quarter) params.quarter = quarter;
     return api.get('/api/forecast/v2/confidence-bands', { params });
@@ -266,8 +291,8 @@ export const createApiService = (api) => ({
   },
 
   // v2 intelligence — unified forecast_insights, scoped to the selected product
-  getForecastV2Intelligence: (productLine = null, salesMarket = null, model = 'ensemble', year = null, quarter = null) => {
-    const params = { model, year, quarter };
+  getForecastV2Intelligence: (productLine = null, salesMarket = null) => {
+    const params = {};
     if (productLine && productLine !== 'All') params.product_line = productLine;
     if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
     return api.get('/api/forecast/v2/intelligence', { params });

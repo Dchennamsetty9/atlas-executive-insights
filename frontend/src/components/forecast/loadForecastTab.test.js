@@ -54,7 +54,6 @@ test('data tabs publish their dedicated payloads', async () => {
     ['Multi-Year', 'historical'],
     ['By Product', 'byProduct'],
     ['Monthly', 'monthly'],
-    ['Weekly', 'weeklyChanges'],
   ];
 
   for (const [tab, field] of cases) {
