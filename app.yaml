@@ -46,6 +46,14 @@ env:
   - name: FORECAST_V2_CACHE_TTL_SECONDS
     value: "300"
   
+  # PAT for SQL warehouse access — stored in secret scope to avoid the Apps
+  # runtime overwriting DATABRICKS_TOKEN with the forwarded user token.
+  # The PAT owner must have CAN USE on /sql/1.0/warehouses/c24ee33594e13e93.
+  - name: GAIM_SQL_PAT
+    valueFrom:
+      secretScope: gaim-secrets
+      secretKey: GAIM_SQL_PAT
+
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.
   - name: FORCE_LIVE_DATA
