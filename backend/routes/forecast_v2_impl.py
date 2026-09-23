@@ -1,7 +1,7 @@
 """
 Forecast v2 — rich endpoints for the ForecastingPanel UI.
 
-Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_app_snapshot
+Reads from:  federated.sales.forecast_app_snapshot
   (materialized latest-run-only snapshot of forecast_results_v2compat,
    written by forecast_unify_publish weekly — no MAX(run_date) subquery needed).
   columns: ds, product (Total/UCC/ITSG), sales_market (Total/NA/EMEA/APAC/LATAM),
@@ -13,7 +13,7 @@ Reads from:  datagroup_mdl.mdl_sales_analytics.forecast_app_snapshot
         pass-throughs from the published forecast. No band math, no sqrt
         reconstruction, no * 0.90/1.10 approximations.
 
-Leaderboard: datagroup_mdl.mdl_sales_analytics.forecast_leaderboard_v2compat
+Leaderboard: federated.sales.forecast_leaderboard_v2compat
 
 All values are constrained to the Growth-bookings-aligned unified forecast tables.
 """
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 
-FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "datagroup_mdl")
-FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "mdl_sales_analytics")
+FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "federated")
+FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "sales")
 GOLD = f"{FORECAST_CATALOG}.{FORECAST_SCHEMA}"
 # DEPRECATED: V1 tables below are no longer used by any endpoint. Kept for reference.
 FORECAST_PROPHET_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_prophet`"
