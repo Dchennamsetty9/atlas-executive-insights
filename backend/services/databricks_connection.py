@@ -121,14 +121,14 @@ def token_available() -> bool:
     """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
     if not DATABRICKS_AVAILABLE:
         return False
-    if bool(_resolve_token()) or _oauth_m2m_available():
+    if os.environ.get("GAIM_SQL_PAT") or bool(_resolve_token()) or _oauth_m2m_available():
         return True
     provider, _ = _sdk_credentials_provider()
     return provider is not None
 
 
 def query_cache_scope() -> str | None:
-    token = _resolve_token()
+    token = os.environ.get("GAIM_SQL_PAT") or _resolve_token()
     if token:
         credentials = ("token", token)
     elif _oauth_m2m_available():

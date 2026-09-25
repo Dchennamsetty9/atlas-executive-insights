@@ -21,10 +21,17 @@ env:
 
   # Data source configuration
   - name: DATABRICKS_CATALOG
-    value: "datagroup_mdl"
+    value: "federated"
   
   - name: DATABRICKS_SCHEMA
-    value: "mdl_sales_analytics"
+    value: "sales"
+
+  # Performance Hub and Insights use the Atlas settings for analytics reads.
+  - name: ATLAS_CATALOG
+    value: "federated"
+
+  - name: ATLAS_SCHEMA
+    value: "sales"
   
   - name: DATABRICKS_HTTP_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
@@ -33,9 +40,12 @@ env:
   - name: DATABRICKS_SQL_WAREHOUSE_PATH
     value: "/sql/1.0/warehouses/c24ee33594e13e93"
 
-  # Use the unified V5-notebook compat view as the forecast table.
-  # forecast_results_v2compat is created daily by forecast_unify_publish and has
-  # all model columns (arr_ets, arr_prophet, arr_lightgbm…) + calibrated P10/P90.
+  # Forecast tables share the application-wide federated.sales data source.
+  - name: FORECAST_CATALOG
+    value: "federated"
+  - name: FORECAST_SCHEMA
+    value: "sales"
+
   - name: FORECAST_V2_RESULTS_TABLE
     value: "forecast_app_snapshot"
   - name: FORECAST_V2_LEADERBOARD_TABLE
@@ -49,10 +59,11 @@ env:
   # PAT for SQL warehouse access — stored in secret scope to avoid the Apps
   # runtime overwriting DATABRICKS_TOKEN with the forwarded user token.
   # The PAT owner must have CAN USE on /sql/1.0/warehouses/c24ee33594e13e93.
+  # valueFrom must name an app resource key: add a Secret resource
+  # (scope gaim-secrets, key GAIM_SQL_PAT, permission Can read) with
+  # resource key "gaim-sql-pat" in the app's Resources settings.
   - name: GAIM_SQL_PAT
-    valueFrom:
-      secretScope: gaim-secrets
-      secretKey: GAIM_SQL_PAT
+    valueFrom: gaim-sql-pat
 
   # Force live Databricks queries even outside the Databricks hostname check.
   # Safe to set on Databricks Apps — token_available() still guards the connection.

@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     databricks_server_hostname: str = os.getenv("DATABRICKS_SERVER_HOSTNAME", os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com"))
     databricks_http_path: str = "/sql/1.0/warehouses/c24ee33594e13e93"
     databricks_access_token: str = os.getenv("DATABRICKS_TOKEN", "")
-    databricks_catalog: str = "datagroup_mdl"
-    databricks_schema: str = "mdl_sales_analytics"
+    databricks_catalog: str = "federated"
+    databricks_schema: str = "sales"
     
     # SQL Server (alternative)
     db_server: str = ""
@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     notifications_table: str = os.getenv("NOTIFICATIONS_TABLE", "atlas_notifications")
 
     # ── Gold Layer (pre-computed Delta tables) ────────────────────────────────
-    atlas_catalog: str = os.getenv("ATLAS_CATALOG", "datagroup_mdl")
-    atlas_schema: str = os.getenv("ATLAS_SCHEMA", "mdl_sales_analytics")
+    atlas_catalog: str = os.getenv("ATLAS_CATALOG", "federated")
+    atlas_schema: str = os.getenv("ATLAS_SCHEMA", "sales")
     atlas_kpi_table_prefix: str = os.getenv("ATLAS_KPI_TABLE_PREFIX", "atlas_kpi")
 
     # ── AWS SES (email notifications via Amazon SES) ──────────────────────────
