@@ -2013,24 +2013,12 @@ const ForecastingPanel = () => {
   });
 
   const isDemo  = dataScope === scopeKey && source === 'demo';
-  const demoPayload = useMemo(() => {
-    const dWeekly = _buildDemoWeekly(fcType);
-    return {
-      weekly: dWeekly,
-      ytd: _buildDemoYtd(dWeekly),
-      monthly: _buildDemoMonthly(),
-      historical: _buildDemoHistorical(),
-      byProduct: _buildDemoByProduct(),
-      leaderboard: _buildDemoLeaderboard(),
-    };
-  }, [fcType]);
-
-  const weeklyView = (weekly && weekly.length > 0) ? weekly : (isDemo ? demoPayload.weekly : []);
-  const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
-  const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
-  const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
-  const historicalData = isDemo ? null : historicalMeta;
-  const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
+  const weeklyView = weekly || [];
+  const ytdView = ytd || [];
+  const monthlyView = monthly || [];
+  const historicalView = historical || [];
+  const historicalData = historicalMeta;
+  const byProductView = byProduct?.by_product?.length ? byProduct : null;
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 
   const simulatedScenario = useMemo(() => {

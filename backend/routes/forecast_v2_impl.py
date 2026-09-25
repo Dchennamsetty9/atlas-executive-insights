@@ -1599,7 +1599,7 @@ async def get_monthly(
         act_rows = res_map.get("act", [])
         fc_rows = res_map.get("fc", [])
         pred_rows = res_map.get("pred", [])
-        publications = {str(row["publication_id"]) for row in act_rows + fc_rows + pred_rows if row.get("publication_id")}
+        publications = {str(row["publication_id"]) for row in act_rows + fc_rows if row.get("publication_id")}
         if len(publications) > 1:
             return _demo("months", "Publication changed during query; refresh required")
         if any(_f(row.get("duplicate_count")) > 0 for row in act_rows + fc_rows):
@@ -2778,10 +2778,11 @@ def _demo_model_lab(product: str, grain: str):
     }
 
 
-def _model_lab_sql(product: str) -> str:
-    """Per-model forecast from forecast_pure_predictions (latest run, calibrated bands).
-    Normalizes model names (Prophet_trend→Prophet, LGB variants→Global_LGB_Q50).
-    Only Adaptive_Ensemble is recommended_for_exec."""
+def _model_lab_sql(product: str, grain: str, market: Optional[str]) -> str:
+    """Per-model forecast from the populated federated V5 application table."""
+    market_clause = ""
+    if grain == "market" and market and market != "Total":
+        market_clause = f"AND UPPER(TRIM(CAST(sales_market AS STRING))) = '{market.upper()}'"
     return f"""
         SELECT
             CAST(ds AS STRING) AS ds,
@@ -2790,15 +2791,22 @@ def _model_lab_sql(product: str) -> str:
                 WHEN model LIKE 'Global_LGB_Q50_%' THEN 'Global_LGB_Q50'
                 ELSE model
             END AS model,
-            COALESCE(CAST(blended_p50 AS DOUBLE), CAST(p50 AS DOUBLE)) AS forecast,
+                        COALESCE(CAST(forecast AS DOUBLE), CAST(p50 AS DOUBLE)) AS forecast,
             CAST(p10 AS DOUBLE) AS p10,
             CAST(p50 AS DOUBLE) AS p50,
             CAST(p90 AS DOUBLE) AS p90,
-            CASE WHEN model = 'Adaptive_Ensemble' THEN 1 ELSE 0 END AS recommended,
-            CAST(run_date AS STRING) AS run_date
-        FROM {PURE_TABLE}
-        WHERE product = '{product}'
-          AND model NOT IN ('Global_LGB_Q50')
+                        CAST(recommended_for_exec AS INT) AS recommended,
+                        CAST(run_date_utc AS STRING) AS run_date
+                FROM {APP_TABLE}
+                WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+                    AND product_group = '{product}'
+                    {market_clause}
+                    AND run_date_utc = (
+                            SELECT MAX(run_date_utc)
+                            FROM {APP_TABLE}
+                            WHERE LOWER(TRIM(CAST(grain_level AS STRING))) = '{grain}'
+                                AND product_group = '{product}'
+                    )
         ORDER BY model, ds
     """
 
@@ -2830,35 +2838,35 @@ async def get_model_lab(
             raise HTTPException(status_code=400, detail="Invalid sales_market")
 
     if not live_mode:
-        return _demo_model_lab(product, grain)
-
-    # V2: read per-model bands from forecast_pure_predictions (total grain only).
-    # Market-grain model lab is not available (pure_predictions has no sales_market).
-    if grain == "market":
-        return _demo_model_lab(product, grain)
+        return {"source": "unavailable", "error": "Databricks is unavailable", "product": product, "grain": grain, "models": [], "rows": []}
 
     rows_raw, err = None, None
     try:
         rows_raw = await _cached_query(
-            _model_lab_sql(product),
+            _model_lab_sql(product, grain, mkt),
             endpoint="/model-lab",
             model="ensemble",
             forecast_type="forecast",
             product=product,
-            geo="Total",
+            geo=mkt or "Total",
             year=None,
             quarter=None,
             grain=grain,
         )
     except Exception as exc:
         err = str(exc)
-        logger.warning("[forecast/model-lab] pure_predictions query failed: %s", exc)
+        logger.warning("[forecast/model-lab] application table query failed: %s", exc)
 
     if not rows_raw:
-        demo = _demo_model_lab(product, grain)
-        if err:
-            demo["error"] = err
-        return demo
+        return {
+            "source": "unavailable",
+            "error": err or "No published model forecast matches this selection",
+            "product": product,
+            "grain": grain,
+            "sales_market": mkt,
+            "models": [],
+            "rows": [],
+        }
 
     rows, models, recommended, run_date = [], [], None, None
     for r in rows_raw:
