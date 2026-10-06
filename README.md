@@ -19,8 +19,7 @@ gaim-executive-app/
 |- app.yaml                     Databricks App entry config
 |- backend/                     FastAPI backend, routes, services, config
 |- frontend/                    React + Vite application
-|- notebooks/                   Forecast and precompute jobs
-|- powerbi-reference/           Power BI semantic model reference assets
+|- notebooks/                   Weekly forecasting job notebooks (see notebooks/README.md)
 |- schemas/                     Unity Catalog DDL, grants, and gold-layer setup
 `- docs/                        Supporting implementation notes
 ```
@@ -31,7 +30,7 @@ gaim-executive-app/
 - API entrypoints and static app serving live in `backend/main.py`.
 - Frontend is a Vite React app with dashboard components, hooks, contexts, and an API service layer.
 - Databricks remains the system of record for GAIM tables and forecast source data.
-- Power BI semantic model files under `powerbi-reference/` are the reference surface for ARR forecast lineage.
+- Forecast data is produced weekly by the four notebooks in `notebooks/` and published to `federated.sales`.
 
 ## Local Development
 
@@ -59,16 +58,13 @@ npm run dev
 ## Current Focus Areas
 
 - Stabilize forecast serving around precomputed-first, live-fallback behavior
-- Align forecast table naming and contracts across app, notebooks, and Power BI reference
+- Align forecast table naming and contracts across app and notebooks
 - Expand executive insights beyond placeholder responses
 - Keep the UI stable while real KPI and forecast sources are progressively hardened
 
-## Key Reference Docs
+## Reference Docs
 
-- `ARCHITECTURE.md`
-- `ARR_FORECAST_ANALYSIS.md`
-- `PROJECT_STATUS.md`
-- `DASHBOARD_REFERENCE.md`
+See `docs/` and `notebooks/README.md`.
 
 ## License
 
