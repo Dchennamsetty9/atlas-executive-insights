@@ -2896,6 +2896,8 @@ async def get_accuracy_by_quarter(
         "Prophet_trend": ("Prophet", "prophet_mape"),
         "ETS": ("ETS", "ets_mape"),
         "Global_LGB_Q50_UCC": ("LightGBM", "lgbm_mape"),
+        "Global_LGB_Q50_ITSG": ("LightGBM", "lgbm_mape"),
+        "Global_LGB_Q50": ("LightGBM", "lgbm_mape"),  # Total blend (product-agnostic name)
         "MSTL_v2": ("MSTL", "mstl_mape"),
         "DHR_ARIMA": ("DHR-ARIMA", "dhr_mape"),
     }
