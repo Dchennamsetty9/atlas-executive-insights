@@ -54,7 +54,8 @@ const ModelLabSection = ({ product, salesMarket }) => {
 
   const rows = data?.rows || [];
   const models = data?.models || [];
-  const isDemo = data?.source !== 'live';
+  const isDemo = data?.source === 'demo';
+  const isUnavailable = data?.source === 'unavailable';
 
   const colorOf = useMemo(() => {
     const map = {};
@@ -82,7 +83,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model Lab — {product} · V5 forecast models</span>
-        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: isDemo ? '#f59e0b' : '#10b981', background: isDemo ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.1)', border: `1px solid ${isDemo ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.3)'}` }}>{isDemo ? 'DEMO' : 'LIVE'}</span>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: isUnavailable || isDemo ? '#f59e0b' : '#10b981', background: isUnavailable || isDemo ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.1)', border: `1px solid ${isUnavailable || isDemo ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.3)'}` }}>{isUnavailable ? 'UNAVAILABLE' : isDemo ? 'DEMO' : 'LIVE'}</span>
         {data?.run_date && <span style={{ fontSize: 10, color: '#475569' }}>run {String(data.run_date).slice(0, 10)}</span>}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
           {[{ k: 'total', l: 'Total' }, { k: 'market', l: 'By Market' }].map((g) => <button key={g.k} onClick={() => setGrain(g.k)} style={pillStyle(grain === g.k, '#3b82f6')}>{g.l}</button>)}
@@ -96,6 +97,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
       </div>
 
       {mlError && <div style={{ padding: '14px', borderRadius: 8, color: '#ef4444', background: 'rgba(239,68,68,0.06)', fontSize: 12 }}>⚠ {mlError}</div>}
+      {isUnavailable && <div style={{ padding: '14px', borderRadius: 8, color: '#f59e0b', background: 'rgba(245,158,11,0.06)', fontSize: 12 }}>Forecast model data is unavailable for this selection. {data?.error || ''}</div>}
 
       {models.length > 0 && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{models.map((m) => <button key={m} onClick={() => setSel(m)} style={pillStyle(sel === m, colorOf[m])}>{mlLabel(m)}</button>)}</div>}
 

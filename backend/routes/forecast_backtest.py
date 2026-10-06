@@ -40,7 +40,7 @@ def build_backtest_query(vintages_table, actuals_table, product, model, horizon_
                          TRY_CAST(run_ts_utc AS TIMESTAMP),
                          TRY_CAST(run_date_utc AS TIMESTAMP)) AS origin_ts,
                 CAST(p50 AS DOUBLE) AS predicted,
-                CAST(p10 AS DOUBLE) AS worst, CAST(p90 AS DOUBLE) AS best
+                CAST(p05 AS DOUBLE) AS worst, CAST(p95 AS DOUBLE) AS best
             FROM {vintages_table}
             WHERE model = '{source_model}'
               AND LOWER(TRIM(grain_level)) = 'total'

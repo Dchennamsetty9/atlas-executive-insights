@@ -4,9 +4,9 @@ Lightweight connection module for Databricks SQL Warehouse.
 Shared by data_fetcher and gaim_data_service.
 
 Auth priority (first usable wins):
-    1. Databricks SDK auto-discovery (Apps service principal)
-    2. Request/user token via x-forwarded-access-token
-    3. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
+    1. Dedicated SQL PAT via GAIM_SQL_PAT
+    2. Databricks SDK auto-discovery (Apps service principal)
+    3. Request/user token via x-forwarded-access-token or legacy PAT env vars
     4. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
@@ -82,6 +82,11 @@ def _resolve_token() -> str:
     return token or ""
 
 
+def _resolve_sql_pat() -> str:
+    """Return the dedicated SQL PAT when configured for warehouse access."""
+    return os.environ.get("GAIM_SQL_PAT", "")
+
+
 def _oauth_m2m_available() -> bool:
     """Return True when service-principal OAuth credentials are configured."""
     return bool(os.environ.get("DATABRICKS_CLIENT_ID") and os.environ.get("DATABRICKS_CLIENT_SECRET"))
@@ -121,20 +126,23 @@ def token_available() -> bool:
     """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
     if not DATABRICKS_AVAILABLE:
         return False
-    if os.environ.get("GAIM_SQL_PAT") or bool(_resolve_token()) or _oauth_m2m_available():
+    if bool(_resolve_sql_pat()) or bool(_resolve_token()) or _oauth_m2m_available():
         return True
     provider, _ = _sdk_credentials_provider()
     return provider is not None
 
 
 def query_cache_scope() -> str | None:
-    token = os.environ.get("GAIM_SQL_PAT") or _resolve_token()
-    if token:
+    sql_pat = _resolve_sql_pat()
+    token = _resolve_token()
+    if sql_pat:
+        credentials = ("gaim-sql-pat", sql_pat)
+    elif _sdk_credentials_provider()[0] is not None:
+        credentials = ("sdk-auto",)
+    elif token:
         credentials = ("token", token)
     elif _oauth_m2m_available():
         credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
-    elif _sdk_credentials_provider()[0] is not None:
-        credentials = ("sdk-auto",)
     else:
         return None
     identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
@@ -157,30 +165,20 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
-    # 1. Explicit PAT from secret scope — GAIM_SQL_PAT avoids the reserved
+    # 1. Dedicated SQL PAT from secret scope — avoids the reserved
     #    DATABRICKS_TOKEN name that the Apps runtime may overwrite.
-    explicit_pat = os.environ.get("GAIM_SQL_PAT") or os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_ACCESS_TOKEN")
-    if explicit_pat:
+    sql_pat = _resolve_sql_pat()
+    if sql_pat:
         return sql.connect(
             server_hostname=HOST,
             http_path=HTTP_PATH,
-            access_token=explicit_pat,
+            access_token=sql_pat,
             _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
 
-    # 2. Forwarded user token (x-forwarded-access-token from Apps proxy)
-    forwarded = _request_token.get()
-    if forwarded:
-        return sql.connect(
-            server_hostname=HOST,
-            http_path=HTTP_PATH,
-            access_token=forwarded,
-            _socket_timeout=10,
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
-        )
-
-    # 3. SDK auto-discovery (app service principal — last resort)
+    # 2. SDK auto-discovery: the app SP token is the reliable auth path in
+    #    Databricks Apps when the forwarded user token lacks SQL warehouse scope.
     sdk_token, sdk_host = _sdk_credentials_provider()
     if sdk_token:
         return sql.connect(
@@ -189,6 +187,17 @@ def get_connection():
             access_token=sdk_token,
             _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # 3. Fallback: per-request user token or legacy PAT env vars
+    token = _resolve_token()
+    if token:
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            access_token=token,
+            _socket_timeout=10,                      # 10 s per socket op (was 5; tolerates cold-start)
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
     if _oauth_m2m_available():
