@@ -3293,6 +3293,108 @@ async def get_freshness(
         return {"source": "demo", "error": str(exc), "freshness": None, "days_stale": None, "sla_days": 7, "sla_status": "unknown"}
 
 
+# ── Plan tracking / confidence (derived, never fabricated) ────────────────────
+_PLAN_MODEL = "Adaptive_Ensemble"
+_BRIDGE_BASIS = (
+    "Plan = retained Adaptive_Ensemble p50 forecast per week from the latest run issued on or "
+    "before the first day of the quarter (never a later vintage). Actual = closed-week actuals "
+    "from the latest published snapshot. Variance = actual minus plan for the same closed weeks. "
+    "Outlook = closed actuals + snapshot Most_Likely for the remaining weeks."
+)
+_CONFIDENCE_BASIS = (
+    "Derived from the latest closed-quarter forecast error (score = 100 - quarterly WAPE %, "
+    "clamped 0-100); not a statistical confidence interval."
+)
+
+
+def _quarter_bounds(year: int, quarter: int) -> tuple[datetime.date, datetime.date]:
+    start = datetime.date(year, 3 * (quarter - 1) + 1, 1)
+    nxt = datetime.date(year + 1, 1, 1) if quarter == 4 else datetime.date(year, 3 * quarter + 1, 1)
+    return start, nxt - datetime.timedelta(days=1)
+
+
+def _resolve_quarter(year: Optional[int], quarter: Optional[int]) -> Optional[tuple[int, int]]:
+    today = datetime.date.today()
+    if quarter is None:
+        if year is not None and year != today.year:
+            return None
+        return today.year, (today.month - 1) // 3 + 1
+    if quarter not in (1, 2, 3, 4):
+        return None
+    return (year or today.year), quarter
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _bridge_scope(model, product, product_line, sales_market) -> Dict[str, Any]:
+    return {
+        "model": _validate_model(model or "ensemble"),
+        "product": _selected_product(product, product_line),
+        "sales_market": _normalize_market_value(sales_market),
+    }
+
+
+def _bridge_unavailable(scope: Dict[str, Any], reason: str, **extra: Any) -> Dict[str, Any]:
+    return {
+        "source": "unavailable", "basis": _BRIDGE_BASIS, "reason": reason, "components": [],
+        "actual_total": None, "plan_total": None, "plan_total_closed": None,
+        "plan_total_quarter": None, "outlook_total": None, "variance": None,
+        "variance_pct": None, "outlook_vs_plan": None, "weeks_closed": 0,
+        **scope, **extra,
+    }
+
+
+def _bridge_plan_sql(prefix: str, product: str, q_start: datetime.date, q_end: datetime.date) -> str:
+    vintages = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_vintages`"
+    return f"""
+        WITH ranked AS (
+            SELECT CAST(ds AS DATE) AS ds,
+                   CAST(p50 AS DOUBLE) AS p50,
+                   CAST(run_date_utc AS DATE) AS run_date,
+                   DENSE_RANK() OVER (
+                       PARTITION BY CAST(ds AS DATE)
+                       ORDER BY CAST(run_date_utc AS DATE) DESC
+                   ) AS rk
+            FROM {vintages}
+            WHERE model = '{RETAINED_MODELS['ensemble']}'
+              AND LOWER(TRIM(grain_level)) = 'total'
+              AND UPPER(TRIM(sales_market)) IN ('ALL', 'TOTAL')
+              AND (product_group IS NULL OR UPPER(TRIM(product_group)) = '{product}')
+              AND p50 IS NOT NULL
+              AND CAST(ds AS DATE) BETWEEN DATE'{q_start.isoformat()}' AND DATE'{q_end.isoformat()}'
+              AND CAST(run_date_utc AS DATE) <= DATE'{q_start.isoformat()}'
+        )
+        SELECT CAST(ds AS STRING) AS ds, MIN(p50) AS p50_min, MAX(p50) AS p50_max,
+               CAST(MAX(run_date) AS STRING) AS run_date
+        FROM ranked
+        WHERE rk = 1
+        GROUP BY ds
+        ORDER BY ds
+    """
+
+
+def _bridge_snapshot_sql(products: list, q_start: datetime.date, q_end: datetime.date) -> str:
+    plist = ", ".join(f"'{p}'" for p in products)
+    return f"""
+        SELECT product, CAST(ds AS STRING) AS ds, forecast_type,
+               CAST(Actuals AS DOUBLE) AS actual, CAST(Most_Likely AS DOUBLE) AS likely
+        FROM {FC_TABLE}
+        WHERE {_latest_run()}
+          AND product IN ({plist})
+          {_geo_filter('Total')}
+          AND forecast_type IN ('actuals', 'forecast', 'boq_forward')
+          AND CAST(ds AS DATE) BETWEEN DATE'{q_start.isoformat()}' AND DATE'{q_end.isoformat()}'
+    """
+
+
 @router.get("/confidence")
 async def get_confidence(
     model: str = Query("ensemble"),
@@ -3302,14 +3404,67 @@ async def get_confidence(
     sales_market: Optional[str] = None,
     live_mode: bool = Depends(_live_mode_dependency),
 ):
-    return {
-        "source": "unavailable", "confidence_score": None,
-        "confidence_label": "Unavailable", "model": _validate_model(model),
-        "product": _selected_product(None, product_line),
-        "sales_market": _normalize_market_value(sales_market),
-        "reason": "No validated confidence score for this model, period and selection.",
-        "reasons": [],
+    """Derived confidence from the latest closed-quarter forecast error (not statistical)."""
+    model_key = _validate_model(model)
+    product = _selected_product(None, product_line)
+    market = _normalize_market_value(sales_market)
+    result: Dict[str, Any] = {
+        "source": "unavailable", "confidence_score": None, "confidence_label": "Unavailable",
+        "model": model_key, "product": product, "sales_market": market,
+        "basis": _CONFIDENCE_BASIS, "reason": None, "reasons": [],
     }
+
+    def unavailable(reason: str) -> Dict[str, Any]:
+        result["reason"] = reason
+        return result
+
+    if not live_mode:
+        return unavailable("Databricks unavailable; no forecast error history to derive confidence from.")
+    if market != "Total":
+        return unavailable("Forecast error history is published at all-region total grain only; select All regions.")
+    if product not in ("UCC", "ITSG", "Total"):
+        return unavailable(f"No published forecast error history for product '{product}'.")
+    try:
+        rows = await _cached_query(f"""
+            SELECT product, model, quarterly_wape, quarter_label, source
+            FROM {QUARTERLY_ACCURACY_TABLE}
+            WHERE run_date = (SELECT MAX(run_date) FROM {QUARTERLY_ACCURACY_TABLE})
+              AND product = '{product}'
+        """, endpoint="/confidence", product=product)
+    except Exception as exc:
+        logger.error("[forecast/confidence] query failed: %s", exc)
+        return unavailable("Forecast error history could not be read.")
+
+    if model_key == "lightgbm":
+        matches = [r for r in rows or [] if str(r.get("model") or "").startswith("Global_LGB")]
+    else:
+        matches = [r for r in rows or [] if r.get("model") == _ACC_MODEL[model_key]]
+    label = _ACC_MODEL[model_key] if model_key != "lightgbm" else "Global_LGB_*"
+    if not matches:
+        return unavailable(f"No closed-quarter forecast error published for {label} on {product}.")
+    if len(matches) > 1:
+        return unavailable(f"Ambiguous closed-quarter forecast error ({len(matches)} rows) for {label} on {product}.")
+    row = matches[0]
+    wape = _finite_or_none(row.get("quarterly_wape"))
+    if wape is None or wape < 0:
+        return unavailable(f"Closed-quarter forecast error for {label} on {product} is missing or invalid.")
+
+    score = round(max(0.0, min(100.0, 100.0 - wape)), 1)
+    conf_label = "High" if score >= 85 else "Medium" if score >= 70 else "Low"
+    quarter_label = str(row.get("quarter_label") or "").strip() or None
+    err_source = str(row.get("source") or "").strip() or None
+    reasons = [
+        f"Latest closed-quarter forecast error: {wape:.1f}% ({quarter_label or 'quarter not labelled'})",
+        f"Source of error figure: {err_source or 'not recorded'}"
+        + (" (estimated, not measured)" if err_source and err_source.startswith("estimated_") else ""),
+        "Rule: score = 100 - error %; High >= 85, Medium >= 70, otherwise Low",
+    ]
+    result.update(
+        source="live", confidence_score=score, confidence_label=conf_label, reason=None,
+        reasons=reasons, quarter_label=quarter_label, error_pct=round(wape, 2),
+        error_source=err_source, source_model=row.get("model"),
+    )
+    return result
 
 
 @router.get("/driver-bridge")
@@ -3322,13 +3477,118 @@ async def get_driver_bridge(
     sales_market: Optional[str] = None,
     live_mode: bool = Depends(_live_mode_dependency),
 ):
+    """Plan (retained forecast issued before the quarter) vs closed-week actuals."""
+    scope = _bridge_scope(model, product, product_line, sales_market)
+    resolved = _resolve_quarter(year, quarter)
+    if resolved is None:
+        return _bridge_unavailable(scope, "Select a valid quarter (1-4) for plan tracking.")
+    q_year, q_num = resolved
+    q_label = f"Q{q_num} {q_year}"
+    q_start, q_end = _quarter_bounds(q_year, q_num)
+    scope = {**scope, "year": q_year, "quarter": q_num, "quarter_label": q_label,
+             "plan_run_cutoff": q_start.isoformat()}
+    if not live_mode:
+        return _bridge_unavailable(scope, "Databricks unavailable; no plan or actuals to compare.")
+    if scope["sales_market"] != "Total":
+        return _bridge_unavailable(
+            scope, "Plan tracking is available at all-region total grain only; select All regions.")
+    if scope["product"] not in ("UCC", "ITSG", "Total"):
+        return _bridge_unavailable(scope, f"No retained plan for product '{scope['product']}'.")
+    products = ["UCC", "ITSG"] if scope["product"] == "Total" else [scope["product"]]
+
+    try:
+        snap_rows = await _cached_query(
+            _bridge_snapshot_sql(products, q_start, q_end),
+            endpoint="/driver-bridge", product=scope["product"], quarter=q_label)
+        plan_rows: Dict[str, list] = {}
+        for prod in products:
+            plan_rows[prod] = await _cached_query(
+                _bridge_plan_sql(prod.lower(), prod, q_start, q_end),
+                endpoint="/driver-bridge", product=prod, quarter=q_label, metric="plan")
+    except Exception as exc:
+        logger.error("[forecast/driver-bridge] query failed: %s", exc)
+        return _bridge_unavailable(scope, "Plan or actuals source could not be read.")
+
+    # Snapshot: actual per (product, ds) from closed weeks; outlook value from forecast rows.
+    actual: Dict[str, Dict[str, float]] = {p: {} for p in products}
+    likely: Dict[str, Dict[str, float]] = {p: {} for p in products}
+    for r in snap_rows or []:
+        prod, ds = str(r.get("product") or ""), str(r.get("ds") or "")[:10]
+        if prod not in actual or not ds:
+            continue
+        if r.get("forecast_type") == "actuals":
+            value = _finite_or_none(r.get("actual"))
+            if value is not None:
+                actual[prod][ds] = value
+        else:
+            value = _finite_or_none(r.get("likely"))
+            if value is not None and (ds not in likely[prod] or r.get("forecast_type") == "forecast"):
+                likely[prod][ds] = value
+    quarter_weeks = sorted({ds for p in products for ds in [*actual[p], *likely[p]]})
+    if not quarter_weeks:
+        return _bridge_unavailable(scope, f"No snapshot rows for {q_label}.", weeks_in_quarter=0)
+
+    # Plan: one retained p50 per week; reject weeks whose latest run holds conflicting values.
+    plan: Dict[str, Dict[str, float]] = {p: {} for p in products}
+    plan_run_dates: set = set()
+    ambiguous = 0
+    for prod in products:
+        for r in plan_rows.get(prod) or []:
+            lo, hi, ds = _finite_or_none(r.get("p50_min")), _finite_or_none(r.get("p50_max")), str(r.get("ds") or "")[:10]
+            if lo is None or hi is None or not ds:
+                continue
+            if lo != hi:
+                ambiguous += 1
+                continue
+            plan[prod][ds] = lo
+            if r.get("run_date"):
+                plan_run_dates.add(str(r["run_date"])[:10])
+    no_plan = [p for p in products if not plan[p]]
+    if no_plan:
+        return _bridge_unavailable(
+            scope,
+            f"No retained forecast vintage issued on or before {q_start.isoformat()} covers {q_label} "
+            f"for {', '.join(no_plan)}; later vintages are not substituted.",
+            weeks_in_quarter=len(quarter_weeks))
+
+    closed = sorted(set.intersection(*(set(actual[p]) for p in products)))
+    plan_weeks_ok = all(ds in plan[p] for p in products for ds in quarter_weeks)
+    plan_total_quarter = round(sum(plan[p][ds] for p in products for ds in quarter_weeks), 2) if plan_weeks_ok else None
+    outlook_ok = all(ds in actual[p] or ds in likely[p] for p in products for ds in quarter_weeks)
+    outlook_total = (round(sum(actual[p][ds] if ds in actual[p] else likely[p][ds]
+                               for p in products for ds in quarter_weeks), 2) if outlook_ok else None)
+    outlook_vs_plan = (round(outlook_total - plan_total_quarter, 2)
+                       if outlook_total is not None and plan_total_quarter is not None else None)
+    extra = {
+        "plan_total_quarter": plan_total_quarter, "outlook_total": outlook_total,
+        "outlook_vs_plan": outlook_vs_plan, "weeks_in_quarter": len(quarter_weeks),
+        "plan_run_date": max(plan_run_dates) if plan_run_dates else None,
+    }
+    if not closed:
+        return _bridge_unavailable(scope, f"No closed weeks in {q_label} yet", **extra)
+    missing = [ds for ds in closed if any(ds not in plan[p] for p in products)]
+    if missing:
+        return _bridge_unavailable(
+            scope,
+            f"Retained plan is missing for {len(missing)} closed week(s) in {q_label}"
+            + (f" ({ambiguous} week(s) had conflicting vintages)" if ambiguous else "") + ".",
+            weeks_closed=len(closed), **extra)
+
+    components = []
+    for prod in products:
+        a = round(sum(actual[prod][ds] for ds in closed), 2)
+        pl = round(sum(plan[prod][ds] for ds in closed), 2)
+        components.append({"name": prod, "driver": prod, "actual": a, "plan": pl,
+                           "variance": round(a - pl, 2), "value": round(a - pl, 2)})
+    actual_total = round(sum(c["actual"] for c in components), 2)
+    plan_total_closed = round(sum(c["plan"] for c in components), 2)
+    variance = round(actual_total - plan_total_closed, 2)
     return {
-        "source": "unavailable", "components": [],
-        "actual_total": None, "plan_total": None, "variance": None,
-        "model": _validate_model(model or "ensemble"),
-        "product": _selected_product(product, product_line),
-        "sales_market": _normalize_market_value(sales_market),
-        "reason": "No approved plan or matched issued forecast for the same closed weeks.",
+        "source": "live", "basis": _BRIDGE_BASIS, "reason": None, "components": components,
+        "actual_total": actual_total, "plan_total": plan_total_closed,
+        "plan_total_closed": plan_total_closed, "variance": variance,
+        "variance_pct": round(variance / plan_total_closed * 100, 2) if plan_total_closed > 0 else None,
+        "weeks_closed": len(closed), **scope, **extra,
     }
 
 
@@ -3433,16 +3693,32 @@ async def get_meeting_mode(
         freshness = await get_freshness(live_mode=live_mode)
         top_risks = (radar.get("items") or [])[:3]
         moves = []
+        unavailable_sections = []
+        if confidence.get("source") != "live":
+            unavailable_sections.append("confidence")
+        if bridge.get("source") != "live":
+            unavailable_sections.append("plan_variance")
+        unavailable_sections.append("recommendations")  # no source exists for recommendations
         return {
-            "source": "live" if radar.get("source") == "live" else "unavailable",
-            "status": "partial",
-            "unavailable_sections": ["confidence", "plan_variance", "recommendations"],
+            "source": "live" if "live" in (radar.get("source"), bridge.get("source")) else "unavailable",
+            "status": "complete" if not unavailable_sections else "partial",
+            "unavailable_sections": unavailable_sections,
             "confidence": confidence,
             "freshness": freshness,
             "variance": {
+                "source": bridge.get("source"),
+                "reason": bridge.get("reason"),
+                "basis": bridge.get("basis"),
+                "quarter_label": bridge.get("quarter_label"),
                 "plan_total": bridge.get("plan_total"),
+                "plan_total_closed": bridge.get("plan_total_closed"),
+                "plan_total_quarter": bridge.get("plan_total_quarter"),
                 "actual_total": bridge.get("actual_total"),
                 "variance": bridge.get("variance"),
+                "variance_pct": bridge.get("variance_pct"),
+                "outlook_total": bridge.get("outlook_total"),
+                "outlook_vs_plan": bridge.get("outlook_vs_plan"),
+                "weeks_closed": bridge.get("weeks_closed"),
             },
             "top_risks": top_risks,
             "top_moves": moves,

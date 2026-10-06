@@ -87,6 +87,11 @@ def collect_sql(monkeypatch):
     asyncio.run(impl.get_run_history(product_line="UCC", sales_market="NA", live_mode=True))
     asyncio.run(impl.get_leaderboard(live_mode=True))
     asyncio.run(impl.get_freshness(live_mode=True))
+    for market_product in ("UCC", "ITSG", None):
+        asyncio.run(impl.get_driver_bridge(model="ensemble", product=None, year=year, quarter=3,
+                                           product_line=market_product, sales_market=None, live_mode=True))
+        asyncio.run(impl.get_confidence(model="ensemble", year=None, quarter=None,
+                                        product_line=market_product, sales_market=None, live_mode=True))
     asyncio.run(impl.get_health(strict=False, live_mode=True))
     asyncio.run(impl.get_models(live_mode=True))
     for product in ("UCC", "ITSG"):

@@ -23,6 +23,7 @@ import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
 import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
+import { DriverBridgeSummary, ConfidenceNotes } from './forecast/DriverBridgeSummary';
 import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
@@ -2680,31 +2681,7 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
-                {isFieldLoading('driverBridge') ? <Skeleton height={160} /> : !driverBridge ? <EmptyState /> : (
-                  <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {(driverBridge?.components || []).slice(0, 6).map((c, i) => {
-                        const positive = (c.value || 0) >= 0;
-                        const denom = Math.max(1, Math.abs(driverBridge?.variance || 1));
-                        const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / denom * 100));
-                        return (
-                          <div key={i} style={{ display: 'grid', gridTemplateColumns: '220px 1fr 80px', gap: 8, alignItems: 'center' }}>
-                            <div style={{ fontSize: 11, color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.driver || `Driver ${i + 1}`}</div>
-                            <div style={{ height: 10, background: 'rgba(255,255,255,0.06)', borderRadius: 6, overflow: 'hidden' }}>
-                              <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
-                            </div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: positive ? '#10b981' : '#ef4444', textAlign: 'right' }}>{fmtM(c.value || 0)}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                {isFieldLoading('driverBridge') ? <Skeleton height={160} /> : !driverBridge ? <EmptyState /> : <DriverBridgeSummary bridge={driverBridge} fmt={fmtM} maxComponents={6} />}
               </CardWrap>
             </div>
           )}
@@ -2804,6 +2781,7 @@ const ForecastingPanel = () => {
                     {confidence?.confidence_score ?? '—'}
                   </div>
                   <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{confidence?.confidence_label || 'Unknown'} confidence</div>
+                  <ConfidenceNotes confidence={confidence} />
                   <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {(confidence?.reasons || []).slice(0, 3).map((r, i) => (
                       <div key={i} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>• {r}</div>
@@ -2821,29 +2799,8 @@ const ForecastingPanel = () => {
               </div>
 
               <CardWrap>
-                <SectionTitle>Driver Bridge (Plan vs Actual)
-                  
-                </SectionTitle>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(driverBridge?.components || []).map((c, i) => {
-                    const positive = (c.value || 0) >= 0;
-                    const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / Math.max(1, Math.abs(driverBridge?.variance || 1)) * 100));
-                    return (
-                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 100px', gap: 8, alignItems: 'center' }}>
-                        <div style={{ fontSize: 11, color: '#cbd5e1' }}>{c.name}</div>
-                        <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                          <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
-                        </div>
-                        <div style={{ textAlign: 'right', fontSize: 11, color: positive ? '#10b981' : '#ef4444' }}>{fmtM(c.value)}</div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+                {!driverBridge ? <EmptyState /> : <DriverBridgeSummary bridge={driverBridge} fmt={fmtM} />}
               </CardWrap>
 
               <CardWrap>
