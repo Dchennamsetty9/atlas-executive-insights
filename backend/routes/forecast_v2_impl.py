@@ -949,8 +949,8 @@ async def _backtest_rows_from_accuracy_history(
     run_col = _pick_column(cols, "run_date", "forecast_run_date", "created_at", "generated_at")
     pred_col = _pick_column(cols, "predicted", "predicted_value", "forecast", "forecast_value", "p50", "most_likely", "yhat")
     actual_col = _pick_column(cols, "actual", "actuals", "actual_value", "arr_actual")
-    low_col = _pick_column(cols, "worst", "p10", "lower", "lower_bound", "forecast_p10")
-    high_col = _pick_column(cols, "best", "p90", "upper", "upper_bound", "forecast_p90")
+    low_col = _pick_column(cols, "worst", "p05", "p10", "lower", "lower_bound", "forecast_p05", "forecast_p10")
+    high_col = _pick_column(cols, "best", "p95", "p90", "upper", "upper_bound", "forecast_p95", "forecast_p90")
     wape_col = _pick_column(cols, "wape", "wape_pct", "mape", "mape_pct")
     horizon_col = _pick_column(cols, "horizon_weeks", "weeks_ahead", "horizon", "lead_weeks", "forecast_horizon_weeks")
     product_col = _pick_column(cols, "product", "product_line", "product_group")
@@ -2401,7 +2401,9 @@ async def get_backtest(
     prefix = effective_product.lower()
     vintages = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_vintages`"
     actuals = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_cbe`"
-    sql = build_backtest_query(vintages, actuals, effective_product, model, horizon_weeks)
+    # Vintages written before the 2026-09-28 5-quantile switch carry p10/p90; newer rows carry p05/p95.
+    vintage_cols = await _table_columns(vintages, endpoint="/backtest/vintages/columns") or None
+    sql = build_backtest_query(vintages, actuals, effective_product, model, horizon_weeks, vintage_cols)
     try:
         # No shared cache: preserve caller identity and never reuse another scope's pairs.
         raw_rows = await asyncio.to_thread(execute_query, sql)

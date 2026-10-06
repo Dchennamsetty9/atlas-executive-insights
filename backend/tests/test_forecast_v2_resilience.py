@@ -22,6 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 fake_services = types.ModuleType("services")
 fake_db = types.ModuleType("services.databricks_connection")
+fake_db.DATABRICKS_AVAILABLE = False
 fake_db.execute_query = lambda _sql: []
 fake_db.token_available = lambda: False
 fake_db.set_request_token = lambda _token: None

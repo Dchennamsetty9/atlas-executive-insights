@@ -24,7 +24,14 @@ MESSAGES = {
 }
 
 
-def build_backtest_query(vintages_table, actuals_table, product, model, horizon_weeks):
+def _band_expr(columns, candidates):
+    present = [c for c in candidates if columns is None or c in columns]
+    if not present:
+        return "CAST(NULL AS DOUBLE)"
+    return "COALESCE(" + ", ".join(f"CAST({c} AS DOUBLE)" for c in present) + ")"
+
+
+def build_backtest_query(vintages_table, actuals_table, product, model, horizon_weeks, vintage_columns=None):
     """Select one unambiguous publication per closed week inside the requested lead-time bin."""
     if product not in ("UCC", "ITSG") or model not in RETAINED_MODELS or not 1 <= horizon_weeks <= 13:
         raise ValueError("Unsupported retained backtest scope")
@@ -40,7 +47,8 @@ def build_backtest_query(vintages_table, actuals_table, product, model, horizon_
                          TRY_CAST(run_ts_utc AS TIMESTAMP),
                          TRY_CAST(run_date_utc AS TIMESTAMP)) AS origin_ts,
                 CAST(p50 AS DOUBLE) AS predicted,
-                CAST(p05 AS DOUBLE) AS worst, CAST(p95 AS DOUBLE) AS best
+                {_band_expr(vintage_columns, ('p05', 'p10'))} AS worst,
+                {_band_expr(vintage_columns, ('p95', 'p90'))} AS best
             FROM {vintages_table}
             WHERE model = '{source_model}'
               AND LOWER(TRIM(grain_level)) = 'total'
