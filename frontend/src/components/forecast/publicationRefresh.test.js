@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PUBLICATION_REFRESH_MS, subscribePublicationRefresh } from './publicationRefresh.js';
+import { PUBLICATION_REFRESH_MIN_GAP_MS, PUBLICATION_REFRESH_MS, subscribePublicationRefresh } from './publicationRefresh.js';
 
 test('refreshes every five minutes and on visible return; removes listeners on unmount', () => {
   const listeners = new Map();
@@ -16,7 +16,8 @@ test('refreshes every five minutes and on visible return; removes listeners on u
     addEventListener: (event, callback) => listeners.set(event, callback),
     removeEventListener: event => listeners.delete(event),
   };
-  const stop = subscribePublicationRefresh(() => calls++, doc, win);
+  let clock = 1000;
+  const stop = subscribePublicationRefresh(() => calls++, doc, win, () => clock);
   assert.equal(delay, PUBLICATION_REFRESH_MS);
   assert.equal(delay, 300000);
   tick();
@@ -25,7 +26,14 @@ test('refreshes every five minutes and on visible return; removes listeners on u
   tick(); listeners.get('focus')(); listeners.get('visibilitychange')();
   assert.equal(calls, 1);
   doc.visibilityState = 'visible';
+  // focus + visibilitychange fire together on a tab switch: coalesced inside the min gap
   listeners.get('visibilitychange')(); listeners.get('focus')();
+  assert.equal(calls, 1);
+  clock += PUBLICATION_REFRESH_MIN_GAP_MS;
+  listeners.get('visibilitychange')(); listeners.get('focus')();
+  assert.equal(calls, 2);
+  clock += PUBLICATION_REFRESH_MS;
+  tick();
   assert.equal(calls, 3);
   stop();
   assert.equal(cleared, 42);

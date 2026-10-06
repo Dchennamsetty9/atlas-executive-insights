@@ -82,7 +82,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model Lab — {product} · V5 forecast models</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Model Lab — {product} · forecast models</span>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: isUnavailable || isDemo ? '#f59e0b' : '#10b981', background: isUnavailable || isDemo ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.1)', border: `1px solid ${isUnavailable || isDemo ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.3)'}` }}>{isUnavailable ? 'UNAVAILABLE' : isDemo ? 'DEMO' : 'LIVE'}</span>
         {data?.run_date && <span style={{ fontSize: 10, color: '#475569' }}>run {String(data.run_date).slice(0, 10)}</span>}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
@@ -91,8 +91,8 @@ const ModelLabSection = ({ product, salesMarket }) => {
       </div>
 
       <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5, marginTop: -6 }}>
-        Sourced from the V5 notebooks' output tables (weekly run). Each model carries its <b style={{ color: '#94a3b8' }}>own</b> P10–P90
-        band, so switching model changes the uncertainty range, not just the center line.
+        Sourced from the published forecast snapshot (weekly run), all-regions total. The <b style={{ color: '#94a3b8' }}>Ensemble</b> carries
+        the published P25–P75 band; individual models publish a point forecast only, so no band is drawn for them.
         {grain === 'market' && salesMarket && salesMarket !== 'All' ? ` Region: ${salesMarket}.` : ''}
       </div>
 
@@ -111,8 +111,8 @@ const ModelLabSection = ({ product, salesMarket }) => {
               <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
               <YAxis tickFormatter={(v) => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false} width={78} label={{ value: 'Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
               <Tooltip content={<DarkTip />} />
-              <Area type="monotone" dataKey="bandFloor" stackId="mlb" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} name="P10" isAnimationActive animationDuration={300} animationEasing="ease-out" />
-              <Area type="monotone" dataKey="bandRange" stackId="mlb" stroke="none" fill="url(#mlBand)" legendType="none" connectNulls dot={false} name="P10–P90 range" isAnimationActive animationDuration={300} animationEasing="ease-out" />
+              <Area type="monotone" dataKey="bandFloor" stackId="mlb" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} name="P25" isAnimationActive animationDuration={300} animationEasing="ease-out" />
+              <Area type="monotone" dataKey="bandRange" stackId="mlb" stroke="none" fill="url(#mlBand)" legendType="none" connectNulls dot={false} name="P25–P75 range" isAnimationActive animationDuration={300} animationEasing="ease-out" />
               <Line type="monotone" dataKey="p50" name="Most Likely (P50)" stroke={colorOf[sel] || '#e2e8f0'} strokeWidth={2.5} dot={false} connectNulls isAnimationActive animationDuration={300} animationEasing="ease-out" />
             </ComposedChart>
           </ResponsiveContainer>

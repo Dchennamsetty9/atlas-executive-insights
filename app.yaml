@@ -51,9 +51,14 @@ env:
   - name: FORECAST_V2_LEADERBOARD_TABLE
     value: "forecast_leaderboard_v2compat"
 
-  # Forecast tables publish daily; cache identical forecast API reads for a day
-  # so tab/filter refreshes do not repeatedly hit Databricks SQL.
+  # Forecast snapshot publishes weekly. Identical forecast API reads are cached
+  # in-process for up to one week (the code enforces a one-week minimum for
+  # snapshot endpoints, so values below 604800 have no effect). Cache keys embed
+  # the snapshot's latest run_date, so a new publication is picked up without a
+  # restart; the run_date is re-checked every FORECAST_V2_SNAPSHOT_TOKEN_TTL_SECONDS.
   - name: FORECAST_V2_CACHE_TTL_SECONDS
+    value: "604800"
+  - name: FORECAST_V2_SNAPSHOT_TOKEN_TTL_SECONDS
     value: "300"
   
   # PAT for SQL warehouse access — stored in secret scope to avoid the Apps

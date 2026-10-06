@@ -38,6 +38,13 @@ from routes import forecast_v2_impl as impl  # noqa: E402
 FORECAST_PREDICATE = "forecast_type IN ('forecast', 'boq_forward')"
 
 
+@pytest.fixture(autouse=True)
+def _fixed_snapshot_token(monkeypatch):
+    async def token():
+        return "test-run"
+    monkeypatch.setattr(impl, "_snapshot_token", token)
+
+
 def assert_no_legacy_forecast_types(sql):
     """V2 snapshot only has actuals/forecast/boq_forward; V1 values must never reach SQL."""
     for legacy in ("'rolling'", "'roy'", "'forward_1yr'"):
@@ -679,7 +686,7 @@ def test_legacy_forecast_types_alias_to_v2_and_invalid_is_rejected():
 def test_prophet_source_reads_v2_snapshot_like_other_models():
     source = impl._model_source("prophet")
     assert source["table"] == impl.FC_TABLE
-    assert source["table"] != impl.PROPHET_TABLE
+    assert "forecast_all_models" not in source["table"]  # legacy Prophet-native table
     assert source["most_likely_col"] == "arr_prophet"
     # Non-ensemble models publish no band of their own.
     assert source["lower_col"] == "NULL" and source["upper_col"] == "NULL"
@@ -984,7 +991,9 @@ def test_ytd_future_year_reads_forecast_rows_without_actuals(monkeypatch):
     # No actuals exist for a future year, so only the forecast query runs.
     assert len(captured_sql) == 1
     forecast_sql = captured_sql[0]
-    assert "forecast_type = 'forecast'" in forecast_sql
+    # Consistent with /monthly, /by-product and /confidence-bands: forecast + boq_forward.
+    assert FORECAST_PREDICATE in forecast_sql
+    assert "forecast_type = 'forecast'" not in forecast_sql
     assert "'actuals'" not in forecast_sql
     assert_no_legacy_forecast_types(forecast_sql)
     assert impl._latest_run() in forecast_sql
@@ -1202,7 +1211,7 @@ def test_by_product_landing_respects_model_source_and_slice_cutoff(monkeypatch, 
         assert FORECAST_PREDICATE in sql
         assert "forecast_type = 'actuals'" in sql
         assert_no_legacy_forecast_types(sql)
-        assert impl.PROPHET_TABLE not in sql
+        assert "forecast_all_models" not in sql
         if model == "prophet":
             assert "arr_prophet" in sql
         else:
