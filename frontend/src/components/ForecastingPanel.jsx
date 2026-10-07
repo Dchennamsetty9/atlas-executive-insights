@@ -17,7 +17,7 @@ import {
 } from 'recharts';
 import { apiService, createApiService } from '../services/api';
 import { createForecastRequests } from './forecast/forecastRequests';
-import { formatWeekDate } from './forecast/forecastNumbers.js';
+import { formatWeekDate, quarterScenarioTotals } from './forecast/forecastNumbers.js';
 import { loadForecastTab } from './forecast/loadForecastTab';
 import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
@@ -782,27 +782,9 @@ const MonthlyTable = ({ months }) => {
         <tbody>
           {quarters.map(q => {
             const qm = byQtr[q] || [];
-            // Quarter totals: likely/actuals sum; the band combines month
-            // half-widths in QUADRATURE (sqrt of sum of squares), matching the
-            // Overview KPI's variance aggregation — additive summing would
-            // re-inflate the band. Nulls (actuals-only months) contribute 0.
-            const agg = qm.reduce((a, m) => {
-              const lk = m.arr_likely ?? 0;
-              const lo = Math.max(0, lk - (m.arr_worst ?? lk));
-              const up = Math.max(0, (m.arr_best ?? lk) - lk);
-              return {
-                arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
-                arr_likely: a.arr_likely + lk,
-                loSq: a.loSq + lo * lo,
-                upSq: a.upSq + up * up,
-              };
-            }, { arr_actual: null, arr_likely: 0, loSq: 0, upSq: 0 });
-            const tot = {
-              arr_actual: agg.arr_actual,
-              arr_likely: agg.arr_likely,
-              arr_worst:  Math.max(0, agg.arr_likely - Math.sqrt(agg.loSq)),
-              arr_best:   agg.arr_likely + Math.sqrt(agg.upSq),
-            };
+            // Closed quarters have no scenario values -> dashes (not $0); partly closed quarters
+            // include closed months' actuals in the landing. See quarterScenarioTotals().
+            const tot = quarterScenarioTotals(qm);
             return [
               ...qm.map((m, i) => (
                 <tr key={`${q}-${m.month}`} style={{ background: i%2===0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
