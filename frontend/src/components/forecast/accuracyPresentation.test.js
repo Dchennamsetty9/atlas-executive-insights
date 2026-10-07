@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accuracyProducts, quarterlyValue, quarterlyPill, quarterlyEvidence, quarterlyBasis, sourceDate, backtestFreshness, backtestGuidance } from './accuracyPresentation.js';
+import { accuracyProducts, quarterlyValue, quarterlyPill, quarterlyEvidence, quarterlyBasis, sourceDate, backtestFreshness, backtestGuidance, historicalAccuracyCard } from './accuracyPresentation.js';
 
 const rows = [
   { product: 'UCC', sales_market: 'Total', quarterly_errors: { Ensemble: 0.826, ETS: 0 } },
@@ -69,3 +69,42 @@ test('empty guidance differentiates unsupported scope, missing history and faile
     assert.doesNotMatch(backtestGuidance(reason), /Check back after the next run/);
   }
 });
+
+test('historicalAccuracyCard leads with the quarter-level figure and adds weekly context', () => {
+  const measured = [{ product: 'UCC', sales_market: 'Total', quarterly_errors: { Ensemble: 14.1 },
+    quarterly_provenance: { Ensemble: { status: 'measured', quarter: '2026Q3', quarters_evaluated: 1 } } }];
+  const card = historicalAccuracyCard(measured, 'UCC', { avgSmape: 25.2, nQuarters: 1 });
+  assert.equal(card.text, "The Ensemble's full-quarter forecast landed within about 14.1% of the actual in the latest closed quarter. Week by week the typical miss is larger (about 25%) because weekly swings partly offset across a quarter.");
+  assert.equal(card.color, '#10b981');
+  assert.ok(card.text.includes(quarterlyPill(measured, 'UCC', 'Ensemble').replace('Qtr ', '')));
+});
+
+test('historicalAccuracyCard colours by quarter-level error, not weekly, and never calls a miss a win', () => {
+  const rows = [{ product: 'ITSG', sales_market: 'Total', quarterly_errors: { Ensemble: 31 },
+    quarterly_provenance: { Ensemble: { status: 'measured', quarters_evaluated: 4 } } }];
+  const card = historicalAccuracyCard(rows, 'ITSG', { avgSmape: 5, nQuarters: 4 });
+  assert.equal(card.color, '#ef4444');
+  assert.match(card.text, /across the last 4 evaluated quarters/);
+  assert.match(card.text, /Week by week the typical miss is about 5%\./);
+  assert.doesNotMatch(card.text, /larger/);
+});
+
+test('historicalAccuracyCard falls back to an explicit weekly-only sentence', () => {
+  const one = historicalAccuracyCard([], 'UCC', { avgSmape: 25.2, nQuarters: 1 });
+  assert.match(one.text, /^Week by week, /);
+  assert.doesNotMatch(one.text, /over the most recent closed quarter/);
+  assert.match(one.text, /in the latest closed quarter/);
+  assert.equal(one.color, '#ef4444');
+  const many = historicalAccuracyCard([], 'UCC', { avgSmape: 12, nQuarters: 3 });
+  assert.match(many.text, /across the last 3 closed quarters/);
+  assert.equal(many.color, '#10b981');
+  assert.equal(historicalAccuracyCard([], 'UCC', null), null);
+});
+
+test('historicalAccuracyCard shows All products separately, colours by the worst, and flags unverified basis', () => {
+  const card = historicalAccuracyCard(rows, 'All', null);
+  assert.match(card.text, /UCC 0\.8% \(unverified\) and ITSG 12\.5% \(unverified\)/);
+  assert.equal(card.color, '#10b981');
+  assert.doesNotMatch(card.text, /Week by week/);
+});
+

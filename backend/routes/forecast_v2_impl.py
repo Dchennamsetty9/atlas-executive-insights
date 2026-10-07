@@ -68,6 +68,13 @@ HIST_SCENARIOS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_hist
 _GRAPH_KEYS = {"weekly", "ytd", "seasonality", "by_product", "monthly",
                "accuracy", "model_lab", "backtest",
                "quarterly_outlook", "multi_model"}
+# Composite keys (AI Insights tab, Exec Mode) have no notebook row of their own;
+# they are composed LIVE from the stored per-chart explanations below.
+_COMPOSITE_GRAPHS = {
+    "ai_insights": ("AI Insights", ("quarterly_outlook", "accuracy")),
+    "exec_mode": ("Exec Mode", ("quarterly_outlook", "by_product", "accuracy")),
+}
+_COMPOSITE_MAX_BULLETS = 6
 # Map the app's model key → the model label stored in the accuracy-history table.
 _ACC_MODEL = {
     "ensemble": "Adaptive_Ensemble", "prophet": "Prophet_trend", "ets": "ETS",
@@ -2046,7 +2053,7 @@ async def get_graph_explanation(
     that (past quarters/years) fall back to the nearest scope with an explicit
     scope_note so the user knows what the text covers."""
     key = (graph or "").strip().lower()
-    if key not in _GRAPH_KEYS:
+    if key not in _GRAPH_KEYS and key not in _COMPOSITE_GRAPHS:
         raise HTTPException(status_code=400, detail="Invalid graph key")
     eff = _selected_product(product, product_line)          # Total | UCC | ITSG
     prod = "ALL" if eff in ("Total", "All", None) else eff
@@ -2066,62 +2073,103 @@ async def get_graph_explanation(
     if not _live():
         return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN}
 
-    def _sql(where_region: str, where_period: str) -> str:
-        return f"""
+    async def _fetch(gkey: str):
+        """Selection cascade for one graph key: exact (region, period) → Total
+        region → legacy schema. Returns (row | None, note | None)."""
+        def _sql(where_region: str, where_period: str) -> str:
+            return f"""
             SELECT title, explanation, bullets, CAST(run_date AS STRING) AS run_date,
                    region, scope_period
             FROM {GRAPH_EXPLAIN_TABLE}
-            WHERE graph_key = '{key}' AND product = '{prod.replace(chr(39), chr(39)*2)}'
+            WHERE graph_key = '{gkey}' AND product = '{prod.replace(chr(39), chr(39)*2)}'
               AND region = '{where_region.replace(chr(39), chr(39)*2)}'
               AND scope_period = '{where_period}'
               AND run_date = (SELECT MAX(run_date) FROM {GRAPH_EXPLAIN_TABLE})
             LIMIT 1
         """
 
-    rows = None
-    # Cascade: exact (region, period) → Total region → legacy schema (no region cols)
-    for wr, wp, note in (
-        (region, req_period, None),
-        ("Total", req_period, f"No region-specific explanation for {region} — showing all-regions." if region != "Total" else None),
-    ):
-        try:
-            rows = await asyncio.to_thread(execute_query, _sql(wr, wp))
-        except Exception as exc:
-            logger.error("[forecast/graph-explanation] query failed (schema fallback): %s", exc)
-            # Legacy table without region/scope_period columns (pre-matrix runs)
+        rows = None
+        for wr, wp, note in (
+            (region, req_period, None),
+            ("Total", req_period, f"No region-specific explanation for {region} — showing all-regions." if region != "Total" else None),
+        ):
             try:
-                rows = await asyncio.to_thread(execute_query, f"""
+                rows = await asyncio.to_thread(execute_query, _sql(wr, wp))
+            except Exception as exc:
+                logger.error("[forecast/graph-explanation] query failed (schema fallback): %s", exc)
+                # Legacy table without region/scope_period columns (pre-matrix runs)
+                try:
+                    rows = await asyncio.to_thread(execute_query, f"""
                     SELECT title, explanation, bullets, CAST(run_date AS STRING) AS run_date
                     FROM {GRAPH_EXPLAIN_TABLE}
-                    WHERE graph_key = '{key}' AND product = '{prod.replace(chr(39), chr(39)*2)}'
+                    WHERE graph_key = '{gkey}' AND product = '{prod.replace(chr(39), chr(39)*2)}'
                       AND run_date = (SELECT MAX(run_date) FROM {GRAPH_EXPLAIN_TABLE})
                     LIMIT 1
                 """)
-                note = "Explanation covers the product's current quarter (all regions) — re-run the unify notebook for selection-specific text."
-            except Exception as exc2:
-                logger.error("[forecast/graph-explanation] legacy query failed: %s", exc2)
-                rows = None
-        if rows:
-            if note:
-                scope_note = f"{scope_note} {note}".strip() if scope_note else note
-            break
+                    note = "Explanation covers the product's current quarter (all regions) — re-run the unify notebook for selection-specific text."
+                except Exception as exc2:
+                    logger.error("[forecast/graph-explanation] legacy query failed: %s", exc2)
+                    rows = None
+            if rows:
+                return rows[0], note
+        return None, None
 
-    if not rows:
+    def _bullets(r) -> list:
+        try:
+            out = json.loads(r.get("bullets") or "[]")
+        except Exception:
+            return []
+        return [b for b in out if isinstance(b, str) and b.strip()] if isinstance(out, list) else []
+
+    def _unavailable():
         return {"source": "demo", "graph": key, "product": prod, **_DEMO_EXPLAIN,
                 "explanation": ("Personalized explanation for this chart is being generated — "
                                  "it will appear here after the next daily forecast run (7am ET).")}
 
-    r = rows[0]
-    try:
-        bullets = json.loads(r.get("bullets") or "[]")
-    except Exception:
-        bullets = []
+    if key in _COMPOSITE_GRAPHS:
+        title, parts = _COMPOSITE_GRAPHS[key]
+        found = []
+        for part in parts:
+            row, note = await _fetch(part)
+            if row and (row.get("explanation") or "").strip():
+                found.append((row, note))
+        if not found:
+            return _unavailable()
+        paragraphs = [r["explanation"].strip() for r, _ in found]
+        bullets, seen = [], set()
+        for r, _ in found:
+            for b in _bullets(r):
+                k = " ".join(b.lower().split())
+                if k not in seen:
+                    seen.add(k)
+                    bullets.append(b)
+        notes = [scope_note] if scope_note else []
+        for _, n in found:
+            if n and n not in notes:
+                notes.append(n)
+        first = found[0][0]
+        run_dates = [r.get("run_date") for r, _ in found if r.get("run_date")]
+        return {
+            "source": "live", "graph": key, "product": prod,
+            "region": first.get("region") or "Total",
+            "scope_period": first.get("scope_period") or req_period,
+            "scope_note": " ".join(notes) or None,
+            "title": title, "explanation": "\n\n".join(paragraphs),
+            "bullets": bullets[:_COMPOSITE_MAX_BULLETS],
+            "run_date": max(run_dates) if run_dates else None,
+        }
+
+    r, note = await _fetch(key)
+    if not r:
+        return _unavailable()
+    if note:
+        scope_note = f"{scope_note} {note}".strip() if scope_note else note
     return {
         "source": "live", "graph": key, "product": prod,
         "region": r.get("region") or "Total", "scope_period": r.get("scope_period") or "quarter",
         "scope_note": scope_note,
         "title": r.get("title"), "explanation": r.get("explanation"),
-        "bullets": bullets, "run_date": r.get("run_date"),
+        "bullets": _bullets(r), "run_date": r.get("run_date"),
     }
 
 

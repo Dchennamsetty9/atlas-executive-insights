@@ -61,3 +61,40 @@ export const backtestGuidance = reason => ({
   source_query_failed: 'Refresh to retry the source read. Previously loaded or demo values are not substituted.',
   source_unavailable: 'Live history must be connected before these results can be shown.',
 }[reason] || 'No verified history is available for this selection. No other product’s results are substituted.');
+
+// Colour thresholds for an error percentage (shared by the Historical accuracy card).
+export const accuracyColor = pct => pct < 15 ? '#10b981' : pct < 25 ? '#f59e0b' : '#ef4444';
+
+// Historical-accuracy insight card. Leads with the QUARTER-LEVEL error (the same
+// leaderboard figure shown in the model pills); the weekly sMAPE average is context
+// only, never presented as the quarter's error. Returns null when nothing is usable.
+// weekly: { avgSmape, nQuarters } | null.
+export const historicalAccuracyCard = (rows, product, weekly) => {
+  const weeklyOk = weekly && Number.isFinite(weekly.avgSmape);
+  const weeklyPct = weeklyOk ? Math.round(weekly.avgSmape) : null;
+  const weeklyScope = weeklyOk && weekly.nQuarters > 1 ? `across the last ${weekly.nQuarters} closed quarters` : 'in the latest closed quarter';
+
+  const entries = accuracyProducts(product)
+    .map(name => ({ name, value: quarterlyValue(rows, name, 'Ensemble'), evidence: quarterlyEvidence(rows, name, 'Ensemble') }))
+    .filter(entry => entry.value != null);
+
+  if (!entries.length) {
+    if (!weeklyOk) return null;
+    return { color: accuracyColor(weekly.avgSmape),
+      text: `Week by week, Ensemble forecasts have missed by about ${weeklyPct}% on average ${weeklyScope}. A full-quarter error figure is not available for this selection.` };
+  }
+
+  const multi = entries.length > 1;
+  const figure = entry => `${errorPercent(entry.value)}${entry.evidence.status === 'measured' ? '' : ` (${entry.evidence.status})`}`;
+  const figures = multi ? entries.map(entry => `${entry.name} ${figure(entry)}`).join(' and ') : figure(entries[0]);
+  const quarters = entries.find(entry => entry.evidence.status === 'measured')?.evidence.quarters_evaluated;
+  const scope = quarters > 1 ? `across the last ${quarters} evaluated quarters` : 'in the latest closed quarter';
+  let text = `The Ensemble's full-quarter forecast landed within about ${figures} of the actual ${scope}.`;
+  if (weeklyOk) {
+    const worst = Math.max(...entries.map(entry => entry.value));
+    text += weekly.avgSmape > worst
+      ? ` Week by week the typical miss is larger (about ${weeklyPct}%) because weekly swings partly offset across a quarter.`
+      : ` Week by week the typical miss is about ${weeklyPct}%.`;
+  }
+  return { color: accuracyColor(Math.max(...entries.map(entry => entry.value))), text };
+};

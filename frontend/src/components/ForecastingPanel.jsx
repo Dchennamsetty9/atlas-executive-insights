@@ -24,7 +24,7 @@ import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDat
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
 import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
 import { DriverBridgeSummary, ConfidenceNotes } from './forecast/DriverBridgeSummary';
-import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance } from './forecast/accuracyPresentation';
+import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance, historicalAccuracyCard } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
 class TabErrorBoundary extends Component {
@@ -948,7 +948,7 @@ const normalizeInsightItems = (value) => {
 };
 
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
-const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
+const AiInsightsSection = ({ model, prodLine, salesMarket, leaderboard }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
@@ -1019,15 +1019,10 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
   // ── Three practical, computed insights — Brian's actual questions ────────────
   const FACT_CARDS = [];
   if (facts?.acc && !facts.acc.isDemo) {
-    const a = facts.acc;
-    FACT_CARDS.push({
-      icon: '🎯',
-      color: a.avgSmape < 15 ? '#10b981' : a.avgSmape < 25 ? '#f59e0b' : '#ef4444',
-      title: 'Historical accuracy',
-      text: a.nQuarters === 1
-        ? `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error over the most recent closed quarter.`
-        : `Ensemble forecasts have averaged about ±${a.avgSmape.toFixed(0)}% error across the last ${a.nQuarters} closed quarters.`,
-    });
+    // Quarter-level error comes from the same leaderboard rows as the model pills;
+    // the weekly sMAPE average is only supporting context.
+    const card = historicalAccuracyCard(leaderboard, prodLine, facts.acc);
+    if (card) FACT_CARDS.push({ icon: '🎯', color: card.color, title: 'Historical accuracy', text: card.text });
   }
   {
     const s = facts?.trust?.source === 'live' ? facts.trust.summary : null;
@@ -2617,7 +2612,7 @@ const ForecastingPanel = () => {
 
           {tab === 'AI Insights' && (
             <CardWrap explainKey="ai_insights" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
+              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} leaderboard={leaderboard} />
             </CardWrap>
           )}
 
