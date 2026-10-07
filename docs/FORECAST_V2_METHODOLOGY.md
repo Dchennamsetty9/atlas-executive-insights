@@ -1,6 +1,8 @@
 # ARR Forecast v2 — Methodology & Deployment
 
-*Companion to `notebooks/arr_forecast_v2.py`. Replaces the Prophet-only weekly job feeding the app's Forecast view.*
+> **Historical document.** This describes the retired `arr_forecast_v2` notebook (no longer in this repo; see git history). The current weekly pipeline is the four notebooks in `notebooks/` — see `notebooks/README.md`.
+
+*Companion to the retired `notebooks/arr_forecast_v2.py`. Replaced the Prophet-only weekly job feeding the app's Forecast view.*
 
 ## Why v2 should beat the current 31.3% MAPE
 
@@ -48,7 +50,7 @@ Contract notes (important):
 
 ## Deployment
 
-1. Import `notebooks/arr_forecast_v2.py` into the workspace (Repos or workspace import — it is Databricks notebook source format).
+1. (Retired — kept for history.) Import the former `notebooks/arr_forecast_v2.py` into the workspace (Repos or workspace import — it is Databricks notebook source format).
 2. Run interactively once on the ML runtime cluster; review Section 4 printout (out-of-sample MAPEs + chosen ensemble weights) and Section 6 (quarter-end projection) before letting Section 8 write.
 3. Point the weekly job at this notebook (replace the v1 notebook task in `databricks.yml` / job config; same Monday 06:00 UTC slot).
 4. Open the app's Forecast view — it picks up the new run with no backend or frontend changes. The leaderboard will now show both `weekly` and `monthly` rows with `type='backtest_3x13w'`.
