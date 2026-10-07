@@ -18,6 +18,7 @@ import {
 import { apiService, createApiService } from '../services/api';
 import { createForecastRequests } from './forecast/forecastRequests';
 import { formatWeekDate, quarterScenarioTotals } from './forecast/forecastNumbers.js';
+import { splitExplanation, bulletsAreCompact } from './forecast/explainText.js';
 import { loadForecastTab } from './forecast/loadForecastTab';
 import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
@@ -164,10 +165,11 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [tried, setTried]     = useState(false);
+  const [showMore, setShowMore] = useState(false);
 
   // Re-fetch when the user's selection changes so the explanation always
   // reflects the current product/region/period scope.
-  useEffect(() => { setTried(false); setData(null); setOpen(false); },
+  useEffect(() => { setTried(false); setData(null); setOpen(false); setShowMore(false); },
     [graphKey, product, productLine, salesMarket, year, quarter]);
 
   const toggle = () => {
@@ -205,48 +207,67 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
            position:absolute inside CardWrap, which is position:relative).
            zIndex 60 floats it above siblings but keeps it in context. */
         <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0,
-                      width: 360, maxWidth: 'min(360px, calc(100vw - 48px)',
-                      maxHeight: '70vh', overflowY: 'auto', zIndex: 60,
+                      width: 300, maxWidth: 'min(300px, calc(100vw - 48px))',
+                      maxHeight: '60vh', overflowY: 'auto', zIndex: 60,
                       background: '#0f172a', border: '1px solid rgba(168,85,247,0.35)',
-                      borderRadius: 12, padding: '16px 18px',
-                      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', textAlign: 'left' }}>
+                      borderRadius: 10, padding: '11px 13px',
+                      boxShadow: '0 12px 36px rgba(0,0,0,0.65)', textAlign: 'left' }}>
           <button onClick={() => setOpen(false)} aria-label="Close explanation"
-            style={{ position: 'absolute', top: 8, right: 10, width: 22, height: 22, borderRadius: 6,
+            style={{ position: 'absolute', top: 7, right: 8, width: 18, height: 18, borderRadius: 5,
                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
-                     color: '#94a3b8', fontSize: 11, lineHeight: 1, cursor: 'pointer', padding: 0 }}>
+                     color: '#94a3b8', fontSize: 9, lineHeight: 1, cursor: 'pointer', padding: 0 }}>
             ✕
           </button>
-          {loading && <div style={{ fontSize: 12, color: '#64748b' }}>✨ Loading explanation…</div>}
-          {!loading && data && (
+          {loading && <div style={{ fontSize: 11, color: '#64748b' }}>✨ Loading explanation…</div>}
+          {!loading && data && (() => {
+            const { headline, rest } = splitExplanation(data.explanation);
+            const compact = bulletsAreCompact(data.bullets);
+            return (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, paddingRight: 22 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   ✨ {data.title || 'Explanation'}
                 </span>
-                {data.source === 'demo' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
-                {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
+                {(data.source === 'demo' || data.source === 'fallback') && <span style={{ fontSize: 8.5, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
               </div>
               {data.scope_note && (
-                <div style={{ fontSize: 10.5, color: '#f59e0b', lineHeight: 1.45, marginBottom: 8,
-                              padding: '6px 8px', background: 'rgba(245,158,11,0.07)',
-                              border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#f59e0b', lineHeight: 1.4, marginBottom: 6,
+                              padding: '4px 7px', background: 'rgba(245,158,11,0.07)',
+                              border: '1px solid rgba(245,158,11,0.2)', borderRadius: 5 }}>
                   ⚠ {data.scope_note}
                 </div>
               )}
-              <div style={{ fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>{data.explanation}</div>
+              <div style={{ fontSize: 11.5, color: '#e2e8f0', lineHeight: 1.5, fontWeight: 500 }}>{headline}</div>
               {(data.bullets || []).length > 0 && (
-                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                  {data.bullets.map((b, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 7, fontSize: 12, color: '#94a3b8', lineHeight: 1.45 }}>
+                <div style={compact
+                  ? { marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }
+                  : { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {data.bullets.map((b, i) => compact ? (
+                    <div key={i} style={{ fontSize: 10.5, color: '#cbd5e1', lineHeight: 1.35, padding: '3px 7px',
+                                          background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.18)',
+                                          borderRadius: 5 }}>{b}</div>
+                  ) : (
+                    <div key={i} style={{ display: 'flex', gap: 6, fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>
                       <span style={{ color: '#a78bfa', flexShrink: 0 }}>▸</span><span>{b}</span>
                     </div>
                   ))}
                 </div>
               )}
-              {data.run_date && <div style={{ fontSize: 9, color: '#334155', marginTop: 10 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
+              {rest && (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={() => setShowMore(v => !v)}
+                    style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                             fontSize: 10, color: '#a78bfa', fontWeight: 600 }}>
+                    {showMore ? '▾ Hide details' : '▸ How to read this chart'}
+                  </button>
+                  {showMore && <div style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.5, marginTop: 4 }}>{rest}</div>}
+                </div>
+              )}
+              {data.run_date && <div style={{ fontSize: 8.5, color: '#475569', marginTop: 8 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
             </>
-          )}
-          {!loading && !data && <div style={{ fontSize: 12, color: '#94a3b8' }}>Detailed graph insight is unavailable right now.</div>}
+            );
+          })()}
+          {!loading && !data && <div style={{ fontSize: 11, color: '#94a3b8' }}>Detailed graph insight is unavailable right now.</div>}
         </div>
       )}
     </div>
