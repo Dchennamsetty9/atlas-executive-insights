@@ -20,6 +20,7 @@ import { createForecastRequests } from './forecast/forecastRequests';
 import { formatWeekDate, quarterScenarioTotals } from './forecast/forecastNumbers.js';
 import { splitExplanation, bulletsAreCompact } from './forecast/explainText.js';
 import { loadForecastTab } from './forecast/loadForecastTab';
+import { MIRADORE_LABEL, getIncludeMiradore, setIncludeMiradore as persistIncludeMiradore, showMiradoreToggle, miradoreNote } from './forecast/miradore';
 import { exportCardPng } from '../utils/chartExport';
 import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
@@ -969,7 +970,7 @@ const normalizeInsightItems = (value) => {
 };
 
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
-const AiInsightsSection = ({ model, prodLine, salesMarket, leaderboard }) => {
+const AiInsightsSection = ({ model, prodLine, salesMarket, leaderboard, includeMiradore }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
@@ -1007,7 +1008,7 @@ const AiInsightsSection = ({ model, prodLine, salesMarket, leaderboard }) => {
   useEffect(() => {
     loadAi();
     return () => aiBatchRef.current?.cancel();
-  }, [loadAi]);
+  }, [loadAi, includeMiradore]); // includeMiradore: api interceptor reads it per request
 
   // Normalise field names across backend shape variants
   const momentum  = aiData?.momentum ?? aiData?.trend_status;
@@ -1810,6 +1811,12 @@ const ForecastingPanel = () => {
   const [multiYearView, setMultiYearView] = useState('overlay'); // 'overlay' | 'timeline'
   const [modelsOpen, setModelsOpen] = useState(false); // non-ensemble model pills expanded
   const [salesMarket, setSalesMarket] = useState('All'); // region filter (All/NA/EMEA/APAC/LATAM)
+  const [includeMiradore, setIncludeMiradoreState] = useState(() => getIncludeMiradore());
+  const [miradoreScope, setMiradoreScope] = useState(null); // `scope` object from the latest forecast response
+  const toggleMiradore = useCallback(() => {
+    // Update the module flag first so requests built by the re-render already carry it.
+    setIncludeMiradoreState(persistIncludeMiradore(!getIncludeMiradore()));
+  }, []);
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
@@ -1883,7 +1890,7 @@ const ForecastingPanel = () => {
   const apiYear = selectedYear;
   const apiQuarter = selectedQuarter;
 
-  const scopeKey = JSON.stringify([model, fcType, activePl, activeGeo, apiYear, apiQuarter]);
+  const scopeKey = JSON.stringify([model, fcType, activePl, activeGeo, apiYear, apiQuarter, includeMiradore]);
   const isFieldLoading = field => loading && !settledFields.has(field);
 
   const fetchTabData = useCallback((targetTab, { force = false } = {}) => {
@@ -1916,6 +1923,7 @@ const ForecastingPanel = () => {
       setHistoricalScenarios([]);
       setSelectedScenario(null);
       setSource(null);
+      setMiradoreScope(null);
     }
     setDataScope(scopeKey);
     setError(null);
@@ -1932,6 +1940,7 @@ const ForecastingPanel = () => {
     const settle = field => setSettledFields(previous => new Set([...previous, field]));
     const publish = (field, value) => {
       if (!batch.isCurrent()) return;
+      if (value?.scope && typeof value.scope === 'object') setMiradoreScope(value.scope);
       switch (field) {
         case 'weekly':
           setWeekly(value?.rows ?? []);
@@ -2212,6 +2221,21 @@ const ForecastingPanel = () => {
             )}
           </div>
         </div>
+
+        {/* ── Group 4: Miradore estimate (ITSG / All only; default ON, persisted) ── */}
+        {showMiradoreToggle(prodLine) && (
+          <>
+            <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>MIRADORE</div>
+              <button type="button" role="switch" aria-checked={includeMiradore} onClick={toggleMiradore}
+                title="Add the estimated Miradore bookings to ITSG (and Total). Model-specific views stay Salesforce-only."
+                style={pill(includeMiradore, '#10b981')}>
+                {includeMiradore ? '✓ ' : ''}{MIRADORE_LABEL}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Status banners ─────────────────────────────────────────────────── */}
@@ -2263,6 +2287,19 @@ const ForecastingPanel = () => {
           change via Product / Time Period selectors above
         </span>
       </div>
+      {(() => {
+        const note = miradoreNote({ productLine: prodLine, includeMiradore, scope: miradoreScope, model, tab });
+        if (!note) return null;
+        const warn = note.kind === 'unavailable';
+        return (
+          <div data-testid="miradore-note" style={{ padding: '6px 14px', marginBottom: 10, borderRadius: 8, fontSize: 11,
+                        color: warn ? '#f59e0b' : '#6ee7b7',
+                        background: warn ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.07)',
+                        border: `1px solid ${warn ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.2)'}` }}>
+            {warn ? '⚠ ' : 'ⓘ '}{note.text}
+          </div>
+        );
+      })()}
 
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
@@ -2633,7 +2670,7 @@ const ForecastingPanel = () => {
 
           {tab === 'AI Insights' && (
             <CardWrap explainKey="ai_insights" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} leaderboard={leaderboard} />
+              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} leaderboard={leaderboard} includeMiradore={includeMiradore} />
             </CardWrap>
           )}
 

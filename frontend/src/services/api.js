@@ -3,6 +3,7 @@
  */
 
 import axios from 'axios'
+import { getIncludeMiradore, withIncludeMiradore } from '../components/forecast/miradore.js'
 
 // Auto-detect API URL:
 // - Production (Databricks Apps): Use relative path (same origin)
@@ -20,6 +21,8 @@ const api = axios.create({
 // Request interceptor for debugging
 api.interceptors.request.use(
   config => {
+    // Single choke point: every forecast v2 GET carries include_miradore=true|false.
+    config.params = withIncludeMiradore(config.url, config.params, getIncludeMiradore(), config.method || 'get')
     console.log(`API Request: ${config.method.toUpperCase()} ${config.url}`)
     return config
   },

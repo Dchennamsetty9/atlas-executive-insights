@@ -8,6 +8,12 @@ Job name: `arr_forecasting_all_models` (Mondays)
 | `itsg_growth_arr_forecasting` | 02_itsg_growth_arr_forecasting | - (runs in parallel with UCC) |
 | `forecast_unify_publish` | 03_forecast_unify_publish | both tasks above |
 | `powerbi_wide_forecast_export` | 04_powerbi_wide_forecast_export | `forecast_unify_publish` |
+| `pipeline_nowcast` (OPTIONAL) | 05_pipeline_nowcast | `forecast_unify_publish` |
+
+Task 05 is an in-quarter nowcast from point-in-time stage-weighted pipeline. It is NOT part of the weekly job until its
+backtest gate passes (nowcast MAPE < best baseline at as-of weeks >= 5 for both UCC and ITSG; printed by the notebook and
+stored as `validated`). Before first use, confirm the OpportunityHistory table/columns (`HISTORY_TABLE`, `COLUMN_MAP`).
+It writes only `pipeline_nowcast` and `pipeline_nowcast_backtest`.
 
 `Hindcast_All_Models` is removed (nothing downstream needs it).
 

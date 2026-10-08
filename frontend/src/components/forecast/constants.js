@@ -1,6 +1,8 @@
 export const TABS = ['Overview', 'Multi-Year', 'By Product', 'Monthly', 'Accuracy', 'Model Lab', 'AI Insights', 'Plan Tracking', 'Exec Mode'];
 export const MODELS = ['ensemble', 'prophet', 'ets', 'mstl_v2', 'dhr_arima', 'lightgbm'];
 export const PROD_LINES = ['All', 'UCC', 'ITSG'];
+// ITSG / Total are shown including the estimated Miradore bookings by default; the user can switch it off.
+export const DEFAULT_INCLUDE_MIRADORE = true;
 export const FC_TYPES = [{ key: 'rolling', label: '13-Week Quarter' }, { key: 'roy', label: 'Rest of Year' }];
 
 export const MODEL_KEY_META = {

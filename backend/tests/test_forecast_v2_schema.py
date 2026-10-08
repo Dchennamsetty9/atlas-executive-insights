@@ -21,7 +21,11 @@ SNAPSHOT_COLUMNS = {c.lower() for c in (
     "arr_ets", "arr_prophet", "arr_lightgbm", "arr_mstl_v2", "arr_dhr_arima",
     "mape_ets", "mape_prophet", "mape_lightgbm", "mape_mstl_v2", "mape_dhr_arima",
 )}
+# The incl-Miradore variant has the same columns plus these two (alt table only).
+MIRADORE_ONLY_COLUMNS = {"miradore_amount", "miradore_basis"}
+MIRADORE_COLUMNS = SNAPSHOT_COLUMNS | MIRADORE_ONLY_COLUMNS
 FC_NAME = impl.FC_TABLE_NAME.lower()
+FC_NAMES = {FC_NAME, impl.MIRADORE_TABLE_NAME.lower()}
 
 
 def snapshot_columns_referenced(sql):
@@ -33,7 +37,7 @@ def snapshot_columns_referenced(sql):
         return found
     for scope in root.traverse():
         fc_aliases = {alias for alias, src in scope.sources.items()
-                      if isinstance(src, exp.Table) and src.name.lower() == FC_NAME}
+                      if isinstance(src, exp.Table) and src.name.lower() in FC_NAMES}
         if not fc_aliases:
             continue
         select = scope.expression
@@ -46,7 +50,7 @@ def snapshot_columns_referenced(sql):
                 while src_scope is not None:
                     src = src_scope.sources.get(col.table)
                     if src is not None:
-                        hit = isinstance(src, exp.Table) and src.name.lower() == FC_NAME
+                        hit = isinstance(src, exp.Table) and src.name.lower() in FC_NAMES
                         break
                     src_scope = src_scope.parent
                 if not hit:
@@ -57,8 +61,9 @@ def snapshot_columns_referenced(sql):
     return found
 
 
-def collect_sql(monkeypatch):
+def collect_sql(monkeypatch, miradore=False):
     queries = []
+    impl._MIRADORE_CTX.set({"miradore_requested": miradore, "miradore_included": miradore, "reason": None})
 
     async def query(sql, **kwargs):
         queries.append(sql)
@@ -110,6 +115,13 @@ def test_model_sources_use_only_snapshot_columns():
             assert impl._model_source(key)["lower_col"] == "NULL"
 
 
+def test_miradore_columns_only_valid_on_alt_table():
+    assert MIRADORE_ONLY_COLUMNS.isdisjoint(SNAPSHOT_COLUMNS)
+    sql = f"SELECT SUM(miradore_amount) AS m FROM {impl.MIRADORE_TABLE} GROUP BY ds"
+    assert snapshot_columns_referenced(sql) - MIRADORE_COLUMNS == set()
+    assert snapshot_columns_referenced(sql) - SNAPSHOT_COLUMNS == {"miradore_amount"}
+
+
 def test_extractor_flags_stray_legacy_quantile():
     bad = f"SELECT CAST(p30 AS DOUBLE) AS lower FROM {impl.FC_TABLE} WHERE run_date = '2026-01-01'"
     assert snapshot_columns_referenced(bad) - SNAPSHOT_COLUMNS == {"p30"}
@@ -117,16 +129,20 @@ def test_extractor_flags_stray_legacy_quantile():
     assert snapshot_columns_referenced(ok) <= SNAPSHOT_COLUMNS
 
 
-def test_generated_sql_references_only_allowed_snapshot_columns(monkeypatch):
-    queries = collect_sql(monkeypatch)
+@pytest.mark.parametrize("miradore", [False, True])
+def test_generated_sql_references_only_allowed_snapshot_columns(monkeypatch, miradore):
+    queries = collect_sql(monkeypatch, miradore=miradore)
+    impl._MIRADORE_CTX.set(None)
     assert len(queries) > 100
+    table = impl.MIRADORE_TABLE if miradore else impl.FC_TABLE
+    allowed = MIRADORE_COLUMNS if miradore else SNAPSHOT_COLUMNS
     used = set()
     for sql in queries:
-        if impl.FC_TABLE not in sql:
+        if table not in sql:
             continue
         cols = snapshot_columns_referenced(sql)
         used |= cols
-        stray = cols - SNAPSHOT_COLUMNS
+        stray = cols - allowed
         assert not stray, f"unknown snapshot column(s) {sorted(stray)} in:\n{sql}"
     # the extractor must actually be seeing the quantile / model columns
     assert {"p25", "p75", "most_likely", "arr_ets", "actuals", "run_date"} <= used

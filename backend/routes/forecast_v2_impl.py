@@ -21,10 +21,10 @@ Leaderboard: federated.sales.forecast_leaderboard_v2compat
 All values are constrained to the Growth-bookings-aligned unified forecast tables.
 """
 
-import asyncio, os, datetime, logging, json, time, math
+import asyncio, os, datetime, logging, json, time, math, contextvars, functools
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Query, HTTPException, Depends
+from fastapi import APIRouter, Query, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from auth import require_authenticated_user
@@ -50,6 +50,12 @@ LB_TABLE_NAME = os.getenv("FORECAST_V2_LEADERBOARD_TABLE", "forecast_leaderboard
 # product-scoped intelligence.
 UNIFIED_INSIGHTS_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_insights`"
 FC_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{FC_TABLE_NAME}`"
+# Variant of the snapshot with the Miradore estimate already added (constant shift)
+# to ITSG and Total rows. Same columns as FC_TABLE plus miradore_amount (DOUBLE) and
+# miradore_basis ('actual'|'outlook'|'estimate'|NULL). UCC rows and the per-model
+# arr_* columns are unchanged. Selected per request via ?include_miradore=true.
+MIRADORE_TABLE_NAME = os.getenv("FORECAST_V2_MIRADORE_TABLE", "forecast_app_snapshot_incl_miradore")
+MIRADORE_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{MIRADORE_TABLE_NAME}`"
 LB_TABLE  = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{LB_TABLE_NAME}`"
 QUARTERLY_ACCURACY_TABLE = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`forecast_quarterly_accuracy`"
 # Per-model vintage history (append-only) — all 6 models with p50, used for
@@ -118,6 +124,18 @@ _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
 # (checked_at, token, ttl) of the snapshot's latest run_date; see _snapshot_token().
 _SNAPSHOT_TOKEN: Optional[tuple[float, str, float]] = None
 _SNAPSHOT_TOKEN_INFLIGHT: Optional["asyncio.Future[str]"] = None
+# Per-request Miradore scope, set by miradore_scope_dependency() on the router.
+# None (e.g. direct calls, tests) means the base Salesforce-only snapshot.
+_MIRADORE_CTX: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
+    "forecast_v2_miradore_scope", default=None)
+MIRADORE_PROBE_TTL_SECONDS = int(os.getenv("FORECAST_V2_MIRADORE_PROBE_TTL_SECONDS", "300"))
+_MIRADORE_PROBE_FAILURE_TTL_SECONDS = 60
+# (checked_at, ttl, available, run_date, reason) of the last availability probe.
+_MIRADORE_PROBE: Optional[tuple[float, float, bool, Optional[str], Optional[str]]] = None
+_MIRADORE_PROBE_INFLIGHT: Optional["asyncio.Future[tuple[bool, Optional[str], Optional[str]]]"] = None
+# Endpoints that surface per-model arr_* columns, which the Miradore table leaves
+# unchanged (Salesforce-only); they always read the base table.
+_MODEL_VIEW_PATH_SUFFIXES = ("/model-lab", "/weekly-all-models")
 MODEL_SOURCES: Dict[str, Dict[str, Any]] = {
     "ets": {
         "display_name": "ETS",
@@ -241,6 +259,11 @@ async def _snapshot_token() -> str:
     cache keys degrade to "no known publication" rather than breaking reads.
     """
     global _SNAPSHOT_TOKEN, _SNAPSHOT_TOKEN_INFLIGHT
+    if _fc_table() != FC_TABLE:
+        # Miradore variant: keyed on its own latest run_date (from the cached
+        # availability probe) and namespaced so the two tables can never share entries.
+        _ok, run_date, _reason = await _miradore_probe()
+        return f"miradore:{run_date or _SNAPSHOT_TOKEN_UNKNOWN}"
     cached = _SNAPSHOT_TOKEN
     if cached is not None and (time.time() - cached[0]) < cached[2]:
         return cached[1]
@@ -322,6 +345,7 @@ def _validate_model(model: str) -> str:
 def _model_source(model: str) -> Dict[str, Any]:
     key = _validate_model(model)
     source = dict(MODEL_SOURCES[key])
+    source["table"] = _fc_table()  # resolved at use-time (per-request Miradore switch)
     if key != "ensemble":
         source.update(lower_col="NULL", upper_col="NULL")
     return source
@@ -400,7 +424,108 @@ def _geo_filter(geo, col="sales_market"):
     return f"AND {_normalized_market_expr(col)} = '{effective.replace(chr(39), chr(39)*2)}'"
 
 def _latest_run():
-    return f"run_date = (SELECT MAX(run_date) FROM {FC_TABLE})"
+    return f"run_date = (SELECT MAX(run_date) FROM {_fc_table()})"
+
+
+def _fc_table() -> str:
+    """Snapshot table for the current request: the incl-Miradore variant only when
+    the request asked for it AND it was verified available; else the base table."""
+    scope = _MIRADORE_CTX.get()
+    return MIRADORE_TABLE if scope and scope.get("miradore_included") else FC_TABLE
+
+
+def _miradore_scope() -> Dict[str, Any]:
+    scope = _MIRADORE_CTX.get()
+    if scope is None:
+        return {"miradore_requested": False, "miradore_included": False, "reason": None}
+    return dict(scope)
+
+
+async def _fetch_miradore_probe() -> tuple[bool, Optional[str], Optional[str]]:
+    """(available, run_date, reason). Selecting MAX(miradore_amount) also proves the
+    two extra columns exist, so a partially published table falls back too."""
+    from routes import forecast_v2 as forecast_v2_pkg
+
+    try:
+        rows = await asyncio.to_thread(
+            forecast_v2_pkg.execute_query,
+            f"SELECT CAST(MAX(run_date) AS STRING) AS run_date, MAX(miradore_amount) AS miradore_max "
+            f"FROM {MIRADORE_TABLE}",
+        )
+    except Exception as exc:
+        logger.warning("[forecast/miradore] availability probe failed; using Salesforce-only: %s", exc)
+        return False, None, "miradore_table_error"
+    run_date = (rows[0] if rows else {}).get("run_date")
+    if not run_date:
+        return False, None, "miradore_table_empty"
+    return True, str(run_date), None
+
+
+async def _miradore_probe() -> tuple[bool, Optional[str], Optional[str]]:
+    """Availability of the Miradore table, cached for MIRADORE_PROBE_TTL_SECONDS
+    (shorter after a failure); concurrent callers share one lookup. Never raises."""
+    global _MIRADORE_PROBE, _MIRADORE_PROBE_INFLIGHT
+    cached = _MIRADORE_PROBE
+    if cached is not None and (time.time() - cached[0]) < cached[1]:
+        return cached[2], cached[3], cached[4]
+
+    loop = asyncio.get_running_loop()
+    inflight = _MIRADORE_PROBE_INFLIGHT
+    if inflight is not None and not inflight.done() and inflight.get_loop() is loop:
+        return await asyncio.shield(inflight)
+
+    fut: "asyncio.Future[tuple[bool, Optional[str], Optional[str]]]" = loop.create_future()
+    _MIRADORE_PROBE_INFLIGHT = fut
+    result: tuple[bool, Optional[str], Optional[str]] = (False, None, "miradore_table_error")
+    try:
+        result = await _fetch_miradore_probe()
+    except Exception as exc:  # defensive; _fetch_miradore_probe already catches
+        logger.error("[forecast/miradore] probe crashed: %s", exc)
+    finally:
+        ttl = float(MIRADORE_PROBE_TTL_SECONDS if result[0] else _MIRADORE_PROBE_FAILURE_TTL_SECONDS)
+        _MIRADORE_PROBE = (time.time(), ttl, result[0], result[1], result[2])
+        if not fut.done():
+            fut.set_result(result)
+        if _MIRADORE_PROBE_INFLIGHT is fut:
+            _MIRADORE_PROBE_INFLIGHT = None
+    return result
+
+
+async def miradore_scope_dependency(
+    request: Request,
+    include_miradore: bool = Query(False, description="Read the snapshot variant that includes the Miradore estimate (ITSG/Total)"),
+    model: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """Router dependency: resolves the per-request Miradore scope into a contextvar.
+
+    Async on purpose: it must run in the request's own task so the contextvar is
+    visible to the endpoint. Default (param absent/false) leaves the base table.
+    """
+    scope: Dict[str, Any] = {"miradore_requested": bool(include_miradore),
+                             "miradore_included": False, "reason": None}
+    if include_miradore:
+        path = (request.url.path or "").rstrip("/")
+        if path.endswith(_MODEL_VIEW_PATH_SUFFIXES) or (model or "ensemble").strip().lower() != "ensemble":
+            scope["reason"] = "model_views_exclude_miradore"
+        elif not _live_mode_dependency():
+            scope["reason"] = "databricks_unavailable"
+        else:
+            available, _run, reason = await _miradore_probe()
+            scope["miradore_included"] = available
+            scope["reason"] = None if available else reason
+    _MIRADORE_CTX.set(scope)
+    return scope
+
+
+def with_scope(fn):
+    """Registration-time wrapper: adds the request's `scope` object to dict responses."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        result = await fn(*args, **kwargs)
+        if isinstance(result, dict) and "scope" not in result:
+            result = {**result, "scope": _miradore_scope()}
+        return result
+    return wrapper
 
 
 def _effective_forecast_type(model: str, forecast_type: str) -> str:
@@ -664,7 +789,7 @@ def _forecast_after_actuals_pred(pf: str = "", gf: str = "") -> str:
     forecast row, and (unlike splitting on today's date) never drops the
     in-flight week whose forecast ds is a past Monday but has no actual yet."""
     return (
-        f"CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {FC_TABLE} "
+        f"CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE)) FROM {_fc_table()} "
         f"WHERE forecast_type = 'actuals' AND {_latest_run()} "
         f"AND Actuals IS NOT NULL {pf} {gf}), DATE'1900-01-01')"
     )
@@ -807,7 +932,7 @@ def _v5_forward_sql(product: str, market: str) -> str:
             CAST(Worst_Case AS DOUBLE) AS arr_worst,
             CAST(Most_Likely AS DOUBLE) AS arr_likely,
             CAST(Best_Case AS DOUBLE) AS arr_best
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE {_latest_run()}
           {pf} {gf}
           AND {_fc_type_predicate('forecast')}
@@ -829,7 +954,7 @@ def _v5_monthly_sql(product: str, market: str) -> str:
             SUM(CAST(Worst_Case AS DOUBLE)) AS arr_worst,
             SUM(CAST(Most_Likely AS DOUBLE)) AS arr_likely,
             SUM(CAST(Best_Case AS DOUBLE)) AS arr_best
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE {_latest_run()}
           {pf} {gf}
           AND {_fc_type_predicate('forecast')}
@@ -847,7 +972,7 @@ def _actuals_monthly_next_year_sql(product_line: Optional[str], sales_market: Op
             MONTH(ds) AS mth,
             DATE_FORMAT(ds, 'MMMM') AS month_name,
             SUM(COALESCE(CAST(Actuals AS DOUBLE), 0)) AS arr_actual
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE forecast_type = 'actuals'
           AND {_latest_run()}
           {_product_filter(None, product_line)}
@@ -952,7 +1077,7 @@ async def get_intelligence(
         rows = await _cached_query(f"""
                         SELECT insights_json, run_date FROM {UNIFIED_INSIGHTS_TABLE}
                         WHERE product = '{prod.replace(chr(39), chr(39)*2)}'
-                            AND run_date = (SELECT MAX(run_date) FROM {FC_TABLE})
+                            AND run_date = (SELECT MAX(run_date) FROM {_fc_table()})
             LIMIT 1
         """, endpoint="/intelligence", model="ensemble", forecast_type="forecast", product=prod, geo="Total", year=None, quarter=None, variant="unified")
         if rows and rows[0].get("insights_json"):
@@ -1040,7 +1165,7 @@ async def get_weekly(
                            COALESCE(CAST(p25 AS DOUBLE), 0) AS Worst_Case,
                            COALESCE(CAST(p75 AS DOUBLE), 0) AS Best_Case,
                            forecast_type
-                    FROM {FC_TABLE}
+                    FROM {_fc_table()}
                     WHERE {_latest_run()}
                             {_product_filter(product, product_line)} {_geo_filter(sales_market)}
                       AND forecast_type = 'actuals' AND {qtr_filter}
@@ -1061,7 +1186,7 @@ async def get_weekly(
                                COALESCE(CAST(p25 AS DOUBLE), 0) AS Worst_Case,
                                COALESCE(CAST(p75 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
-                        FROM {FC_TABLE}
+                        FROM {_fc_table()}
                         WHERE {_latest_run()}
                                 {_pf} {_gf}
                           AND forecast_type IN ('forecast', 'boq_forward')
@@ -1075,7 +1200,7 @@ async def get_weekly(
                                COALESCE(CAST(p25 AS DOUBLE), 0) AS Worst_Case,
                                COALESCE(CAST(p75 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
-                        FROM {FC_TABLE}
+                        FROM {_fc_table()}
                         WHERE {_latest_run()}
                                 {_pf} {_gf}
                           AND (
@@ -1098,7 +1223,7 @@ async def get_weekly(
                            COALESCE(CAST(p25 AS DOUBLE), 0) AS Worst_Case,
                            COALESCE(CAST(p75 AS DOUBLE), 0) AS Best_Case,
                            forecast_type
-                    FROM {FC_TABLE}
+                    FROM {_fc_table()}
                     WHERE {_latest_run()}
                                     {_pf} {_gf}
                       AND forecast_type IN ('forecast', 'boq_forward')
@@ -1127,7 +1252,7 @@ async def get_weekly(
                                COALESCE(CAST(p25 AS DOUBLE), 0) AS Worst_Case,
                                COALESCE(CAST(p75 AS DOUBLE), 0) AS Best_Case,
                                forecast_type
-                        FROM {FC_TABLE}
+                        FROM {_fc_table()}
                         WHERE {_latest_run()}
                                         {_pf} {_gf}
                           AND (
@@ -1265,7 +1390,7 @@ async def get_monthly(
                 SUM(Actuals)                 AS arr_actual,
                 CAST(MIN(run_date) AS STRING) AS publication_id,
                 COUNT(*) - COUNT(DISTINCT ds) AS duplicate_count
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             WHERE forecast_type = 'actuals'
               AND {_latest_run()}
               {pf} {gf}
@@ -1321,7 +1446,7 @@ async def get_monthly(
                 CAST(MIN(run_date) AS STRING) AS publication_id,
                 CONCAT_WS(', ', SORT_ARRAY(COLLECT_SET(model_fill_source))) AS historical_basis
             FROM {POWERBI_WIDE_TABLE}
-            WHERE run_date = (SELECT MAX(run_date) FROM {FC_TABLE})
+            WHERE run_date = (SELECT MAX(run_date) FROM {_fc_table()})
                 {wide_product_filter} {gf}
               {date_filter}
             GROUP BY yr, qtr, mth, month_name
@@ -1472,7 +1597,7 @@ async def get_ytd(
     if include_actuals:
         act_sql = f"""
             SELECT CAST(ds AS STRING) AS d, SUM(Actuals) AS arr
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             WHERE forecast_type = 'actuals'
               {date_filter}
               AND {_latest_run()}
@@ -1493,7 +1618,7 @@ async def get_ytd(
                  SUM(COALESCE(CAST({lower_col} AS DOUBLE), 0)) AS worst,
                  SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS likely,
                  SUM(COALESCE(CAST({upper_col} AS DOUBLE), 0)) AS best
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
              WHERE {fc_type_clause}
               {date_filter}
               AND {_latest_run()}
@@ -1835,7 +1960,7 @@ async def get_historical(
             weekofyear(ds)              AS iso_week,
             quarter(ds)                 AS quarter,
             SUM(Actuals)                AS arr
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE forecast_type = 'actuals'
           AND {_latest_run()}
           {date_clause}
@@ -1864,7 +1989,7 @@ async def get_historical(
             weekofyear(ds)              AS iso_week,
             quarter(ds)                 AS quarter,
             SUM(COALESCE(CAST({value_col} AS DOUBLE), 0)) AS arr
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE forecast_type IN ('forecast', 'boq_forward')
           AND {_latest_run()}
           AND YEAR(ds) = {current_year}
@@ -2219,7 +2344,7 @@ async def get_run_delta(
     sql = f"""
         WITH runs AS (
             SELECT DISTINCT CAST(run_date AS DATE) AS rd
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             ORDER BY rd DESC
             LIMIT 2
         ),
@@ -2228,7 +2353,7 @@ async def get_run_delta(
                    {norm} AS sales_market,
                    CAST(ds AS DATE) AS ds,
                    CAST(Most_Likely AS DOUBLE) AS ml
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             WHERE forecast_type IN ('forecast', 'boq_forward')
               AND CAST(run_date AS DATE) IN (SELECT rd FROM runs)
               AND CAST(ds AS DATE) >= (SELECT MAX(rd) FROM runs)
@@ -2332,7 +2457,7 @@ async def get_run_history(
             SELECT rd, ROW_NUMBER() OVER (ORDER BY rd DESC) AS rn
             FROM (
                 SELECT DISTINCT CAST(run_date AS DATE) AS rd
-                FROM {FC_TABLE}
+                FROM {_fc_table()}
             )
         ), pairs AS (
             SELECT current.rd AS current_rd, previous.rd AS previous_rd
@@ -2343,7 +2468,7 @@ async def get_run_history(
                    product, {norm} AS sales_market,
                    CAST(ds AS DATE) AS ds,
                    CAST(Most_Likely AS DOUBLE) AS ml
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             WHERE forecast_type IN ('forecast', 'boq_forward')
               {product_filter} {market_filter}
         )
@@ -2441,7 +2566,7 @@ def _model_lab_sql(product: str) -> str:
             SELECT CAST(ds AS STRING) AS ds, CAST(run_date AS STRING) AS run_date,
                    Most_Likely, p25, p75,
                    arr_ets, arr_prophet, arr_lightgbm, arr_mstl_v2, arr_dhr_arima
-            FROM {FC_TABLE}
+            FROM {_fc_table()}
             WHERE {_latest_run()}
               {pf} {gf}
               AND {_fc_type_predicate('forecast')}
@@ -3128,7 +3253,7 @@ async def get_leaderboard(
                 SELECT product, {norm} AS sales_market,
                        CAST(ds AS DATE) AS ds,
                        MAX(CAST(Actuals AS DOUBLE)) AS actual
-                FROM {FC_TABLE}
+                FROM {_fc_table()}
                 WHERE forecast_type = 'actuals'
                   AND {_latest_run()}
                   AND COALESCE(CAST(Actuals AS DOUBLE), 0) > 0
@@ -3142,7 +3267,7 @@ async def get_leaderboard(
                            PARTITION BY product, {norm}, CAST(ds AS DATE)
                            ORDER BY CAST(run_date AS DATE) DESC
                        ) AS rn
-                FROM {FC_TABLE}
+                FROM {_fc_table()}
                 WHERE forecast_type IN ('forecast', 'boq_forward')
                   AND CAST(run_date AS DATE) < CAST(ds AS DATE)
             )
@@ -3190,6 +3315,7 @@ async def get_health(
     UCC/ITSG, and that the p25/p50/p75 quantile columns exist. status is 'ok' or
     'degraded'; point an alert at status != 'ok' (or use ?strict=true for a 503).
     """
+    _MIRADORE_CTX.set(None)  # health always checks the base snapshot (Miradore is reported separately)
     today = datetime.date.today()
     quarter = ((today.month - 1) // 3) + 1
     report: Dict[str, Any] = {
@@ -3204,6 +3330,8 @@ async def get_health(
         "columns": {"required": list(_HEALTH_REQUIRED_COLUMNS), "missing": None},
         "checks": {},
         "problems": [],
+        # Informational: does not affect `status` (the Miradore variant is optional).
+        "miradore": {"table": MIRADORE_TABLE.replace("`", ""), "present": None, "latest_run_date": None, "reason": None},
     }
     problems: list[str] = report["problems"]
     checks: Dict[str, Any] = report["checks"]
@@ -3286,6 +3414,10 @@ async def get_health(
             except Exception as exc:
                 checks["quantile_columns"] = {"ok": False, "detail": _err(exc)}
                 problems.append(f"column check failed: {_err(exc)}")
+
+        if live_mode:
+            present, mir_run, mir_reason = await _miradore_probe()
+            report["miradore"].update(present=present, latest_run_date=(mir_run or "")[:10] or None, reason=mir_reason)
 
         report["status"] = "ok" if live_mode and not problems and checks and all(c["ok"] for c in checks.values()) else "degraded"
     except Exception as exc:  # defensive: a health probe must never raise
@@ -3434,7 +3566,7 @@ def _bridge_snapshot_sql(products: list, q_start: datetime.date, q_end: datetime
     return f"""
         SELECT product, CAST(ds AS STRING) AS ds, forecast_type,
                CAST(Actuals AS DOUBLE) AS actual, CAST(Most_Likely AS DOUBLE) AS likely
-        FROM {FC_TABLE}
+        FROM {_fc_table()}
         WHERE {_latest_run()}
           AND product IN ({plist})
           {_geo_filter('Total')}
@@ -3676,11 +3808,11 @@ async def get_risk_radar(
                             SUM(COALESCE(CAST({lower_col} AS DOUBLE),0)) AS worst,
                             SUM(COALESCE(CAST({upper_col} AS DOUBLE),0)) AS best
                                                 FROM (
-                                                        SELECT * FROM {FC_TABLE} forecast
+                                                        SELECT * FROM {_fc_table()} forecast
                                                         WHERE {_latest_run()} AND {type_pred} AND {date_filter}
                                                             {product_pred} {market_pred}
                                                             AND CAST(ds AS DATE) > COALESCE((
-                                                                SELECT MAX(CAST(actual.ds AS DATE)) FROM {FC_TABLE} actual
+                                                                SELECT MAX(CAST(actual.ds AS DATE)) FROM {_fc_table()} actual
                                                                 WHERE actual.forecast_type = 'actuals' AND actual.Actuals IS NOT NULL
                                                                     AND actual.run_date = forecast.run_date
                                                                     AND actual.product = forecast.product
