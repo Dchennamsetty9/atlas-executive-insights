@@ -668,8 +668,8 @@ def _normalise_rows(rows: list[Dict[str, Any]], model: str) -> list[Dict[str, An
             "model": model,
             "forecast_type": str(row.get("forecast_type") or "forecast"),
             "value": _f(row.get("value")),
-            "lower": _f(row.get("lower")) if row.get("lower") is not None and model == "ensemble" else None,
-            "upper": _f(row.get("upper")) if row.get("upper") is not None and model == "ensemble" else None,
+            "lower": _f(row.get("lower")) if row.get("lower") is not None else None,   # model views: own P25/P75 (or NULL -> n/a)
+            "upper": _f(row.get("upper")) if row.get("upper") is not None else None,
             "actual": _f(row.get("actual")),
             "publication_id": row.get("publication_id"),
         }
@@ -1561,9 +1561,9 @@ async def get_monthly(
             "month":      mth,
             "month_name": str(src.get("month_name") or ""),
             "arr_actual": _f(a.get("arr_actual")) if a else None,
-            "arr_worst":  _f(f.get("arr_worst")) if f and f.get("arr_worst") is not None and model == "ensemble" else None,
+            "arr_worst":  _f(f.get("arr_worst")) if f and f.get("arr_worst") is not None else None,
             "arr_likely": _f(f.get("arr_likely")) if f else None,
-            "arr_best":   _f(f.get("arr_best")) if f and f.get("arr_best") is not None and model == "ensemble" else None,
+            "arr_best":   _f(f.get("arr_best")) if f and f.get("arr_best") is not None else None,
             "historical_basis": (p.get("historical_basis") or "wide_hindcast_or_proxy") if p else "unavailable",
             "historical_band_quantiles": [0.25, 0.75] if p else None,
             "accuracy": None,

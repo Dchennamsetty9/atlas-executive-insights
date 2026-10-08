@@ -137,6 +137,18 @@ def test_model_bands_use_own_columns_when_published_else_null():
     assert impl._model_source("ets")["lower_col"] == "NULL"           # older snapshot / no probe
 
 
+@pytest.mark.parametrize("model", ["ensemble", "ets", "prophet", "lightgbm"])
+def test_normalise_rows_keeps_model_bands(model):
+    """Regression: model views lost their band here (only the ensemble's survived), so Stretch/Risk were n/a."""
+    rows = [{"ds": "2026-10-05", "forecast_type": "forecast", "value": 100, "lower": 80, "upper": 130,
+             "duplicate_count": 1, "actual": 0, "publication_id": "r"},
+            {"ds": "2026-10-12", "forecast_type": "forecast", "value": 100, "lower": None, "upper": None,
+             "duplicate_count": 1, "actual": 0, "publication_id": "r"}]
+    out = impl._normalise_rows(rows, model)
+    assert (out[0]["lower"], out[0]["upper"]) == (80.0, 130.0)
+    assert (out[1]["lower"], out[1]["upper"]) == (None, None)          # unpublished band stays None (n/a), never 0
+
+
 def test_model_band_probe_is_not_stuck_on_a_stale_answer(monkeypatch):
     """A republish that adds the band columns is picked up within the short probe TTL, not the weekly cache TTL."""
     import asyncio, sys
