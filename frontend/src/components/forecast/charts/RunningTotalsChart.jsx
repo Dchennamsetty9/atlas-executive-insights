@@ -10,8 +10,8 @@ const RunningTotalsChartTooltip = ({ active, payload, label }) => {
       <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
       {d.ytd_actual != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals YTD: <b>{fmtM(d.ytd_actual)}</b></div>}
       {d.ytd_likely != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely YTD: <b>{fmtM(d.ytd_likely)}</b></div>}
-      {d.ytd_best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.ytd_best)}</b></div>}
-      {d.ytd_worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.ytd_worst)}</b></div>}
+      {d.ytd_best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — upside (P75): <b>{fmtM(d.ytd_best)}</b></div>}
+      {d.ytd_worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — downside (P25): <b>{fmtM(d.ytd_worst)}</b></div>}
     </div>
   );
 };

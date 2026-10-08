@@ -20,6 +20,9 @@ SNAPSHOT_COLUMNS = {c.lower() for c in (
     "p05", "p25", "p50", "p75", "p95", "blended_p50", "source", "bands_method",
     "arr_ets", "arr_prophet", "arr_lightgbm", "arr_mstl_v2", "arr_dhr_arima",
     "mape_ets", "mape_prophet", "mape_lightgbm", "mape_mstl_v2", "mape_dhr_arima",
+    # per-model P25/P75 (notebook 03, 2026-10-08): the Stretch / Risk numbers of the model views
+    "arr_ets_p25", "arr_ets_p75", "arr_prophet_p25", "arr_prophet_p75", "arr_lightgbm_p25", "arr_lightgbm_p75",
+    "arr_mstl_v2_p25", "arr_mstl_v2_p75", "arr_dhr_arima_p25", "arr_dhr_arima_p75",
 )}
 # The incl-Miradore variant has the same columns plus these two (alt table only).
 MIRADORE_ONLY_COLUMNS = {"miradore_amount", "miradore_basis"}
@@ -113,6 +116,25 @@ def test_model_sources_use_only_snapshot_columns():
         # per-model bands are masked to NULL for everything but the ensemble
         if key != "ensemble":
             assert impl._model_source(key)["lower_col"] == "NULL"
+
+
+def test_model_bands_use_own_columns_when_published_else_null():
+    """Model views get their own arr_<model>_p25/_p75 when the snapshot has them; never the ensemble's band."""
+    have = frozenset(f"arr_{k}_{q}" for k in ("ets", "prophet", "lightgbm", "mstl_v2", "dhr_arima") for q in ("p25", "p75"))
+    tok = impl._MODEL_BAND_COLS_CTX.set(have)
+    try:
+        for key, src in impl.MODEL_SOURCES.items():
+            if key == "ensemble":
+                assert impl._model_source(key)["lower_col"] == "p25"
+                continue
+            s = impl._model_source(key)
+            assert s["lower_col"] == f"{src['most_likely_col']}_p25" and s["upper_col"] == f"{src['most_likely_col']}_p75"
+            assert s["lower_col"].lower() in SNAPSHOT_COLUMNS and s["upper_col"].lower() in SNAPSHOT_COLUMNS
+        impl._MODEL_BAND_COLS_CTX.set(frozenset({"arr_ets_p25"}))      # half-published -> NULL, not a broken query
+        assert impl._model_source("ets")["lower_col"] == "NULL"
+    finally:
+        impl._MODEL_BAND_COLS_CTX.reset(tok)
+    assert impl._model_source("ets")["lower_col"] == "NULL"           # older snapshot / no probe
 
 
 def test_miradore_columns_only_valid_on_alt_table():

@@ -794,7 +794,7 @@ const MonthlyTable = ({ months }) => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P10 — 1-in-10 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P90 — 1-in-5 upside scenario']].map(([h, tip]) => (
+            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P25 — 1-in-4 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P75 — 1-in-4 upside scenario']].map(([h, tip]) => (
               <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>
                 {tip ? <abbr title={tip} style={{ cursor: 'help', textDecoration: 'none' }}>{h}</abbr> : h}
               </th>
@@ -2334,8 +2334,8 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {!isFieldLoading('weekly') && weeklyKpis && (() => {
                 const ml = weeklyKpis.most_likely ?? 0;
-                const wc = weeklyKpis.worst_case ?? 0;
-                const bc = weeklyKpis.best_case ?? 0;
+                const wc = weeklyKpis.worst_case ?? null;
+                const bc = weeklyKpis.best_case ?? null;
                 const ytdActual = weeklyKpis.ytd_actuals ?? 0;
                 const pctBooked = ml > 0 ? Math.round((ytdActual / ml) * 100) : 0;
                 const periodLabel = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY${selectedYear}`;
@@ -2343,7 +2343,7 @@ const ForecastingPanel = () => {
                 return (
                   <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 6, lineHeight: 1.6, padding: '2px 2px 0' }}>
                     <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{periodLabel} tracking to {fmtM(ml)}</span>
-                    {' '}(range {fmtM(wc)}–{fmtM(bc)}).{' '}
+                    {' '}{wc != null && bc != null ? `(range ${fmtM(wc)}–${fmtM(bc)})` : '(range not published for this model)'}.{' '}
                     <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtM(ytdActual)} booked</span>
                     {' '}= {pctBooked}% realized.
                   </div>
@@ -2362,8 +2362,8 @@ const ForecastingPanel = () => {
                       // Use authoritative backend KPI totals (pre-aggregated server-side,
                       // not summed from weekly chart rows which would over-count ARR weeks)
                       const ml  = kp?.most_likely ?? 0;
-                      const bc  = kp?.best_case   ?? 0;
-                      const wc  = kp?.worst_case  ?? 0;
+                      const bc  = kp?.best_case   ?? null;
+                      const wc  = kp?.worst_case  ?? null;
                       const ytdActual = kp?.ytd_actuals
                         ?? [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
                         ?? 0;
@@ -2406,15 +2406,15 @@ const ForecastingPanel = () => {
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                           {[
                             { label: 'Most Likely',  val: ml,         color: '#f1f5f9', sub: `${periodShort} outlook — planning center` },
-                            { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · 1-in-5 upside (P90)` },
-                            { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · 1-in-10 downside (P10)` },
+                            { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · upside (P75, 1-in-4)` },
+                            { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · downside (P25, 1-in-4)` },
                             { label: selectedQuarter ? 'Actuals (QTD)' : 'Actuals YTD', val: ytdActual, color: '#f59e0b',
                               sub: selectedQuarter ? `Realized so far in Q${selectedQuarter} ${selectedYear}` : `Realized so far in ${selectedYear}` },
                           ].map(({ label, val, color, sub }) => (
                             <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}>
                                <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>{label}</div>
-                               <div style={{ fontSize: 28, fontWeight: 900, color, letterSpacing: -0.8, lineHeight: 1 }}>{fmtM(val)}</div>
-                               <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>{sub}</div>
+                               <div style={{ fontSize: 28, fontWeight: 900, color, letterSpacing: -0.8, lineHeight: 1 }}>{val == null ? 'n/a' : fmtM(val)}</div>
+                               <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>{val == null ? `${periodShort} · band not published for this model` : sub}</div>
                             </div>
                           ))}
                         </div>

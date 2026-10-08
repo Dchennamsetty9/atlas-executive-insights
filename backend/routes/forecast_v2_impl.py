@@ -128,6 +128,10 @@ _SNAPSHOT_TOKEN_INFLIGHT: Optional["asyncio.Future[str]"] = None
 # None (e.g. direct calls, tests) means the base Salesforce-only snapshot.
 _MIRADORE_CTX: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
     "forecast_v2_miradore_scope", default=None)
+# Per-model P25/P75 columns (arr_<model>_p25 / _p75) found on the snapshot for this request; set by
+# miradore_scope_dependency() for model views. Empty/None (older snapshot, tests) = no model bands.
+_MODEL_BAND_COLS_CTX: "contextvars.ContextVar[Optional[frozenset]]" = contextvars.ContextVar(
+    "forecast_v2_model_band_cols", default=None)
 MIRADORE_PROBE_TTL_SECONDS = int(os.getenv("FORECAST_V2_MIRADORE_PROBE_TTL_SECONDS", "300"))
 _MIRADORE_PROBE_FAILURE_TTL_SECONDS = 60
 # (checked_at, ttl, available, run_date, reason) of the last availability probe.
@@ -347,7 +351,15 @@ def _model_source(model: str) -> Dict[str, Any]:
     source = dict(MODEL_SOURCES[key])
     source["table"] = _fc_table()  # resolved at use-time (per-request Miradore switch)
     if key != "ensemble":
-        source.update(lower_col="NULL", upper_col="NULL")
+        # A model's own band, never the ensemble's: arr_<model>_p25/_p75 when the published snapshot
+        # carries them (notebook 03, 2026-10-08); otherwise NULL (the app shows 'n/a', not $0).
+        base = source["most_likely_col"]
+        have = _MODEL_BAND_COLS_CTX.get() or frozenset()
+        lo, hi = f"{base}_p25", f"{base}_p75"
+        if lo in have and hi in have:
+            source.update(lower_col=lo, upper_col=hi)
+        else:
+            source.update(lower_col="NULL", upper_col="NULL")
     return source
 
 def _f(v, default: float = 0.0) -> float:
@@ -514,6 +526,13 @@ async def miradore_scope_dependency(
             scope["miradore_included"] = available
             scope["reason"] = None if available else reason
     _MIRADORE_CTX.set(scope)
+    _MODEL_BAND_COLS_CTX.set(None)
+    if (model or "ensemble").strip().lower() in MODEL_SOURCES and (model or "ensemble").strip().lower() != "ensemble"             and _live_mode_dependency():
+        try:
+            cols = await _table_columns(FC_TABLE, endpoint="/model-bands/columns")
+            _MODEL_BAND_COLS_CTX.set(frozenset(c for c in cols if c.startswith("arr_") and c.endswith(("_p25", "_p75"))))
+        except Exception as exc:  # never break a request over band availability
+            logger.warning("[forecast/model-bands] column probe failed; model bands unavailable: %s", exc)
     return scope
 
 
