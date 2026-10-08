@@ -503,6 +503,34 @@ async def _miradore_probe() -> tuple[bool, Optional[str], Optional[str]]:
     return result
 
 
+_MODEL_BANDS_PROBE: Optional[tuple[float, float, frozenset]] = None
+MODEL_BANDS_PROBE_TTL_SECONDS = int(os.getenv("FORECAST_V2_MODEL_BANDS_PROBE_TTL_SECONDS", "120"))
+
+
+async def _model_band_columns() -> frozenset:
+    """arr_<model>_p25/_p75 columns present on the base snapshot right now.
+
+    Deliberately NOT read through _cached_query: that cache is keyed on the snapshot's run_date, so a
+    same-day republish that adds these columns would keep serving the earlier 'columns missing' answer
+    for the whole weekly TTL. Own short TTL instead (longer once the bands are found)."""
+    global _MODEL_BANDS_PROBE
+    cached = _MODEL_BANDS_PROBE
+    if cached is not None and (time.time() - cached[0]) < cached[1]:
+        return cached[2]
+    from routes import forecast_v2 as forecast_v2_pkg
+
+    cols: frozenset = frozenset()
+    try:
+        rows = await asyncio.to_thread(forecast_v2_pkg.execute_query, f"SHOW COLUMNS IN {FC_TABLE}")
+        names = {str(r.get("col_name") or r.get("column_name") or "").strip().lower() for r in rows}
+        cols = frozenset(c for c in names if c.startswith("arr_") and c.endswith(("_p25", "_p75")))
+    except Exception as exc:
+        logger.warning("[forecast/model-bands] column probe failed; model bands unavailable: %s", exc)
+    ttl = float(MODEL_BANDS_PROBE_TTL_SECONDS if cols else 30)
+    _MODEL_BANDS_PROBE = (time.time(), ttl, cols)
+    return cols
+
+
 async def miradore_scope_dependency(
     request: Request,
     include_miradore: bool = Query(False, description="Read the snapshot variant that includes the Miradore estimate (ITSG/Total)"),
@@ -528,11 +556,7 @@ async def miradore_scope_dependency(
     _MIRADORE_CTX.set(scope)
     _MODEL_BAND_COLS_CTX.set(None)
     if (model or "ensemble").strip().lower() in MODEL_SOURCES and (model or "ensemble").strip().lower() != "ensemble"             and _live_mode_dependency():
-        try:
-            cols = await _table_columns(FC_TABLE, endpoint="/model-bands/columns")
-            _MODEL_BAND_COLS_CTX.set(frozenset(c for c in cols if c.startswith("arr_") and c.endswith(("_p25", "_p75"))))
-        except Exception as exc:  # never break a request over band availability
-            logger.warning("[forecast/model-bands] column probe failed; model bands unavailable: %s", exc)
+        _MODEL_BAND_COLS_CTX.set(await _model_band_columns())
     return scope
 
 

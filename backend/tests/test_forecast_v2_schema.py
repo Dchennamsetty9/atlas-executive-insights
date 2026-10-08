@@ -137,6 +137,19 @@ def test_model_bands_use_own_columns_when_published_else_null():
     assert impl._model_source("ets")["lower_col"] == "NULL"           # older snapshot / no probe
 
 
+def test_model_band_probe_is_not_stuck_on_a_stale_answer(monkeypatch):
+    """A republish that adds the band columns is picked up within the short probe TTL, not the weekly cache TTL."""
+    import asyncio, sys
+    state = {"cols": ["ds", "arr_ets"]}
+    pkg = sys.modules["routes.forecast_v2"]
+    monkeypatch.setattr(pkg, "execute_query", lambda sql, *a, **k: [{"col_name": c} for c in state["cols"]], raising=False)
+    monkeypatch.setattr(impl, "_MODEL_BANDS_PROBE", None)
+    assert asyncio.run(impl._model_band_columns()) == frozenset()
+    impl._MODEL_BANDS_PROBE = (impl._MODEL_BANDS_PROBE[0] - 31, impl._MODEL_BANDS_PROBE[1], impl._MODEL_BANDS_PROBE[2])
+    state["cols"] += ["arr_ets_p25", "arr_ets_p75", "mape_ets"]
+    assert asyncio.run(impl._model_band_columns()) == frozenset({"arr_ets_p25", "arr_ets_p75"})
+
+
 def test_miradore_columns_only_valid_on_alt_table():
     assert MIRADORE_ONLY_COLUMNS.isdisjoint(SNAPSHOT_COLUMNS)
     sql = f"SELECT SUM(miradore_amount) AS m FROM {impl.MIRADORE_TABLE} GROUP BY ds"
