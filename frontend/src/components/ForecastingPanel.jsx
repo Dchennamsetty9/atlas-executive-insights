@@ -2427,7 +2427,7 @@ const ForecastingPanel = () => {
               }
 
               {/* In-quarter pace outlook (validated backtest; informational) */}
-              <PaceOutlookCard pace={paceOutlook} fmt={fmtM} />
+              <PaceOutlookCard pace={paceOutlook} fmt={fmtM} miradoreOn={includeMiradore && showMiradoreToggle(prodLine)} />
 
               {/* What changed since last run — compares the two latest retained vintages */}
               {runDelta?.available && runDelta?.total && (() => {

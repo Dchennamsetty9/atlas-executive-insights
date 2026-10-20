@@ -12,6 +12,11 @@ export const paceBacktestText = (row) => {
     + (typeof q === 'number' && q > 0 ? ` (${q} quarters)` : '');
 };
 
+// The pace outlook is built from the Salesforce forecast only; with the Miradore toggle on the headline numbers
+// include Miradore, so say plainly that this card does not.
+export const PACE_SALESFORCE_NOTE = 'Salesforce only \u2014 excludes the Miradore estimate';
+export const paceScopeNote = (miradoreOn) => (miradoreOn ? PACE_SALESFORCE_NOTE : null);
+
 // Returns null when there is nothing trustworthy to show.
 export const paceView = (pace) => {
   if (!pace || pace.source !== 'live' || !Array.isArray(pace.products) || pace.products.length === 0) return null;

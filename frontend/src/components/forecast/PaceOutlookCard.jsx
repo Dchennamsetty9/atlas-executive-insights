@@ -1,5 +1,5 @@
 import React from 'react';
-import { paceView } from './paceOutlook';
+import { paceView, paceScopeNote } from './paceOutlook';
 
 const BADGE = {
   validated: { color: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.35)' },
@@ -7,9 +7,10 @@ const BADGE = {
 };
 
 // In-quarter pace outlook (informational; it does not replace the plan numbers shown elsewhere).
-export default function PaceOutlookCard({ pace, fmt }) {
+export default function PaceOutlookCard({ pace, fmt, miradoreOn = false }) {
   const view = paceView(pace);
   if (!view) return null;
+  const scopeNote = paceScopeNote(miradoreOn);
   const sign = (d) => `${d >= 0 ? '+' : '−'}${fmt(Math.abs(d))}`;
   const line = (r, label) => {
     const b = BADGE[r.badge.kind];
@@ -31,6 +32,7 @@ export default function PaceOutlookCard({ pace, fmt }) {
                   border: '1px solid rgba(255,255,255,0.07)' }}>
       <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>
         In-quarter pace outlook{view.quarter ? ` · ${view.quarter}` : ''}{view.asof ? ` · as of ${view.asof}` : ''}
+        {scopeNote && <span style={{ marginLeft: 8, color: '#f59e0b', textTransform: 'none', letterSpacing: 0 }}>{scopeNote}</span>}
       </div>
       {view.rows.map((r) => line(r, r.product))}
       {view.total && line({ ...view.total, backtest: null }, 'Total')}

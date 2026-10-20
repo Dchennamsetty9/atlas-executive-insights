@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { paceView, paceBacktestText, paceBadge } from './paceOutlook.js';
+import { paceView, paceBacktestText, paceBadge, paceScopeNote, PACE_SALESFORCE_NOTE } from './paceOutlook.js';
 
 const row = (o = {}) => ({ product: 'UCC', outlook_landing: 15e6, model_landing: 14e6, validated: true,
   backtest_mape_pct: 2.8, model_mape_pct: 8.6, n_quarters: 4, weeks_closed: 8, ...o });
@@ -32,6 +32,12 @@ test('total is a plain sum and carries no combined error', () => {
   assert.equal(v.total.delta, 1.5e6);
   assert.equal(v.total.badge.kind, 'indicative');
   assert.ok(!('backtest_mape_pct' in v.total));
+});
+
+test('scope note appears only when Miradore is on', () => {
+  assert.equal(paceScopeNote(true), PACE_SALESFORCE_NOTE);
+  assert.match(PACE_SALESFORCE_NOTE, /excludes the Miradore estimate/);
+  assert.equal(paceScopeNote(false), null);
 });
 
 test('validated without numbers falls back to a plain label', () => {
