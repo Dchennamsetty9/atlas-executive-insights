@@ -216,6 +216,7 @@ export const createApiService = (api) => ({
     if (quarter) params.quarter = quarter
     return api.get('/api/forecast/v2/driver-bridge', { params })
   },
+  getForecastV2PaceOutlook: (productLine = null) => api.get('/api/forecast/v2/pace-outlook', { params: { product_line: productLine } }),
   getForecastV2RiskRadar: (forecastType = 'rolling', year = null, quarter = null, limit = 20, model = 'ensemble', productLine = null, salesMarket = null) => {
     const params = { forecast_type: forecastType, limit, model, product_line: productLine, sales_market: salesMarket }
     if (year) params.year = year

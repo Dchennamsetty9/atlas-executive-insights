@@ -21,6 +21,7 @@ export function loadForecastTab(api, selection, publish, onError) {
       if (roy.status === 'rejected') throw roy.reason;
       return { rolling: rolling.value, roy: roy.value };
     }));
+    if (tab === 'Overview') add('paceOutlook', api.getForecastV2PaceOutlook(productLine));
     if (tab === 'Plan Tracking') add('driverBridge', api.getForecastV2DriverBridge(year, quarter, model, productLine, salesMarket));
   } else if (tab === 'Multi-Year') {
     add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null, model));

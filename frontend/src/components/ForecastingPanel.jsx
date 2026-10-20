@@ -26,6 +26,7 @@ import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDat
 import { subscribePublicationRefresh } from './forecast/publicationRefresh';
 import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
 import { DriverBridgeSummary, ConfidenceNotes } from './forecast/DriverBridgeSummary';
+import PaceOutlookCard from './forecast/PaceOutlookCard';
 import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance, historicalAccuracyCard } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
@@ -1851,6 +1852,7 @@ const ForecastingPanel = () => {
   const [freshness,   setFreshness]   = useState(null);
   const [confidence,  setConfidence]  = useState(null);
   const [driverBridge, setDriverBridge] = useState(null);
+  const [paceOutlook, setPaceOutlook] = useState(null);
   const [riskRadar,   setRiskRadar]   = useState([]);
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
@@ -1911,6 +1913,7 @@ const ForecastingPanel = () => {
       setMonthly(null);
       setConfidence(null);
       setDriverBridge(null);
+      setPaceOutlook(null);
       setRiskRadar([]);
       setMeetingMode(null);
       setConfidenceBands(null);
@@ -1967,6 +1970,7 @@ const ForecastingPanel = () => {
         case 'monthly': setMonthly(value?.months ?? []); break;
         case 'confidence': setConfidence(value ?? null); break;
         case 'driverBridge': setDriverBridge(value ?? null); break;
+        case 'paceOutlook': setPaceOutlook(value ?? null); break;
         case 'riskRadar': setRiskRadar(value?.items ?? []); break;
         case 'meetingMode': setMeetingMode(value ?? null); break;
         case 'actions': setActions(value?.data ?? []); break;
@@ -2421,6 +2425,9 @@ const ForecastingPanel = () => {
                       );
                   })()
               }
+
+              {/* In-quarter pace outlook (validated backtest; informational) */}
+              <PaceOutlookCard pace={paceOutlook} fmt={fmtM} />
 
               {/* What changed since last run — compares the two latest retained vintages */}
               {runDelta?.available && runDelta?.total && (() => {

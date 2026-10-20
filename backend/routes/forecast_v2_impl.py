@@ -117,7 +117,7 @@ WEEKLY_SNAPSHOT_ENDPOINTS = {
     "/historical-scenarios",
 }
 LIVE_ONLY_ENDPOINTS = {
-    "/leaderboard", "/leaderboard/columns", "/freshness", "/backtest",
+    "/leaderboard", "/leaderboard/columns", "/freshness", "/backtest", "/pace-outlook",
     "/governance/log", "/health", "/health/columns",
 }
 _QUERY_CACHE: Dict[str, tuple[float, Any]] = {}
@@ -3813,6 +3813,71 @@ async def get_driver_bridge(
         "variance_pct": round(variance / plan_total_closed * 100, 2) if plan_total_closed > 0 else None,
         "weeks_closed": len(closed), **scope, **extra,
     }
+
+
+_PACE_TABLES = {"UCC": "ucc_forecast_pace_outlook", "ITSG": "itsg_forecast_pace_outlook"}
+_PACE_COLS = ("run_date", "asof_date", "quarter_label", "weeks_closed", "qtd_actual", "remaining_forecast",
+              "pace_factor", "outlook_landing", "model_landing", "validated", "backtest_mape_pct",
+              "model_mape_pct", "n_quarters")
+
+
+def _pace_row(product: str, r: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"product": product}
+    for c in _PACE_COLS:
+        v = r.get(c)
+        if c in ("run_date", "asof_date"):
+            out[c] = str(v)[:10] if v is not None else None
+        elif c == "quarter_label":
+            out[c] = str(v) if v is not None else None
+        elif c == "validated":
+            out[c] = str(v).strip().lower() in ("true", "1", "1.0")
+        elif c in ("weeks_closed", "n_quarters"):
+            f = _finite_or_none(v)
+            out[c] = int(f) if f is not None else None
+        else:
+            out[c] = _finite_or_none(v)
+    return out
+
+
+@router.get("/pace-outlook")
+async def get_pace_outlook(
+    product_line: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """In-quarter pace outlook written by notebooks 01 / 02 (realized so far + remaining forecast scaled by how the
+    quarter is tracking, plus the learned quarter-end uplift). Informational: it never replaces the plan numbers.
+    Each row says whether it is backtest-validated at this as-of week. Errors are reported per product and are
+    never combined across products; the Total landing is a plain sum when both products cover the same quarter."""
+    selected = _selected_product(None, product_line)
+    products = ["UCC", "ITSG"] if selected == "Total" else ([selected] if selected in _PACE_TABLES else [])
+    base = {"source": "unavailable", "reason": None, "quarter_label": None, "products": [], "total": None}
+    if not products:
+        return {**base, "reason": f"No pace outlook for product '{selected}'."}
+    if not live_mode:
+        return {**base, "reason": "Databricks unavailable."}
+    rows = []
+    for prod in products:
+        tbl = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{_PACE_TABLES[prod]}`"
+        try:
+            got = await _cached_query(
+                f"SELECT {', '.join(_PACE_COLS)} FROM {tbl} ORDER BY run_date DESC, asof_date DESC LIMIT 1",
+                endpoint="/pace-outlook", product=prod)
+        except Exception as exc:
+            logger.warning("[forecast/pace-outlook] %s unavailable: %s", prod, exc)
+            return {**base, "reason": f"Pace outlook for {prod} could not be read."}
+        if not got:
+            return {**base, "reason": f"No pace outlook has been published for {prod} yet."}
+        rows.append(_pace_row(prod, got[0]))
+    quarters = {r["quarter_label"] for r in rows}
+    if len(quarters) != 1 or None in quarters:
+        return {**base, "reason": "Pace outlook rows cover different quarters.", "products": rows}
+    total = None
+    if len(rows) == 2 and all(r["outlook_landing"] is not None and r["model_landing"] is not None for r in rows):
+        total = {"outlook_landing": round(sum(r["outlook_landing"] for r in rows), 2),
+                 "model_landing": round(sum(r["model_landing"] for r in rows), 2),
+                 "validated": all(r["validated"] for r in rows)}
+    return {"source": "live", "reason": None, "quarter_label": rows[0]["quarter_label"],
+            "asof_date": max(r["asof_date"] or "" for r in rows) or None, "products": rows, "total": total}
 
 
 @router.get("/risk-radar")
