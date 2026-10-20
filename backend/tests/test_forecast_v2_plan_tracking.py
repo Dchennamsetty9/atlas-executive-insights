@@ -301,3 +301,29 @@ def test_meeting_mode_live_when_only_radar_live_keeps_top_risks(monkeypatch):
     r = _meeting(monkeypatch, {"source": "live"}, {"source": "unavailable"}, {"source": "live", "items": items})
     assert r["source"] == "live" and r["top_risks"] == items[:3]
     assert r["unavailable_sections"] == ["plan_variance", "recommendations"]
+
+
+def test_plan_takes_the_latest_run_not_every_run_of_the_day():
+    """The pipeline is re-run several times a day; the plan is the LAST run issued on/before the quarter start."""
+    sql = impl._bridge_plan_sql("itsg", "ITSG", datetime.date(2026, 10, 1), datetime.date(2026, 12, 31))
+    assert "ORDER BY COALESCE(CAST(run_timestamp_utc AS TIMESTAMP), CAST(run_date_utc AS TIMESTAMP)) DESC" in sql
+    assert "run_date_utc AS DATE) <= DATE'2026-10-01'" in sql
+    legacy = impl._bridge_plan_sql("itsg", "ITSG", datetime.date(2026, 10, 1), datetime.date(2026, 12, 31), by_timestamp=False)
+    assert "run_timestamp_utc" not in legacy and "ORDER BY CAST(run_date_utc AS DATE) DESC" in legacy
+    sqlglot.parse_one(sql, read="databricks"); sqlglot.parse_one(legacy, read="databricks")
+
+
+def test_bridge_falls_back_to_date_ranking_when_vintages_lack_run_timestamp(monkeypatch):
+    calls = []
+
+    async def query(sql, **kwargs):
+        calls.append(sql)
+        if "forecast_vintages" in sql:
+            if "run_timestamp_utc" in sql:
+                raise RuntimeError("UNRESOLVED_COLUMN run_timestamp_utc")
+            return UCC_PLAN
+        return UCC_SNAP
+    monkeypatch.setattr(impl, "_cached_query", query)
+    r = _bridge(product_line="UCC")
+    assert r["source"] == "live" and r["plan_total"] == 200.0
+    assert any("run_timestamp_utc" in s for s in calls) and any("forecast_vintages" in s and "run_timestamp_utc" not in s for s in calls)

@@ -82,3 +82,14 @@ test('executive requests carry product and region scope', async () => {
   }
   assert.equal(calls.get('getForecastV2ConfidenceBands').at(-1), 'NA');
 });
+
+test('a failing pace outlook stays silent: no page error, card data is cleared', async () => {
+  const published = [];
+  const errors = [];
+  const api = new Proxy({}, { get: (_, method) => () => (
+    method === 'getForecastV2PaceOutlook' ? Promise.reject(new Error('Pace outlook for UCC could not be read.')) : Promise.resolve({ rows: [] })
+  ) });
+  await loadForecastTab(api, selection, (field, value) => published.push([field, value]), (field) => errors.push(field));
+  assert.deepEqual(errors, []);
+  assert.ok(published.some(([field, value]) => field === 'paceOutlook' && value === null));
+});

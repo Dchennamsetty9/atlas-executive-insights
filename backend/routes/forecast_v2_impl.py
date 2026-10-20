@@ -3575,8 +3575,15 @@ def _bridge_unavailable(scope: Dict[str, Any], reason: str, **extra: Any) -> Dic
     }
 
 
-def _bridge_plan_sql(prefix: str, product: str, q_start: datetime.date, q_end: datetime.date) -> str:
+def _bridge_plan_sql(prefix: str, product: str, q_start: datetime.date, q_end: datetime.date,
+                     by_timestamp: bool = True) -> str:
+    """Retained plan: for each week, the LAST forecast issued on or before the quarter's first day. The pipeline is
+    often re-run several times on one day, so the latest RUN (by run timestamp) is taken, not every run of that day
+    (their values differ and used to make the week 'ambiguous'). by_timestamp=False is the older date-only ranking,
+    kept as a fallback for a vintage table without run_timestamp_utc."""
     vintages = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_vintages`"
+    run_key = ("COALESCE(CAST(run_timestamp_utc AS TIMESTAMP), CAST(run_date_utc AS TIMESTAMP))"
+               if by_timestamp else "CAST(run_date_utc AS DATE)")
     return f"""
         WITH ranked AS (
             SELECT CAST(ds AS DATE) AS ds,
@@ -3584,7 +3591,7 @@ def _bridge_plan_sql(prefix: str, product: str, q_start: datetime.date, q_end: d
                    CAST(run_date_utc AS DATE) AS run_date,
                    DENSE_RANK() OVER (
                        PARTITION BY CAST(ds AS DATE)
-                       ORDER BY CAST(run_date_utc AS DATE) DESC
+                       ORDER BY {run_key} DESC
                    ) AS rk
             FROM {vintages}
             WHERE model = '{RETAINED_MODELS['ensemble']}'
@@ -3725,9 +3732,15 @@ async def get_driver_bridge(
             endpoint="/driver-bridge", product=scope["product"], quarter=q_label)
         plan_rows: Dict[str, list] = {}
         for prod in products:
-            plan_rows[prod] = await _cached_query(
-                _bridge_plan_sql(prod.lower(), prod, q_start, q_end),
-                endpoint="/driver-bridge", product=prod, quarter=q_label, metric="plan")
+            try:
+                plan_rows[prod] = await _cached_query(
+                    _bridge_plan_sql(prod.lower(), prod, q_start, q_end),
+                    endpoint="/driver-bridge", product=prod, quarter=q_label, metric="plan")
+            except Exception as exc_ts:   # vintage table without run_timestamp_utc -> date-only ranking
+                logger.warning("[forecast/driver-bridge] %s plan by run timestamp failed (%s); using run date", prod, exc_ts)
+                plan_rows[prod] = await _cached_query(
+                    _bridge_plan_sql(prod.lower(), prod, q_start, q_end, by_timestamp=False),
+                    endpoint="/driver-bridge", product=prod, quarter=q_label, metric="plan_by_date")
     except Exception as exc:
         logger.error("[forecast/driver-bridge] query failed: %s", exc)
         return _bridge_unavailable(scope, "Plan or actuals source could not be read.")

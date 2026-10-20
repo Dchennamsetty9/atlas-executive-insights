@@ -21,7 +21,10 @@ export function loadForecastTab(api, selection, publish, onError) {
       if (roy.status === 'rejected') throw roy.reason;
       return { rolling: rolling.value, roy: roy.value };
     }));
-    if (tab === 'Overview') add('paceOutlook', api.getForecastV2PaceOutlook(productLine));
+    if (tab === 'Overview') {
+      // Optional card: when the pace tables are missing or unreadable it stays hidden instead of raising a page error.
+      tasks.push(api.getForecastV2PaceOutlook(productLine).then(value => publish('paceOutlook', value), () => publish('paceOutlook', null)));
+    }
     if (tab === 'Plan Tracking') add('driverBridge', api.getForecastV2DriverBridge(year, quarter, model, productLine, salesMarket));
   } else if (tab === 'Multi-Year') {
     add('historical', api.getForecastV2Historical(null, productLine, salesMarket, null, model));
