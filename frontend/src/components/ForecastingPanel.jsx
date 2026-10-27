@@ -27,6 +27,7 @@ import { subscribePublicationRefresh } from './forecast/publicationRefresh';
 import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
 import { DriverBridgeSummary, ConfidenceNotes } from './forecast/DriverBridgeSummary';
 import PaceOutlookCard from './forecast/PaceOutlookCard';
+import QuarterlyActualVsForecast from './forecast/QuarterlyActualVsForecast';
 import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance, historicalAccuracyCard } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
@@ -1885,7 +1886,8 @@ const ForecastingPanel = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
   const yearOptions = useMemo(() => {
     const current = new Date().getFullYear();
-    return [current + 1, current, current - 1, current - 2];
+    // current + 2: the 18-month forecast horizon reaches into the year after next.
+    return [current + 2, current + 1, current, current - 1, current - 2];
   }, []);
   const isQuarterView = selectedQuarter != null;
   const fcType = isQuarterView ? 'rolling' : 'roy';
@@ -2557,18 +2559,22 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
 
-              {/* 2027 Forward Outlook — derived from forward_1yr forecast rows */}
+              {/* Forward Outlook beyond the current fiscal year — derived from forward_1yr forecast rows (18-month horizon: next year plus part of the one after) */}
               {weeklyView && (() => {
-                const fwd = (weeklyView || []).filter(r => r.type === 'forecast' && new Date(r.date) > new Date('2026-12-28'));
+                const fyEnd = new Date(`${new Date().getFullYear()}-12-31`);
+                const fwd = (weeklyView || []).filter(r => r.type === 'forecast' && new Date(r.date) > fyEnd);
                 if (fwd.length === 0) return null;
                 const fwdTotal = fwd.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
                 const fwdWorst = fwd.reduce((s, r) => s + (r.arr_worst ?? r.arr_likely ?? 0), 0);
                 const fwdBest  = fwd.reduce((s, r) => s + (r.arr_best ?? r.arr_likely ?? 0), 0);
                 const fwdWeeks = fwd.length;
+                const fwdFirstYear = new Date(fwd[0].date).getFullYear();
+                const fwdLastYear = new Date(fwd[fwd.length - 1].date).getFullYear();
+                const fwdLabel = fwdFirstYear === fwdLastYear ? `${fwdFirstYear}` : `${fwdFirstYear}–${fwdLastYear}`;
                 return (
-                  <CardWrap downloadName="forward_outlook_2027">
-                    <SectionTitle>2027 Forward Outlook</SectionTitle>
-                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>Model-projected Growth ARR beyond current fiscal year ({fwdWeeks} weeks into 2027). Early directional estimate only.</div>
+                  <CardWrap downloadName="forward_outlook">
+                    <SectionTitle>{fwdLabel} Forward Outlook</SectionTitle>
+                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>Model-projected Growth ARR beyond current fiscal year ({fwdWeeks} weeks, {fwdLabel}). Early directional estimate only; uncertainty widens the further out it goes.</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
                       <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.18)' }}>
                         <div style={{ fontSize: 9, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Most Likely</div>
@@ -2644,6 +2650,7 @@ const ForecastingPanel = () => {
 
           {tab === 'Accuracy' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <QuarterlyActualVsForecast prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
               <CardWrap>
                 <SectionTitle>{prodLine === 'All' ? 'Published quarterly error by product' : `Published quarterly error · ${prodLine}`}</SectionTitle>
                 <p style={{ color: accuracyRefreshError ? '#fbbf24' : '#64748b', fontSize: 11, marginBottom: 12 }}>

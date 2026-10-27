@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
 
+# Forward horizon of the app's rolling window; must match FORECAST_HORIZON_MONTHS in the notebooks (18 since 2026-10-27, was 12).
+FORECAST_HORIZON_MONTHS = int(os.getenv("FORECAST_HORIZON_MONTHS", "18"))
 FORECAST_CATALOG = os.getenv("FORECAST_CATALOG", "federated")
 FORECAST_SCHEMA = os.getenv("FORECAST_SCHEMA", "sales")
 # PowerBI wide table — has Ensemble P25/P50/P75 for ALL periods incl. hindcast.
@@ -939,10 +941,10 @@ def _quarter_filter(quarter: Optional[int] = None, year: Optional[int] = None) -
 
 
 def _rolling_next_year_filter() -> str:
-    """Quarter-anchored rolling 12-month window (e.g., Q3 -> next Q2)."""
+    """Quarter-anchored rolling window of FORECAST_HORIZON_MONTHS (18 -> 6 quarters, e.g., Q4 -> next-next Q1)."""
     return (
         "CAST(ds AS DATE) >= CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE) "
-        "AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 12)"
+        f"AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), {FORECAST_HORIZON_MONTHS})"
     )
 
 
@@ -961,7 +963,7 @@ def _v5_scope(product_line: Optional[str], sales_market: Optional[str]) -> tuple
 def _v5_next_year_filter() -> str:
     return (
         "CAST(ds AS DATE) >= CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE) "
-        "AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE), 12)"
+        f"AND CAST(ds AS DATE) < ADD_MONTHS(CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE), {FORECAST_HORIZON_MONTHS})"
     )
 
 
@@ -1700,8 +1702,8 @@ async def get_ytd(
     if rolling_next_year:
         quarter_start = datetime.date.today().replace(month=(((datetime.date.today().month - 1) // 3) * 3) + 1, day=1)
         range_start = quarter_start
-        range_end_seed = range_start + datetime.timedelta(days=370)
-        range_end = datetime.date(range_end_seed.year, range_end_seed.month, 1) - datetime.timedelta(days=1)
+        _end_idx = range_start.year * 12 + (range_start.month - 1) + FORECAST_HORIZON_MONTHS
+        range_end = datetime.date(_end_idx // 12, _end_idx % 12 + 1, 1) - datetime.timedelta(days=1)
     elif quarter is not None:
         qsm = (quarter - 1) * 3 + 1
         range_start = dt.date(year, qsm, 1)
@@ -2727,7 +2729,7 @@ async def get_forward_outlook(
     live_mode: bool = Depends(_live_mode_dependency),
 ):
     """
-    Forward 12-month weekly outlook from forecast_app_snapshot (Adaptive_Ensemble).
+    Forward 18-month weekly outlook from forecast_app_snapshot (Adaptive_Ensemble).
     Returns actual+forecast-ready series for executive forward-looking visuals.
     """
     if not live_mode:
@@ -2784,7 +2786,7 @@ async def get_monthly_combined(
     live_mode: bool = Depends(_live_mode_dependency),
 ):
     """
-    Monthly combined view for the next 12 months:
+    Monthly combined view for the next 18 months:
     - actuals from forecast_app_snapshot (closed weeks)
     - forecast scenarios from the snapshot's Adaptive_Ensemble (Most_Likely, p25/p75)
     """
@@ -3212,6 +3214,171 @@ def _quarterly_evidence(row, records):
             "published_at": str(record["published_at_utc"]) if record.get("published_at_utc") is not None else None,
         }
     return evidence
+
+
+# ── GET /quarterly-actual-vs-forecast ─────────────────────────────────────────
+_QTR_MODEL_KEYS = ("ensemble", "ets", "lightgbm", "mstl_v2", "dhr_arima")
+
+
+def _quarterly_history_sql(prefix: str, product: str) -> str:
+    """Per model and calendar quarter: first-published forecast vs realised actual over the SAME closed weeks.
+
+    One vintage per week (the EARLIEST run that forecast it, 'as first published' - the same
+    rule as /accuracy-by-quarter) joined to the latest-landed actual for that week. Same-product,
+    total-grain only; no market rows are summed and no product is substituted."""
+    vintages = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_vintages`"
+    actuals = f"`{FORECAST_CATALOG}`.`{FORECAST_SCHEMA}`.`{prefix}_forecast_cbe`"
+    model_names = ", ".join("'" + RETAINED_MODELS[k].format(product=product) + "'" for k in _QTR_MODEL_KEYS)
+    return f"""
+        WITH raw_actuals AS (
+            SELECT CAST(ds AS DATE) AS ds, CAST(forecast AS DOUBLE) AS actual,
+                   ROW_NUMBER() OVER (PARTITION BY CAST(ds AS DATE)
+                                      ORDER BY TRY_CAST(run_date_utc AS DATE) DESC) AS rn
+            FROM {actuals}
+            WHERE LOWER(TRIM(source)) = 'actual' AND model = 'Adaptive_Ensemble'
+              AND LOWER(TRIM(grain_level)) = 'total'
+              AND UPPER(TRIM(sales_market)) IN ('ALL', 'TOTAL')
+              AND DATE_ADD(CAST(ds AS DATE), 7) <= CURRENT_DATE()
+              AND COALESCE(CAST(forecast AS DOUBLE), 0) > 0
+        ), actuals AS (
+            SELECT ds, actual FROM raw_actuals WHERE rn = 1
+        ), fc AS (
+            SELECT model, CAST(ds AS DATE) AS ds, CAST(p50 AS DOUBLE) AS p50,
+                   ROW_NUMBER() OVER (PARTITION BY model, CAST(ds AS DATE)
+                                      ORDER BY TRY_CAST(run_date_utc AS DATE) ASC) AS rn
+            FROM {vintages}
+            WHERE model IN ({model_names})
+              AND LOWER(TRIM(grain_level)) = 'total'
+              AND UPPER(TRIM(sales_market)) IN ('ALL', 'TOTAL')
+              AND (product_group IS NULL OR UPPER(TRIM(product_group)) = '{product}')
+              AND CAST(ds AS DATE) < CURRENT_DATE()
+              AND COALESCE(CAST(p50 AS DOUBLE), 0) > 0
+        )
+        SELECT YEAR(f.ds) AS yr, QUARTER(f.ds) AS qtr, f.model,
+               COUNT(*) AS n_weeks,
+               SUM(a.actual) AS actual,
+               SUM(f.p50) AS forecast
+        FROM fc f JOIN actuals a ON f.ds = a.ds
+        WHERE f.rn = 1
+        GROUP BY YEAR(f.ds), QUARTER(f.ds), f.model
+        ORDER BY yr, qtr, f.model
+    """
+
+
+def _quarterly_forward_sql(product_line: Optional[str], sales_market: Optional[str]) -> str:
+    """Current quarter through the FORECAST_HORIZON_MONTHS window, from the latest snapshot run."""
+    return f"""
+        SELECT YEAR(ds) AS yr, QUARTER(ds) AS qtr,
+               SUM(CASE WHEN forecast_type = 'actuals' THEN COALESCE(CAST(Actuals AS DOUBLE), 0) ELSE 0 END) AS actual,
+               COUNT(DISTINCT CASE WHEN forecast_type = 'actuals' THEN CAST(ds AS DATE) END) AS actual_weeks,
+               SUM(CASE WHEN forecast_type IN ('forecast', 'boq_forward') THEN COALESCE(CAST(Worst_Case AS DOUBLE), 0) ELSE 0 END) AS worst,
+               SUM(CASE WHEN forecast_type IN ('forecast', 'boq_forward') THEN COALESCE(CAST(Most_Likely AS DOUBLE), 0) ELSE 0 END) AS likely,
+               SUM(CASE WHEN forecast_type IN ('forecast', 'boq_forward') THEN COALESCE(CAST(Best_Case AS DOUBLE), 0) ELSE 0 END) AS best,
+               COUNT(DISTINCT CASE WHEN forecast_type IN ('forecast', 'boq_forward') THEN CAST(ds AS DATE) END) AS forecast_weeks
+        FROM {_fc_table()}
+        WHERE {_latest_run()}
+          {_product_filter(None, product_line)}
+          {_geo_filter(sales_market)}
+          AND {_rolling_next_year_filter()}
+        GROUP BY YEAR(ds), QUARTER(ds)
+        ORDER BY yr, qtr
+    """
+
+
+def _assemble_quarterly_actual_vs_forecast(history_rows, forward_rows, today: datetime.date) -> list[Dict[str, Any]]:
+    """One row per calendar quarter: what actually landed vs what each model forecast.
+
+    status = closed (history only) | in_progress (actual-to-date + forecast for the open weeks) | forecast.
+    Per-model error is (forecast - actual) / actual over the weeks both exist for, so it is signed:
+    positive = the model over-forecast."""
+    cur = (today.year, (today.month - 1) // 3 + 1)
+    out: Dict[tuple, Dict[str, Any]] = {}
+
+    def _row(yr: int, qtr: int) -> Dict[str, Any]:
+        key = (yr, qtr)
+        if key not in out:
+            out[key] = {"year": yr, "quarter": qtr, "label": f"Q{qtr} {yr}",
+                        "status": "closed" if key < cur else ("in_progress" if key == cur else "forecast"),
+                        "actual": None, "actual_weeks": 0, "models": {}, "projection": None}
+        return out[key]
+
+    inv = {RETAINED_MODELS[k].format(product=p): k for k in _QTR_MODEL_KEYS for p in ("UCC", "ITSG")}
+    for r in history_rows or []:
+        yr, qtr = int(_f(r.get("yr"))), int(_f(r.get("qtr")))
+        key = inv.get(str(r.get("model") or ""))
+        actual, forecast = _f(r.get("actual")), _f(r.get("forecast"))
+        if key is None or actual <= 0:
+            continue
+        row = _row(yr, qtr)
+        row["models"][key] = {"forecast": round(forecast, 0), "actual_matched": round(actual, 0),
+                              "weeks": int(_f(r.get("n_weeks"))),
+                              "error_pct": round((forecast - actual) / actual * 100, 1)}
+    for row in out.values():
+        ens = row["models"].get("ensemble")
+        if ens:
+            row["actual"], row["actual_weeks"] = ens["actual_matched"], ens["weeks"]
+
+    for r in forward_rows or []:
+        yr, qtr = int(_f(r.get("yr"))), int(_f(r.get("qtr")))
+        if (yr, qtr) < cur:
+            continue
+        row = _row(yr, qtr)
+        in_progress = row["status"] == "in_progress"
+        actual = _f(r.get("actual")) if in_progress else 0.0
+        if in_progress:
+            row["actual"], row["actual_weeks"] = round(actual, 0), int(_f(r.get("actual_weeks")))
+        row["projection"] = {
+            "actual_to_date": round(actual, 0),
+            "forecast_remaining": round(_f(r.get("likely")), 0),
+            "landing_likely": round(actual + _f(r.get("likely")), 0),
+            "landing_low": round(actual + _f(r.get("worst")), 0),
+            "landing_high": round(actual + _f(r.get("best")), 0),
+            "forecast_weeks": int(_f(r.get("forecast_weeks"))),
+        }
+    return [out[k] for k in sorted(out)]
+
+
+@router.get("/quarterly-actual-vs-forecast")
+async def get_quarterly_actual_vs_forecast(
+    product_line: Optional[str] = None,
+    sales_market: Optional[str] = None,
+    live_mode: bool = Depends(_live_mode_dependency),
+):
+    """Quarter-level actual vs forecast, per model, plus the forward quarters out to the 18-month horizon."""
+    product, market, _ = _v5_scope(product_line, sales_market)
+    base = {"source": "live", "product": product, "sales_market": market,
+            "horizon_months": FORECAST_HORIZON_MONTHS, "quarters": [], "history_note": None}
+    if not live_mode:
+        return {**base, "source": "demo", "history_note": "Live data is unavailable. No demo values are substituted."}
+
+    prefix = str(product).strip().lower()
+    history_rows, note = [], None
+    if str(product).strip().upper() not in ("UCC", "ITSG"):
+        note = "Per-model history is kept per product. Select UCC or ITSG to compare actual vs forecast by quarter."
+    elif market != "Total":
+        note = "Per-model quarterly history is only retained at total (all-region) grain."
+    else:
+        try:
+            history_rows = await _cached_query(
+                _quarterly_history_sql(prefix, str(product).strip().upper()),
+                endpoint="/quarterly-actual-vs-forecast", model="all", forecast_type="actuals",
+                product=product, geo=market, year=None, quarter=None, metric="history")
+        except Exception as exc:
+            logger.error("[forecast/quarterly-actual-vs-forecast] history query failed: %s", exc)
+            note = "Quarterly history could not be loaded."
+
+    try:
+        forward_rows = await _cached_query(
+            _quarterly_forward_sql(product_line, sales_market),
+            endpoint="/quarterly-actual-vs-forecast", model="ensemble", forecast_type="forecast",
+            product=product, geo=market, year=None, quarter=None, metric="forward")
+    except Exception as exc:
+        logger.error("[forecast/quarterly-actual-vs-forecast] forward query failed: %s", exc)
+        forward_rows = []
+        note = (note + " " if note else "") + "Forward quarters could not be loaded."
+
+    quarters = _assemble_quarterly_actual_vs_forecast(history_rows, forward_rows, datetime.date.today())
+    return {**base, "quarters": quarters, "history_note": note}
 
 
 @router.get("/leaderboard")

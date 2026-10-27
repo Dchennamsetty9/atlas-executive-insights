@@ -195,6 +195,12 @@ export const createApiService = (api) => ({
     if (productLine && productLine !== 'All') params.product_line = productLine;
     return api.get('/api/forecast/v2/accuracy-by-quarter', { params });
   },
+  getForecastV2QuarterlyActualVsForecast: (productLine = null, salesMarket = null) => {
+    const params = {};
+    if (productLine && productLine !== 'All') params.product_line = productLine;
+    if (salesMarket && salesMarket !== 'All') params.sales_market = salesMarket;
+    return api.get('/api/forecast/v2/quarterly-actual-vs-forecast', { params });
+  },
   getForecastV2WeeklyAllModels: (productLine = null, year = null, quarter = null) => {
     const params = {};
     if (productLine && productLine !== 'All') params.product_line = productLine;

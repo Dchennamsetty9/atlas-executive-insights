@@ -481,7 +481,7 @@ def test_leaderboard_serves_provenance_without_hiding_query_failure(monkeypatch,
 def test_rolling_next_year_filter_is_quarter_anchored():
     filt = impl._rolling_next_year_filter()
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in filt
-    assert "ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 12)" in filt
+    assert "ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 18)" in filt
     assert "CAST(ds AS DATE) >=" in filt
     assert "CAST(ds AS DATE) <" in filt
 
@@ -526,9 +526,9 @@ def test_monthly_rolling_uses_all_periods_and_separates_actuals(monkeypatch):
     assert impl.POWERBI_WIDE_TABLE in predicted_sql
     assert "SQRT" not in forecast_sql
 
-    # Rolling full-year mode should use the quarter-anchored next-12-month window.
+    # Rolling full-year mode should use the quarter-anchored 18-month window.
     assert "DATE_TRUNC('QUARTER', CURRENT_DATE())" in forecast_sql
-    assert "ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 12)" in forecast_sql
+    assert "ADD_MONTHS(CAST(DATE_TRUNC('QUARTER', CURRENT_DATE()) AS DATE), 18)" in forecast_sql
 
     assert "CAST(ds AS DATE) > COALESCE((SELECT MAX(CAST(ds AS DATE))" in forecast_sql
 

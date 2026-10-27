@@ -88,3 +88,15 @@ and quarterly evidence reads continue to bypass caching.
 Release traceability remains a separate gate: scheduled jobs still refer to mutable
 workspace notebooks. Record and verify the app and notebook revisions before release;
 these fixes do not pin those job inputs or certify a live production forecast.
+## Quarterly actual vs forecast (Accuracy tab)
+
+`GET /api/forecast/v2/quarterly-actual-vs-forecast` backs the table at the top of the Accuracy tab.
+
+- Closed quarters: realised actual vs each retained model's forecast **as first published** (earliest
+  vintage per week from `{ucc,itsg}_forecast_vintages`, joined to `{ucc,itsg}_forecast_cbe` actuals), over the
+  same weeks. Error is signed: positive = over-forecast. UCC or ITSG at total grain only; Total and region
+  selections return the forward quarters with an explanatory note instead of mixed history.
+- Current quarter: actual to date plus the snapshot forecast for the open weeks (projected landing with the
+  P-low/P-high range). Future quarters: forecast only, out to the forward horizon.
+- Horizon: `FORECAST_HORIZON_MONTHS` (18; was 12) in the notebooks and `FORECAST_HORIZON_MONTHS` in
+  `forecast_v2_impl.py` (env override of the same name). Keep the two in step.
