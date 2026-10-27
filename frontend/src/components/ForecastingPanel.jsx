@@ -13,10 +13,22 @@ import { useState, useEffect, useCallback, useMemo, useRef, Component } from 're
 import {
   ComposedChart, BarChart, LineChart,
   Area, Bar, Line, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine,
+  ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
-import { apiService } from '../services/api';
+import { apiService, createApiService } from '../services/api';
+import { createForecastRequests } from './forecast/forecastRequests';
+import { formatWeekDate, quarterScenarioTotals } from './forecast/forecastNumbers.js';
+import { splitExplanation, bulletsAreCompact } from './forecast/explainText.js';
+import { loadForecastTab } from './forecast/loadForecastTab';
+import { MIRADORE_LABEL, getIncludeMiradore, setIncludeMiradore as persistIncludeMiradore, showMiradoreToggle, miradoreNote } from './forecast/miradore';
 import { exportCardPng } from '../utils/chartExport';
+import { backtestScope, backtestRequestKey, backtestResponseMatches, backtestDate } from './forecast/backtestContract';
+import { subscribePublicationRefresh } from './forecast/publicationRefresh';
+import QuarterlyAccuracySummary from './forecast/QuarterlyAccuracySummary';
+import { DriverBridgeSummary, ConfidenceNotes } from './forecast/DriverBridgeSummary';
+import PaceOutlookCard from './forecast/PaceOutlookCard';
+import QuarterlyActualVsForecast from './forecast/QuarterlyActualVsForecast';
+import { accuracyProducts, quarterlyPill, backtestFreshness, backtestGuidance, historicalAccuracyCard } from './forecast/accuracyPresentation';
 
 // ── Inline error boundary ─────────────────────────────────────────────────────
 class TabErrorBoundary extends Component {
@@ -42,17 +54,13 @@ class TabErrorBoundary extends Component {
 const fmtM = (v) => {
   if (v == null || Number.isNaN(Number(v))) return '—';
   const n = Number(v);
-  if (n === 0) return '—';
+  if (n === 0) return '$0';
   if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
   if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
   return `$${n.toFixed(0)}`;
 };
-const fmtDate = (d) => {
-  if (!d) return '';
-  const dt = new Date(d);
-  return `${dt.toLocaleString('default', { month: 'short' })} ${dt.getDate()}`;
-};
+const fmtDate = formatWeekDate;
 const mapeColor = (v) => (v < 15 ? '#10b981' : v < 25 ? '#f59e0b' : '#ef4444');
 const MODEL_LABELS = {
   ETS:      'ETS',
@@ -134,7 +142,7 @@ const Skeleton = ({ height = 14 }) => (
                 animation: 'fp-pulse 1.5s ease-in-out infinite', marginBottom: 8 }} />
 );
 
-const EmptyState = ({ message = 'Awaiting next forecast run' }) => (
+const EmptyState = ({ message = 'Data unavailable for this selection' }) => (
   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 minHeight: 150, gap: 10, color: '#475569', padding: '24px' }}>
     <div style={{ fontSize: 28 }}>🕐</div>
@@ -160,10 +168,11 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [tried, setTried]     = useState(false);
+  const [showMore, setShowMore] = useState(false);
 
   // Re-fetch when the user's selection changes so the explanation always
   // reflects the current product/region/period scope.
-  useEffect(() => { setTried(false); setData(null); setOpen(false); },
+  useEffect(() => { setTried(false); setData(null); setOpen(false); setShowMore(false); },
     [graphKey, product, productLine, salesMarket, year, quarter]);
 
   const toggle = () => {
@@ -201,48 +210,67 @@ const ExplainButton = ({ graphKey, product, productLine, salesMarket, year, quar
            position:absolute inside CardWrap, which is position:relative).
            zIndex 60 floats it above siblings but keeps it in context. */
         <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0,
-                      width: 360, maxWidth: 'min(360px, calc(100vw - 48px)',
-                      maxHeight: '70vh', overflowY: 'auto', zIndex: 60,
+                      width: 300, maxWidth: 'min(300px, calc(100vw - 48px))',
+                      maxHeight: '60vh', overflowY: 'auto', zIndex: 60,
                       background: '#0f172a', border: '1px solid rgba(168,85,247,0.35)',
-                      borderRadius: 12, padding: '16px 18px',
-                      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', textAlign: 'left' }}>
+                      borderRadius: 10, padding: '11px 13px',
+                      boxShadow: '0 12px 36px rgba(0,0,0,0.65)', textAlign: 'left' }}>
           <button onClick={() => setOpen(false)} aria-label="Close explanation"
-            style={{ position: 'absolute', top: 8, right: 10, width: 22, height: 22, borderRadius: 6,
+            style={{ position: 'absolute', top: 7, right: 8, width: 18, height: 18, borderRadius: 5,
                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
-                     color: '#94a3b8', fontSize: 11, lineHeight: 1, cursor: 'pointer', padding: 0 }}>
+                     color: '#94a3b8', fontSize: 9, lineHeight: 1, cursor: 'pointer', padding: 0 }}>
             ✕
           </button>
-          {loading && <div style={{ fontSize: 12, color: '#64748b' }}>✨ Loading explanation…</div>}
-          {!loading && data && (
+          {loading && <div style={{ fontSize: 11, color: '#64748b' }}>✨ Loading explanation…</div>}
+          {!loading && data && (() => {
+            const { headline, rest } = splitExplanation(data.explanation);
+            const compact = bulletsAreCompact(data.bullets);
+            return (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, paddingRight: 22 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   ✨ {data.title || 'Explanation'}
                 </span>
-                {data.source === 'demo' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
-                {data.source === 'fallback' && <span style={{ fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
+                {(data.source === 'demo' || data.source === 'fallback') && <span style={{ fontSize: 8.5, color: '#94a3b8', fontStyle: 'italic' }}>preview</span>}
               </div>
               {data.scope_note && (
-                <div style={{ fontSize: 10.5, color: '#f59e0b', lineHeight: 1.45, marginBottom: 8,
-                              padding: '6px 8px', background: 'rgba(245,158,11,0.07)',
-                              border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#f59e0b', lineHeight: 1.4, marginBottom: 6,
+                              padding: '4px 7px', background: 'rgba(245,158,11,0.07)',
+                              border: '1px solid rgba(245,158,11,0.2)', borderRadius: 5 }}>
                   ⚠ {data.scope_note}
                 </div>
               )}
-              <div style={{ fontSize: 12.5, color: '#cbd5e1', lineHeight: 1.6 }}>{data.explanation}</div>
+              <div style={{ fontSize: 11.5, color: '#e2e8f0', lineHeight: 1.5, fontWeight: 500 }}>{headline}</div>
               {(data.bullets || []).length > 0 && (
-                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                  {data.bullets.map((b, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 7, fontSize: 12, color: '#94a3b8', lineHeight: 1.45 }}>
+                <div style={compact
+                  ? { marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }
+                  : { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {data.bullets.map((b, i) => compact ? (
+                    <div key={i} style={{ fontSize: 10.5, color: '#cbd5e1', lineHeight: 1.35, padding: '3px 7px',
+                                          background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.18)',
+                                          borderRadius: 5 }}>{b}</div>
+                  ) : (
+                    <div key={i} style={{ display: 'flex', gap: 6, fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>
                       <span style={{ color: '#a78bfa', flexShrink: 0 }}>▸</span><span>{b}</span>
                     </div>
                   ))}
                 </div>
               )}
-              {data.run_date && <div style={{ fontSize: 9, color: '#334155', marginTop: 10 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
+              {rest && (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={() => setShowMore(v => !v)}
+                    style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                             fontSize: 10, color: '#a78bfa', fontWeight: 600 }}>
+                    {showMore ? '▾ Hide details' : '▸ How to read this chart'}
+                  </button>
+                  {showMore && <div style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.5, marginTop: 4 }}>{rest}</div>}
+                </div>
+              )}
+              {data.run_date && <div style={{ fontSize: 8.5, color: '#475569', marginTop: 8 }}>Precomputed · run {String(data.run_date).slice(0,10)}</div>}
             </>
-          )}
-          {!loading && !data && <div style={{ fontSize: 12, color: '#94a3b8' }}>Detailed graph insight is unavailable right now.</div>}
+            );
+          })()}
+          {!loading && !data && <div style={{ fontSize: 11, color: '#94a3b8' }}>Detailed graph insight is unavailable right now.</div>}
         </div>
       )}
     </div>
@@ -281,11 +309,10 @@ const SectionTitle = ({ children }) => (
 // ── Chart sub-components ──────────────────────────────────────────────────────
 const WeeklyChart = ({ rows }) => {
   const combined = [...rows].sort((a, b) => a.date.localeCompare(b.date));
-  // Find the split date where actuals end and forecast begins
   const lastActual = [...combined].reverse().find(r => r.arr_actual != null);
   const splitDate = lastActual?.date ?? null;
 
-  // Quarter boundary dates for reference lines (GoTo fiscal = calendar year)
+  // Quarter boundary dates for reference lines
   const qBoundaries = combined.reduce((acc, r) => {
     const d = new Date(r.date);
     const qtr = Math.floor(d.getMonth() / 3) + 1;
@@ -295,70 +322,80 @@ const WeeklyChart = ({ rows }) => {
   }, {});
   const qBoundaryDates = Object.entries(qBoundaries).filter(([k]) => k !== 'Q1').map(([k, v]) => ({ label: k, date: v }));
 
-  // Build unified dataset — bands use stacking trick: floor (transparent) + range (colored).
-  // Stored Worst_Case/Best_Case are the model's P10/P90 → an 80% prediction interval.
-  // The inner ~50% band (≈P25–P75) is derived by z-score scaling of the P10/P90 spread
-  // around Most Likely (z25/z10 = 0.6745/1.2816 ≈ 0.526) assuming symmetric-ish residuals.
-  const INNER_Z_RATIO = 0.6745 / 1.2816;
+  // Detect whether the full quantile fan (p20-p80) is available
+  const hasFan = combined.some(r => r.arr_p20 != null);
+
   const data = combined.map(r => {
-    const likely = r.arr_likely ?? null;
-    const worst  = r.arr_worst  ?? null;
-    const best   = r.arr_best   ?? null;
-    const hasBand = likely != null && worst != null && best != null;
-    const innerLo = hasBand ? likely - (likely - worst) * INNER_Z_RATIO : null;
-    const innerHi = hasBand ? likely + (best - likely) * INNER_Z_RATIO : null;
-    return {
+    const p10 = r.arr_worst  ?? null;
+    const p20 = r.arr_p20 ?? null;
+    const p30 = r.arr_p30 ?? null;
+    const p40 = r.arr_p40 ?? null;
+    const p50 = r.arr_likely ?? null;
+    const p60 = r.arr_p60 ?? null;
+    const p70 = r.arr_p70 ?? null;
+    const p80 = r.arr_p80 ?? null;
+    const p90 = r.arr_best   ?? null;
+
+    const entry = {
       date: r.date,
       actual: r.arr_actual ?? null,
-      likely, worst, best,
-      innerLo, innerHi,
-      bandFloor: worst,
-      bandRange: (best != null && worst != null) ? Math.max(0, best - worst) : null,
-      innerFloor: innerLo,
-      innerRange: (innerHi != null && innerLo != null) ? Math.max(0, innerHi - innerLo) : null,
+      likely: p50,
+      p10, p20, p30, p40, p60, p70, p80, p90,
     };
+
+    if (hasFan && p20 != null) {
+      // Full fan chart: 7 stacked bands on top of invisible p10 floor
+      entry.fanBase   = p10;
+      entry.fan_10_20 = Math.max(0, (p20 || 0) - (p10 || 0));
+      entry.fan_20_30 = Math.max(0, (p30 || 0) - (p20 || 0));
+      entry.fan_30_40 = Math.max(0, (p40 || 0) - (p30 || 0));
+      entry.fan_40_60 = Math.max(0, (p60 || 0) - (p40 || 0));
+      entry.fan_60_70 = Math.max(0, (p70 || 0) - (p60 || 0));
+      entry.fan_70_80 = Math.max(0, (p80 || 0) - (p70 || 0));
+      entry.fan_80_90 = Math.max(0, (p90 || 0) - (p80 || 0));
+    } else {
+      // Fallback: single P10–P90 band
+      entry.bandFloor = p10;
+      entry.bandRange = (p90 != null && p10 != null) ? Math.max(0, p90 - p10) : null;
+    }
+    return entry;
   });
 
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) return null;
     const d = payload[0]?.payload || {};
     return (
       <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10,
-                    padding: '12px 16px', fontSize: 11, minWidth: 180 }}>
-        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
-        {d.actual  != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals: <b>{fmtM(d.actual)}</b></div>}
-        {d.likely  != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely: <b>{fmtM(d.likely)}</b></div>}
-        {d.best    != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.best)}</b></div>}
-        {d.worst   != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.worst)}</b></div>}
-        {d.innerLo != null && d.innerHi != null && (
-          <div style={{ color: '#22d3ee', marginTop: 5, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-            ▒ 50% band: <b>{fmtM(d.innerLo)} – {fmtM(d.innerHi)}</b>
+                    padding: '12px 16px', fontSize: 12, minWidth: 180 }}>
+        <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{d.date}</div>
+        {d.actual != null && <div style={{ color: '#f59e0b', marginBottom: 4 }}>● Actual: <b>{fmtM(d.actual)}</b></div>}
+        {d.likely != null && <div style={{ color: '#e2e8f0', marginBottom: 4 }}>● Forecast (P50): <b>{fmtM(d.likely)}</b></div>}
+        {d.p20 != null ? (
+          <div style={{ fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ color: '#93c5fd' }}>P40–P60: {fmtM(d.p40)} – {fmtM(d.p60)}</div>
+            <div style={{ color: '#60a5fa' }}>P20–P80: {fmtM(d.p20)} – {fmtM(d.p80)}</div>
+            <div style={{ color: '#3b82f6' }}>P10–P90: {fmtM(d.p10)} – {fmtM(d.p90)}</div>
           </div>
-        )}
-        {d.worst != null && d.best != null && (
-          <div style={{ color: '#60a5fa', marginTop: 2 }}>
-            ▒ 80% band: <b>{fmtM(d.worst)} – {fmtM(d.best)}</b>
+        ) : (d.bandFloor != null && d.bandRange != null) ? (
+          <div style={{ color: '#60a5fa', fontSize: 11, marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            Range: {fmtM(d.bandFloor)} – {fmtM(d.bandFloor + d.bandRange)}
           </div>
-        )}
+        ) : null}
       </div>
     );
   };
 
   return (
-    <ResponsiveContainer width="100%" height={360}>
+    <ResponsiveContainer width="100%" height={320}>
       <ComposedChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
           <linearGradient id="bandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.18} />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.03} />
-          </linearGradient>
-          <linearGradient id="innerBandFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.30} />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.08} />
+            <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -366,42 +403,36 @@ const WeeklyChart = ({ rows }) => {
                tick={{ fill: '#475569', fontSize: 10 }} axisLine={false} tickLine={false}
                interval="preserveStartEnd" />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<CustomTooltip />} />
         {splitDate && (
-          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 4"
-            label={{ value: '◀ ACTUALS', position: 'insideTopRight', fill: '#f59e0b', fontSize: 10, fontWeight: 700 }} />
-        )}
-        {splitDate && (
-          <ReferenceLine x={splitDate} stroke="none"
-            label={{ value: 'FORECAST ▶', position: 'insideTopLeft', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
+          <ReferenceLine x={splitDate} stroke="rgba(59,130,246,0.5)" strokeDasharray="4 4"
+            label={{ value: 'Today', position: 'top', fill: '#3b82f6', fontSize: 10, fontWeight: 700 }} />
         )}
         {/* Quarter boundary reference lines */}
         {qBoundaryDates.map(qb => (
-          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.25)" strokeDasharray="3 3"
+          <ReferenceLine key={qb.label} x={qb.date} stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3"
             label={{ value: qb.label, position: 'top', fill: '#64748b', fontSize: 9 }} />
         ))}
-        {/* Outer 80% band (P10–P90): transparent floor stacked under colored band */}
-        <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent"
-              legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#bandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Inner ~50% band (≈P25–P75, z-scaled from P10/P90) drawn on top for nested effect */}
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent"
-              legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#innerBandFill)"
-              legendType="none" connectNulls dot={false} />
-        {/* Actuals — gradient fill area */}
+        {/* Graduated uncertainty fan (P10→P90) — flat conditionals (Recharts cannot unwrap fragments) */}
+        {hasFan && <Area type="monotone" dataKey="fanBase" stackId="fan" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_10_20" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_20_30" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_30_40" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_40_60" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.24} legendType="none" connectNulls dot={false} name="P40–P60" />}
+        {hasFan && <Area type="monotone" dataKey="fan_60_70" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.16} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_70_80" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.10} legendType="none" connectNulls dot={false} />}
+        {hasFan && <Area type="monotone" dataKey="fan_80_90" stackId="fan" stroke="none" fill="#3b82f6" fillOpacity={0.06} legendType="none" connectNulls dot={false} name="P10–P90" />}
+        {!hasFan && <Area type="monotone" dataKey="bandFloor" stackId="band" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {!hasFan && <Area type="monotone" dataKey="bandRange" stackId="band" stroke="none" fill="url(#bandFill)" name="Forecast Range" connectNulls dot={false} />}
+        {/* Actuals — solid orange area */}
         <Area type="monotone" dataKey="actual" stroke="#f59e0b" strokeWidth={2.5}
               fill="url(#actualFill)" dot={false} connectNulls={false} name="Actuals" />
-        {/* Forecast lines */}
-        <Line type="monotone" dataKey="worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
-        <Line type="monotone" dataKey="likely" name="Most Likely"  stroke="#e2e8f0"
-              strokeWidth={3} dot={false} connectNulls />
-        <Line type="monotone" dataKey="best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls />
+        {/* Forecast — single solid white line */}
+        <Line type="monotone" dataKey="likely" name="Forecast"  stroke="#e2e8f0"
+              strokeWidth={2.5} dot={false} connectNulls />
+        <Legend wrapperStyle={{ paddingTop: 12, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -409,53 +440,93 @@ const WeeklyChart = ({ rows }) => {
 
 const RunningTotalsChart = ({ rows }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  const monthTicks = [];
+  const seenMonths = new Set();
+  for (const row of data) {
+    const monthKey = row.date?.slice(0, 7);
+    if (monthKey && !seenMonths.has(monthKey)) {
+      seenMonths.add(monthKey);
+      monthTicks.push(row.date);
+    }
+  }
+  const monthLabel = (date) => {
+    const parsed = new Date(`${date}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? date?.slice(5, 7) : parsed.toLocaleString('en-US', { month: 'short' });
+  };
+  // Find year-end target (last ytd_likely value)
+  const lastRow = data[data.length - 1];
+  const yearEndTarget = lastRow?.ytd_likely ?? null;
+
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={data} margin={{ top: 16, right: 20, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={220}>
+      <ComposedChart data={data} margin={{ top: 16, right: 80, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="ytdActualFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.25} />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-        <XAxis dataKey="date" tickFormatter={d => d?.slice(0,7)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} interval="preserveStartEnd" />
+        <XAxis dataKey="date" ticks={monthTicks} tickFormatter={monthLabel} tick={{ fill: '#475569', fontSize: 10 }}
+               axisLine={false} tickLine={false} interval={0} />
         <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
-               axisLine={false} tickLine={false} width={78}
-               label={{ value: 'Cumulative Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
+               axisLine={false} tickLine={false} width={72} />
         <Tooltip content={<DarkTip />} />
+        {/* Year-end forecast target reference line */}
+        {yearEndTarget && (
+          <ReferenceLine y={yearEndTarget} stroke="rgba(99,102,241,0.5)" strokeDasharray="6 3"
+            label={{ value: `Plan ${fmtM(yearEndTarget)}`, position: 'right', fill: '#818cf8', fontSize: 10, fontWeight: 600 }} />
+        )}
+        {/* Actuals cumulative — solid orange area */}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b"
               strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst"  name="Risk Floor"   stroke="#ef4444"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_likely" name="Most Likely"  stroke="#e2e8f0"
+        {/* Forecast cumulative — solid white line (actuals + forecast stacked) */}
+        <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0"
               strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best"   name="Stretch Case" stroke="#10b981"
-              strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {/* Worst/best as thin dashed bounds */}
+        <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981"
+              strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls opacity={0.6} />
+        <Legend wrapperStyle={{ paddingTop: 8, fontSize: 11 }}
+               formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
       </ComposedChart>
     </ResponsiveContainer>
   );
 };
 
 
-const MultiYearChart = ({ rows }) => {
+const MultiYearChart = ({ rows, data }) => {
   const years = [...new Set(rows.map(r => r.year))].sort();
   const byIsoWeek = {};
   for (const r of rows) {
     if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
     byIsoWeek[r.iso_week][r.year] = (byIsoWeek[r.iso_week][r.year] || 0) + r.arr;
   }
-  const data = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
+  const forecastRows = data?.forecast_continuation || [];
+  for (const r of forecastRows) {
+    if (!byIsoWeek[r.iso_week]) byIsoWeek[r.iso_week] = { iso_week: r.iso_week };
+    byIsoWeek[r.iso_week][`${r.year}_fc`] = (byIsoWeek[r.iso_week][`${r.year}_fc`] || 0) + r.arr;
+  }
+  const chartData = Object.values(byIsoWeek).sort((a, b) => a.iso_week - b.iso_week);
 
   // Compute annual totals and YoY growth for the summary bar
   const annualTotals = {};
   for (const r of rows) { annualTotals[r.year] = (annualTotals[r.year] || 0) + r.arr; }
+  const latestYear = years.length ? Math.max(...years) : new Date().getFullYear();
+  const lflTotals = data?.lfl_totals || (() => {
+    const maxWeek = Math.max(...rows.filter(r => r.year === latestYear).map(r => r.iso_week), 0);
+    const totals = {};
+    for (const r of rows) if (r.iso_week <= maxWeek) totals[r.year] = (totals[r.year] || 0) + r.arr;
+    return totals;
+  })();
+  const maxWeek = data?.lfl_max_week || 52;
+  const fcTotal = forecastRows.filter(r => r.year === latestYear).reduce((sum, r) => sum + Number(r.arr || 0), 0);
 
   return (
     <div>
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+        <LineChart data={chartData} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
           <XAxis dataKey="iso_week" tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
           <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={72}
@@ -465,6 +536,11 @@ const MultiYearChart = ({ rows }) => {
             <Line key={yr} type="monotone" dataKey={yr} name={String(yr)}
                   stroke={YEAR_COLORS[yr] ?? '#94a3b8'} strokeWidth={1.5} dot={false} connectNulls isAnimationActive />
           ))}
+          {fcTotal > 0 && (
+            <Line type="monotone" dataKey={`${latestYear}_fc`} name={`${latestYear} Forecast`}
+                  stroke={YEAR_COLORS[latestYear] ?? '#94a3b8'} strokeWidth={1.5}
+                  strokeDasharray="6 3" dot={false} connectNulls opacity={0.65} isAnimationActive />
+          )}
         </LineChart>
       </ResponsiveContainer>
       {/* YoY growth summary */}
@@ -472,8 +548,10 @@ const MultiYearChart = ({ rows }) => {
                     borderTop: '1px solid rgba(255,255,255,0.06)' }}>
         {years.map((yr, i) => {
           const total = annualTotals[yr] || 0;
-          const prev = annualTotals[years[i - 1]];
-          const yoy = prev && prev > 0 ? ((total - prev) / prev * 100) : null;
+          const lfl = Number(lflTotals[yr] || lflTotals[String(yr)] || 0);
+          const prevLfl = Number(lflTotals[years[i - 1]] || lflTotals[String(years[i - 1])] || 0);
+          const yoy = prevLfl > 0 ? ((lfl - prevLfl) / prevLfl * 100) : null;
+          const projectedTotal = yr === latestYear && fcTotal > 0 ? total + fcTotal : null;
           return (
             <div key={yr} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
                                    borderRadius: 8, background: 'rgba(255,255,255,0.03)',
@@ -481,13 +559,13 @@ const MultiYearChart = ({ rows }) => {
               <div style={{ width: 10, height: 10, borderRadius: '50%', background: YEAR_COLORS[yr] ?? '#94a3b8', flexShrink: 0 }} />
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9' }}>{yr}</div>
-                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtM(total)}{projectedTotal ? ` + ${fmtM(fcTotal)} fc = ${fmtM(projectedTotal)}` : ''}</div>
               </div>
               {yoy != null && (
                 <div style={{ fontSize: 12, fontWeight: 800, padding: '2px 7px', borderRadius: 6,
                               color: yoy >= 0 ? '#10b981' : '#ef4444',
                               background: yoy >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)' }}>
-                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY
+                  {yoy >= 0 ? '+' : ''}{yoy.toFixed(1)}% YoY{maxWeek < 52 ? ` wk 1-${maxWeek}` : ''}
                 </div>
               )}
             </div>
@@ -503,41 +581,46 @@ const ByProductChart = ({ byProduct, byLine }) => {
     name: l.product_line || l.product,
     worst: (l.arr_worst || 0) / 1e6, likely: (l.arr_likely || 0) / 1e6, best: (l.arr_best || 0) / 1e6,
   }));
-  const prodData = (byProduct || []).map(p => ({ name: p.product, likely: (p.arr_likely || 0) / 1e6 }));
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-      <div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product Line</div>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={lineData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-            <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
-            <Tooltip content={<DarkTip />} />
-            <Bar dataKey="worst"  name="Risk Floor"   fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="likely" name="Most Likely"  fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-            <Bar dataKey="best"   name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
-          </BarChart>
-        </ResponsiveContainer>
+    <div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        By Product Line — Risk Floor / Most Likely / Stretch Case
       </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>By Product (Most Likely)</div>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={prodData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-            <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 9 }} axisLine={false} tickLine={false} width={72} />
-            <Tooltip content={<DarkTip />} />
-            <Bar dataKey="likely" name="Most Likely" fill="#3b82f6" radius={[0,4,4,0]} barSize={12} isAnimationActive />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <ResponsiveContainer width="100%" height={200}>
+        <BarChart data={lineData} layout="vertical" margin={{ left: 8, right: 16 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+          <XAxis type="number" tickFormatter={v => `$${v.toFixed(1)}M`} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} />
+          <YAxis type="category" dataKey="name" tick={{ fill: '#f1f5f9', fontSize: 10 }} axisLine={false} tickLine={false} width={60} />
+          <Tooltip content={<DarkTip />} />
+          <Bar dataKey="worst" name="Risk Floor" fill="#ef4444" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+          <Bar dataKey="likely" name="Most Likely" fill="#ffffff" opacity={0.9} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+          <Bar dataKey="best" name="Stretch Case" fill="#10b981" opacity={0.5} radius={[0,3,3,0]} barSize={14} isAnimationActive />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 };
 
 // ── Quarterly Bar Chart (actuals for closed qtrs, forecast for open qtrs) ──────
-const QuarterlyBarChart = ({ weeklyRows, year }) => {
+const QuarterlyBarChart = ({ weeklyRows, quarterlyData, year }) => {
+  if (quarterlyData?.quarters?.length) {
+    const today = new Date();
+    const curQtr = Math.floor(today.getMonth() / 3) + 1;
+    const curYear = today.getFullYear();
+    return <QuarterlyBarChartView qtrs={quarterlyData.quarters.map(q => ({
+      q: q.q,
+      name: `Q${q.q}`,
+      actual: q.actual > 0 ? q.actual : null,
+      forecast: q.forecast > 0 ? q.forecast : null,
+      landing: q.landing,
+      worst: q.worst,
+      best: q.best,
+      isPast: q.status === 'closed',
+      isCurrent: q.status === 'in_progress',
+      isFuture: q.status === 'future',
+      weeks: q.weeks,
+    }))} year={year} curQtr={curQtr} curYear={curYear} />;
+  }
   if (!weeklyRows || weeklyRows.length === 0) return null;
   const today = new Date();
   const curQtr = Math.floor(today.getMonth() / 3) + 1;
@@ -549,7 +632,11 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
       return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
     });
     const actual   = rows.reduce((s, r) => s + (r.arr_actual  ?? 0), 0);
-    const forecast = rows.reduce((s, r) => s + (r.arr_likely  ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
     // Variance-aggregated quarter band (consistent with the Overview cards):
     // combine weekly half-widths in quadrature, not additively.
     const loSq = rows.reduce((s, r) => {
@@ -563,7 +650,6 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     const isPast    = year < curYear || (year === curYear && q < curQtr);
     const isCurrent = year === curYear && q === curQtr;
     const isFuture  = !isPast && !isCurrent;
-    const landing   = actual + forecast;   // actuals + open-week forecast
     return {
       q, name: `Q${q}`,
       // Stacked: orange realized layer + blue forecast layer. Past quarters are
@@ -578,6 +664,10 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
     };
   });
 
+  return <QuarterlyBarChartView qtrs={qtrs} year={year} curQtr={curQtr} curYear={curYear} />;
+};
+
+const QuarterlyBarChartView = ({ qtrs, year }) => {
   const maxVal = Math.max(...qtrs.map(q => Math.max(q.landing ?? 0, q.best ?? 0)), 1) * 1.18;
 
   const QTooltip = ({ active, payload, label }) => {
@@ -695,161 +785,6 @@ const QuarterlyBarChart = ({ weeklyRows, year }) => {
   );
 };
 
-// ── Multi-Model Cumulative Line Chart ────────────────────────────────────────
-const MODEL_LINES = [
-  { key: 'actual',   label: 'Actuals',   color: '#f59e0b', width: 2.5, dash: '' },
-  { key: 'ensemble', label: 'Ensemble ★', color: '#10b981', width: 2,   dash: '' },
-  { key: 'prophet',  label: 'Prophet',   color: '#3b82f6', width: 1.5, dash: '4 2' },
-  { key: 'ets',      label: 'ETS',       color: '#a78bfa', width: 1.5, dash: '4 2' },
-  { key: 'lgbm',     label: 'LightGBM',  color: '#f472b6', width: 1.5, dash: '4 2' },
-  { key: 'mstl',     label: 'MSTL',      color: '#34d399', width: 1.5, dash: '4 2' },
-  { key: 'dhr',      label: 'DHR-ARIMA', color: '#fb923c', width: 1.5, dash: '4 2' },
-];
-
-const MultiModelCumulativeChart = ({ rows }) => {
-  if (!rows || rows.length === 0) return <EmptyState />;
-
-  // Build cumulative sums per model — skip a model if it has no non-null values
-  const cumulative = { actual: 0, ensemble: 0, prophet: 0, ets: 0, lgbm: 0, mstl: 0, dhr: 0 };
-  const hasData    = { actual: false, ensemble: false, prophet: false, ets: false, lgbm: false, mstl: false, dhr: false };
-
-  const data = rows.map(r => {
-    const pt = { date: r.date };
-    MODEL_LINES.forEach(m => {
-      const v = r[m.key];
-      if (v != null && v > 0) {
-        cumulative[m.key] += v;
-        pt[m.key] = cumulative[m.key];
-        hasData[m.key] = true;
-      } else {
-        // carry forward cumulative if we already started accumulating
-        pt[m.key] = cumulative[m.key] > 0 ? cumulative[m.key] : null;
-      }
-    });
-    return pt;
-  });
-
-  const visibleLines = MODEL_LINES.filter(m => hasData[m.key]);
-
-  if (visibleLines.length === 0) return (
-    <EmptyState message="No forecast model data available yet — individual model predictions appear after the V5 pipeline runs" />
-  );
-
-  const today = new Date().toISOString().slice(0, 10);
-  const todayRow = rows.find(r => r.date >= today);
-
-  const MMTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    return (
-      <div style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 14px', fontSize: 11 }}>
-        <div style={{ color: '#94a3b8', marginBottom: 6, fontSize: 10 }}>{label}</div>
-        {payload.filter(p => p.value != null).map(p => (
-          <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
-            {MODEL_LINES.find(m => m.key === p.dataKey)?.label}: <b>{fmtM(p.value)}</b>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 10, fontSize: 10 }}>
-        {visibleLines.map(m => (
-          <span key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ display: 'inline-block', width: 18, height: 0,
-                           borderTop: `2px ${m.dash ? 'dashed' : 'solid'} ${m.color}` }} />
-            <span style={{ color: '#94a3b8' }}>{m.label}</span>
-          </span>
-        ))}
-        {visibleLines.length < MODEL_LINES.length && (
-          <span style={{ color: '#334155', fontSize: 9, marginLeft: 'auto' }}>
-            {MODEL_LINES.length - visibleLines.length} models have no data yet
-          </span>
-        )}
-      </div>
-      <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-          <XAxis dataKey="date" tickFormatter={d => d?.slice(5, 10)} tick={{ fill: '#475569', fontSize: 9 }}
-                 axisLine={false} tickLine={false} interval={Math.max(1, Math.floor(data.length / 10))} />
-          <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 9 }} axisLine={false} tickLine={false} width={58} />
-          <Tooltip content={<MMTooltip />} />
-          {todayRow && <ReferenceLine x={todayRow.date} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4"
-                         label={{ value: 'TODAY', position: 'top', fill: '#475569', fontSize: 8 }} />}
-          {visibleLines.map(m => (
-            <Line key={m.key} type="monotone" dataKey={m.key} name={m.label}
-                  stroke={m.color} strokeWidth={m.width}
-                  strokeDasharray={m.dash || undefined}
-                  dot={false} connectNulls isAnimationActive={false} />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-};
-
-// ── Quarterly MAPE Matrix (models × past quarters) ────────────────────────────
-const QuarterlyMapeMatrix = ({ data }) => {
-  if (!data?.quarters?.length || !data?.models?.length) return <EmptyState message="No backtested quarters found — data populates once closed quarters exist in the forecast table" />;
-  const { quarters, models } = data;
-  const nWeeks = data.n_weeks || [];
-  const isDemo = data.source === 'demo';
-  const colorFor = v => {
-    if (v == null) return '#334155';
-    if (v < 15) return '#10b981';
-    if (v < 25) return '#f59e0b';
-    return '#ef4444';
-  };
-  const th = { padding: '6px 14px', fontSize: 10, fontWeight: 700, color: '#475569',
-               textTransform: 'uppercase', letterSpacing: '0.06em', textAlign: 'center',
-               borderBottom: '1px solid rgba(255,255,255,0.08)' };
-  const td = { padding: '7px 14px', fontSize: 12, textAlign: 'center',
-               borderBottom: '1px solid rgba(255,255,255,0.04)' };
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, alignItems: 'center' }}>
-        <span><span style={{ color:'#10b981' }}>●</span> &lt;15% strong</span>
-        <span><span style={{ color:'#f59e0b' }}>●</span> 15–25% moderate</span>
-        <span><span style={{ color:'#ef4444' }}>●</span> &gt;25% weak</span>
-        {isDemo && (
-          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-                         color: '#f59e0b', background: 'rgba(245,158,11,0.08)',
-                         border: '1px solid rgba(245,158,11,0.25)' }}>DEMO DATA</span>
-        )}
-        <abbr title={`sMAPE = Symmetric MAPE. Lower is better. ${data.basis ? `Basis: ${data.basis}.` : 'Measures forecast error for each past quarter.'}`}
-              style={{ marginLeft:'auto', color:'#475569', cursor:'help', textDecoration:'none', fontSize:9 }}>What is this? ⓘ</abbr>
-      </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th style={{ ...th, textAlign: 'left', width: 110 }}>Model</th>
-            {quarters.map((q, i) => (
-              <th key={q} style={th} title={nWeeks[i] ? `${nWeeks[i]} scored week(s)` : undefined}>
-                {q}{nWeeks[i] ? <span style={{ display:'block', fontSize:8, color:'#334155', fontWeight:400, textTransform:'none' }}>{nWeeks[i]} wks</span> : null}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {models.map((m, i) => (
-            <tr key={m.model} style={{ background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
-              <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 600 }}>
-                {m.model === 'Ensemble' ? <span>Ensemble <span style={{ color:'#10b981', fontSize:9 }}>★</span></span> : m.model}
-              </td>
-              {m.values.map((v, j) => (
-                <td key={j} style={{ ...td, color: colorFor(v), fontWeight: v != null ? 700 : 400 }}>
-                  {v != null ? `${v.toFixed(1)}%` : '—'}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
 const MonthlyTable = ({ months }) => {
   const quarters = [...new Set((months || []).map(m => m.quarter))].sort();
   const byQtr = {};
@@ -861,7 +796,7 @@ const MonthlyTable = ({ months }) => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P10 — 1-in-10 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P90 — 1-in-5 upside scenario']].map(([h, tip]) => (
+            {[['Year',''],['Qtr',''],['Month',''],['Actuals','Realized bookings for this month'],['Risk Floor','P25 — 1-in-4 downside scenario'],['Most Likely','P50 — central forecast'],['Stretch Case','P75 — 1-in-4 upside scenario']].map(([h, tip]) => (
               <th key={h} style={{ ...th, textAlign: ['Month','Year','Qtr'].includes(h) ? 'left' : 'right' }}>
                 {tip ? <abbr title={tip} style={{ cursor: 'help', textDecoration: 'none' }}>{h}</abbr> : h}
               </th>
@@ -871,34 +806,23 @@ const MonthlyTable = ({ months }) => {
         <tbody>
           {quarters.map(q => {
             const qm = byQtr[q] || [];
-            // Quarter totals: likely/actuals sum; the band combines month
-            // half-widths in QUADRATURE (sqrt of sum of squares), matching the
-            // Overview KPI's variance aggregation — additive summing would
-            // re-inflate the band. Nulls (actuals-only months) contribute 0.
-            const agg = qm.reduce((a, m) => {
-              const lk = m.arr_likely ?? 0;
-              const lo = Math.max(0, lk - (m.arr_worst ?? lk));
-              const up = Math.max(0, (m.arr_best ?? lk) - lk);
-              return {
-                arr_actual: m.arr_actual != null ? (a.arr_actual ?? 0) + m.arr_actual : a.arr_actual,
-                arr_likely: a.arr_likely + lk,
-                loSq: a.loSq + lo * lo,
-                upSq: a.upSq + up * up,
-              };
-            }, { arr_actual: null, arr_likely: 0, loSq: 0, upSq: 0 });
-            const tot = {
-              arr_actual: agg.arr_actual,
-              arr_likely: agg.arr_likely,
-              arr_worst:  Math.max(0, agg.arr_likely - Math.sqrt(agg.loSq)),
-              arr_best:   agg.arr_likely + Math.sqrt(agg.upSq),
-            };
+            // Closed quarters have no scenario values -> dashes (not $0); partly closed quarters
+            // include closed months' actuals in the landing. See quarterScenarioTotals().
+            const tot = quarterScenarioTotals(qm);
             return [
               ...qm.map((m, i) => (
                 <tr key={`${q}-${m.month}`} style={{ background: i%2===0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?m.year:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#64748b' }}>{i===0?`Q${q}`:''}</td>
                   <td style={{ ...td, textAlign: 'left', color: '#f1f5f9', fontWeight: 500 }}>{m.month_name}</td>
-                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>{fmtM(m.arr_actual)}</td>
+                  <td style={{ ...td, color: m.arr_actual?'#f59e0b':'#334155' }}>
+                    {fmtM(m.arr_actual)}
+                    {m.arr_actual != null && m.arr_predicted != null && m.arr_actual > 0 && (
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                        Predicted {fmtM(m.arr_predicted)} ({(((m.arr_predicted - m.arr_actual) / m.arr_actual) * 100).toFixed(1)}%)
+                      </div>
+                    )}
+                  </td>
                   <td style={{ ...td, color: '#ef4444' }}>{fmtM(m.arr_worst)}</td>
                   <td style={{ ...td, color: '#f1f5f9', fontWeight: 600 }}>{fmtM(m.arr_likely)}</td>
                   <td style={{ ...td, color: '#10b981' }}>{fmtM(m.arr_best)}</td>
@@ -1048,29 +972,45 @@ const normalizeInsightItems = (value) => {
 };
 
 // ── AI Insights tab — calls /api/forecast/v2/intelligence (Delta table) ───────
-const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
+const AiInsightsSection = ({ model, prodLine, salesMarket, leaderboard, includeMiradore }) => {
   const [aiData,    setAiData]    = useState(null);
   const [aiLoading, setAiLoading] = useState(true);
   const [aiError,   setAiError]   = useState(null);
+  const [facts,     setFacts]     = useState(null); // deterministic, computed insights
+  const aiBatchRef = useRef(null);
+
+  const activePl  = prodLine && prodLine !== 'All' ? prodLine : null;
+  const activeGeo = salesMarket && salesMarket !== 'All' ? salesMarket : null;
 
   const loadAi = useCallback(async () => {
+    aiBatchRef.current?.cancel();
+    const batch = createForecastRequests(apiService.get).start();
+    aiBatchRef.current = batch;
+    const scopedApi = createApiService(batch);
     setAiLoading(true); setAiError(null);
-    try {
-      // Unified insights are precomputed per product (UCC/ITSG/ALL) — pass the
-      // active product so the tab reflects the current selection. Region gets a
-      // scope note from the backend (insights are product-level).
-      const res = await apiService.getForecastV2Intelligence(prodLine, salesMarket);
-      // Support both wrapped {source, data:{...}} and legacy flat shape
-      const d = (res?.data && typeof res.data === 'object') ? res.data : res;
-      setAiData({ ...d, _source: res?.source ?? d?.source });
-    } catch (e) {
-      setAiError(e.message || 'Failed to load AI insights');
-    } finally {
-      setAiLoading(false);
-    }
-  }, [prodLine, salesMarket]); // refetch when the product/region selection changes
+    setAiData(null); setFacts(null);
+    const receive = (request, apply, onError = () => {}) => request.then(value => {
+      if (batch.isCurrent()) apply(value);
+    }).catch(error => {
+      if (batch.isCurrent()) onError(error);
+    }).finally(() => {
+      if (batch.isCurrent()) setAiLoading(false);
+    });
+    await Promise.allSettled([
+      receive(scopedApi.getForecastV2Intelligence(prodLine, salesMarket), res => {
+        const data = (res?.data && typeof res.data === 'object') ? res.data : res;
+        setAiData({ ...(data || {}), _source: res?.source ?? data?.source });
+      }, error => setAiError(error.message || 'AI narrative unavailable')),
+      receive(scopedApi.getForecastV2AccuracyByQuarter(activePl), value => setFacts(previous => ({ ...previous, acc: _historicalAccuracy(value) }))),
+      receive(scopedApi.getForecastV2Backtest(4, model, activePl, activeGeo), value => setFacts(previous => ({ ...previous, trust: value }))),
+      receive(scopedApi.getForecastV2RunDelta(activePl, activeGeo), value => setFacts(previous => ({ ...previous, runDelta: value }))),
+    ]);
+  }, [model, prodLine, salesMarket, activePl, activeGeo]); // refetch on selection change
 
-  useEffect(() => { loadAi(); }, [loadAi]);
+  useEffect(() => {
+    loadAi();
+    return () => aiBatchRef.current?.cancel();
+  }, [loadAi, includeMiradore]); // includeMiradore: api interceptor reads it per request
 
   // Normalise field names across backend shape variants
   const momentum  = aiData?.momentum ?? aiData?.trend_status;
@@ -1100,28 +1040,47 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
     </div>
   );
 
-  if (aiError) return (
-    <div style={{ padding: '24px', background: 'rgba(239,68,68,0.06)', borderRadius: 10, color: '#ef4444', textAlign: 'center' }}>
-      <p style={{ margin: 0 }}>{aiError}</p>
-      <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
-                                        background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: 12 }}>Retry</button>
-    </div>
-  );
+  // ── Three practical, computed insights — Brian's actual questions ────────────
+  const FACT_CARDS = [];
+  if (facts?.acc && !facts.acc.isDemo) {
+    // Quarter-level error comes from the same leaderboard rows as the model pills;
+    // the weekly sMAPE average is only supporting context.
+    const card = historicalAccuracyCard(leaderboard, prodLine, facts.acc);
+    if (card) FACT_CARDS.push({ icon: '🎯', color: card.color, title: 'Historical accuracy', text: card.text });
+  }
+  {
+    const s = facts?.trust?.source === 'live' ? facts.trust.summary : null;
+    if (s && (s.mape_pct != null || s.coverage_pct != null)) {
+      const bits = [];
+      if (s.mape_pct != null) bits.push(`within ~${s.mape_pct}% of the actual four weeks out`);
+      if (s.coverage_pct != null && s.weeks_scored) bits.push(s.weeks_scored === 1
+          ? `the 80% range caught the actual ${s.coverage_pct}% of the time over the most recent scored week (target ~80%)`
+          : `the 80% range caught the actual ${s.coverage_pct}% of the last ${s.weeks_scored} weeks (target ~80%)`);
+      FACT_CARDS.push({
+        icon: '⏱️', color: '#3b82f6', title: 'How close, this far out',
+        text: `Recently, forecasts have landed ${bits.join('; ')}.`,
+      });
+    }
+  }
+  {
+    const rd = facts?.runDelta;
+    if (rd?.available && rd?.total) {
+      const d = rd.total.delta ?? 0;
+      const pct = rd.total.delta_pct;
+      const flat = pct != null && Math.abs(pct) < 0.1;
+      const move = flat ? 'was essentially unchanged'
+        : `moved ${d >= 0 ? '+' : '−'}${fmtM(Math.abs(d))}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct}%)` : ''}`;
+      const drivers = (rd.drivers || []).slice(0, 2).map(dr =>
+        `${dr.product}${dr.sales_market && dr.sales_market !== 'Total' ? '/' + dr.sales_market : ''} ${dr.delta >= 0 ? '+' : '−'}${fmtM(Math.abs(dr.delta))}`);
+      FACT_CARDS.push({
+        icon: '🔀', color: d >= 0 ? '#10b981' : '#ef4444', title: 'What changed since last run',
+        text: `The outlook ${move}${rd.previous_run && rd.latest_run ? `, ${fmtDate(rd.previous_run)} → ${fmtDate(rd.latest_run)}` : ''}.` +
+              `${drivers.length ? ` Biggest movers: ${drivers.join(', ')}.` : ''}`,
+      });
+    }
+  }
 
-  // Show actionable empty state when backend returns an error object (table not yet populated)
-  if (aiData?.error && !aiData?.key_drivers?.length) return (
-    <div style={{ padding: '24px', background: 'rgba(245,158,11,0.06)', borderRadius: 10, color: '#f59e0b', textAlign: 'center' }}>
-      <div style={{ fontSize: 24, marginBottom: 8 }}>💭</div>
-      <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{aiData.narrative || aiData.error}</p>
-      <p style={{ margin: '8px 0 0', fontSize: 12, color: '#64748b' }}>
-        Run Cell 10 (Step 7) of the Panel Writer notebook to populate the AI Insights Delta table.
-      </p>
-      <button onClick={loadAi} style={{ marginTop: 10, padding: '4px 16px', borderRadius: 6, cursor: 'pointer',
-                                        background: 'transparent', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)', fontSize: 12 }}>
-        ↻ Retry
-      </button>
-    </div>
-  );
+  const llmUnavailable = !!aiError || (aiData?.error && !aiData?.key_drivers?.length);
 
   const SECTIONS = [
     { key: 'key_drivers',         title: 'Key Drivers',          icon: '✅', color: '#10b981' },
@@ -1132,6 +1091,46 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Practical insights — lead with the three questions leadership asks */}
+      {FACT_CARDS.length > 0 ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+          {FACT_CARDS.map((c, i) => (
+            <div key={i} style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${c.color}33`,
+                                  borderRadius: 12, padding: '14px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 15 }}>{c.icon}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{c.title}</span>
+              </div>
+              <div style={{ fontSize: 13.5, color: '#cbd5e1', lineHeight: 1.55 }}>{c.text}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding: '16px 18px', borderRadius: 10, fontSize: 13, color: '#94a3b8',
+                      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+          Accuracy and change-driver insights build up automatically as forecast runs accumulate week over week.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+        <button onClick={loadAi} disabled={aiLoading}
+          style={{ padding: '4px 12px', borderRadius: 6, cursor: aiLoading ? 'default' : 'pointer',
+                   background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                   color: '#64748b', fontSize: 11 }}>
+          {aiLoading ? 'Refreshing…' : '↻ Refresh'}
+        </button>
+      </div>
+
+      <details style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 12 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748b', userSelect: 'none' }}>
+          Full AI analysis{llmUnavailable ? ' (narrative pending data)' : ''}
+        </summary>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 14 }}>
+      {llmUnavailable && (
+        <div style={{ padding: '14px', background: 'rgba(245,158,11,0.06)', borderRadius: 10, color: '#f59e0b', fontSize: 12, lineHeight: 1.5 }}>
+          {aiData?.narrative || aiData?.error || aiError || 'AI narrative not yet available.'} Populate the insights Delta table (Panel Writer, Step 7) to enable the written analysis.
+        </div>
+      )}
       {isDemo && (
         <div style={{ padding: '8px 14px', borderRadius: 8, fontSize: 12, color: '#f59e0b',
                       background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
@@ -1240,6 +1239,8 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
           {aiLoading ? 'Refreshing…' : '↻ Refresh'}
         </button>
       </div>
+        </div>
+      </details>
     </div>
   );
 };
@@ -1247,43 +1248,62 @@ const AiInsightsSection = ({ model, prodLine, salesMarket }) => {
 // ── Backtest: Forecast vs Reality (trust view) — /api/forecast/v2/backtest ────
 const HORIZONS = [1, 4, 8, 13];
 
-const BacktestSection = ({ model, prodLine, salesMarket }) => {
-  const [horizon, setHorizon] = useState(4);
-  const [data, setData]       = useState(null);
-  const [btLoading, setBtLoading] = useState(false);
-  const [btError, setBtError]     = useState(null);
+const BacktestSection = ({ model, prodLine, salesMarket, refreshVersion, horizon, setHorizon, comparison }) => {
+  const [result, setResult] = useState(null);
+  const [shortHistory, setShortHistory] = useState(null);
+  const requestKey = `${backtestRequestKey(backtestScope(prodLine, salesMarket, model, horizon))}:${refreshVersion}`;
+  const current = result?.key === requestKey ? result : null;
+  const data = current?.data;
+  const btLoading = current === null;
+  const btError = current?.error;
 
   useEffect(() => {
     let cancelled = false;
+    const batch = createForecastRequests(apiService.get).start();
     (async () => {
-      setBtLoading(true); setBtError(null);
       try {
-        const res = await apiService.getForecastV2Backtest(
+        const res = await createApiService(batch).getForecastV2Backtest(
           horizon, model,
           prodLine !== 'All' ? prodLine : null,
           salesMarket && salesMarket !== 'All' ? salesMarket : null,
         );
-        if (!cancelled) setData(res);
+        if (!backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, horizon))) {
+          throw new Error('Backtest response did not match the selected product, region, model, and horizon.');
+        }
+        if (!cancelled) setResult({ key: requestKey, data: res, checkedAt: new Date().toISOString() });
       } catch (e) {
-        if (!cancelled) setBtError(e.message || 'Failed to load backtest');
-      } finally {
-        if (!cancelled) setBtLoading(false);
+        if (!cancelled) setResult({ key: requestKey, error: e.message || 'Failed to load backtest', checkedAt: new Date().toISOString() });
       }
     })();
-    return () => { cancelled = true; };
-  }, [horizon, model, prodLine, salesMarket]);
+    return () => { cancelled = true; batch.cancel(); };
+  }, [horizon, model, prodLine, salesMarket, requestKey]);
 
-  const rows = (data?.rows || []).map(r => ({
+  // Only offer "available" short history after verifying it for this exact product/model/refresh.
+  useEffect(() => {
+    if (data?.reason !== 'no_matched_history' || horizon === 1) return;
+    let cancelled = false;
+    const batch = createForecastRequests(apiService.get).start();
+    createApiService(batch).getForecastV2Backtest(1, model, prodLine, salesMarket && salesMarket !== 'All' ? salesMarket : null)
+      .then(res => {
+        const available = backtestResponseMatches(res, backtestScope(prodLine, salesMarket, model, 1)) &&
+          res.source === 'live' && res.available === true && res.rows?.length > 0;
+        if (!cancelled) setShortHistory({ key: requestKey, available });
+      }).catch(() => { if (!cancelled) setShortHistory({ key: requestKey, available: false }); });
+    return () => { cancelled = true; batch.cancel(); };
+  }, [data?.reason, horizon, model, prodLine, salesMarket, requestKey]);
+
+  const isLive = data?.source === 'live' && data?.available === true;
+  const rows = (isLive ? data.rows || [] : []).map(r => ({
     ...r,
     bandFloor: r.worst,
     bandRange: (r.best != null && r.worst != null) ? Math.max(0, r.best - r.worst) : null,
   }));
   const s = data?.summary || {};
-  const isLive = data?.source === 'live';
+  const freshness = backtestFreshness(rows);
+  const bandId = `btBandFill-${prodLine}`;
 
-  // Coverage semantics: band is P10–P90 → calibrated intervals catch ~80% of actuals
-  const covColor = s.coverage_pct == null ? '#64748b'
-    : s.coverage_pct >= 70 ? '#10b981' : s.coverage_pct >= 50 ? '#f59e0b' : '#ef4444';
+  // Observed coverage is descriptive; published bounds have no assumed calibration target.
+  const covColor = s.coverage_pct == null ? '#64748b' : '#93c5fd';
   const biasStr = s.bias_pct == null ? '—'
     : `${s.bias_pct > 0 ? '+' : ''}${s.bias_pct}% ${s.bias_pct > 0 ? '(over-forecast)' : s.bias_pct < 0 ? '(under-forecast)' : ''}`;
 
@@ -1296,78 +1316,97 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
   );
 
   return (
-    <CardWrap downloadName="forecast_vs_reality" explainKey="backtest" explainProductLine={prodLine} explainRegion={salesMarket}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <SectionTitle>Forecast vs Reality — What We Predicted, What Happened</SectionTitle>
+    <CardWrap downloadName={`forecast_vs_reality_${prodLine}`}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, paddingRight: 32 }}>
+        <SectionTitle>{comparison ? `${prodLine} · Forecast vs Reality` : `Forecast vs Reality · ${prodLine} — What We Predicted, What Happened`}</SectionTitle>
         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
                        color: isLive ? '#10b981' : '#f59e0b',
                        background: isLive ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
                        border: `1px solid ${isLive ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.2)'}` }}>
-          {isLive ? 'LIVE' : 'DEMO'}
+          {btLoading ? 'LOADING' : isLive ? 'MATCHED HISTORY' : 'UNAVAILABLE'}
         </span>
       </div>
       <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
-        Each point compares the forecast made <b style={{ color: '#94a3b8' }}>{horizon} week{horizon > 1 ? 's' : ''} in advance</b> against
-        the actual that later closed. Band coverage should approach ~80% if the P10–P90 intervals are calibrated.
+        Latest retained forecast published <b style={{ color: '#94a3b8' }}>{(horizon - 1) * 7 + 1}–{horizon * 7} days before the target week</b>,
+        compared with the latest published actual for that closed week. Same product and total grain only.
       </div>
 
-      {/* Horizon pills */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 10, color: '#475569', marginRight: 4 }}>Forecast horizon:</span>
-        {HORIZONS.map(h => (
-          <button key={h} onClick={() => setHorizon(h)}
-            style={{ padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                     border: `1px solid ${horizon === h ? '#3b82f6' : 'rgba(255,255,255,0.08)'}`,
-                     background: horizon === h ? 'rgba(59,130,246,0.12)' : 'rgba(255,255,255,0.03)',
-                     color: horizon === h ? '#93c5fd' : '#475569' }}>
-            {h} wk ahead
-          </button>
-        ))}
-      </div>
+      <p style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>
+        {current?.checkedAt ? `Last checked ${new Date(current.checkedAt).toLocaleString()}` : 'Checking retained history…'}
+        {rows.length > 0 && <><br />Latest publication among scored pairs — forecast (UTC): {freshness.forecast}; actual run date: {freshness.actual}.</>}
+      </p>
 
       {btError && (
         <div style={{ padding: '14px', borderRadius: 8, color: '#ef4444', background: 'rgba(239,68,68,0.06)', fontSize: 12 }}>
-          ⚠ {btError}
+          ⚠ Could not load verified history. Refresh to retry; no previous or demo results are shown.
         </div>
       )}
 
       {btLoading ? <Skeleton height={260} /> : rows.length === 0 && !btError ? (
-        <EmptyState message="No retained forecast-vs-actual history at this horizon for the current selection" />
+        <div role="status" style={{ padding: '28px 16px', borderRadius: 10, background: 'rgba(148,163,184,0.04)' }}>
+          <p style={{ fontSize: 13, color: '#cbd5e1', fontWeight: 600 }}>{data?.message || 'No verified retained forecast-vs-actual history for the current selection'}</p>
+          <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 10 }}>{backtestGuidance(data?.reason)}</p>
+          {shortHistory?.key === requestKey && shortHistory.available && <button onClick={() => setHorizon(1)}
+            style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8, border: '1px solid #3b82f6', background: '#172554', color: '#bfdbfe', cursor: 'pointer' }}>
+            View available 1-week history{comparison ? ' (both panels)' : ''}
+          </button>}
+        </div>
       ) : rows.length > 0 && (
         <>
+          {(data.small_sample || data.rejected_pairs > 0) && <div role="status" style={{ fontSize: 11, color: '#fbbf24', marginBottom: 12 }}>
+            {data.small_sample ? `Small sample: ${rows.length} closed week${rows.length === 1 ? '' : 's'}. These results do not establish long-run model accuracy. ` : ''}
+            {data.rejected_pairs > 0 ? `${data.rejected_pairs} ambiguous or invalid pair(s) excluded.` : ''}
+          </div>}
           {/* Stat chips */}
           <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
             {chip('Weeks scored', s.weeks_scored ?? '—', '#f1f5f9')}
-            {chip('Band coverage (target ~80%)', s.coverage_pct != null ? `${s.coverage_pct}%` : '—', covColor)}
+            {chip('Observed band coverage', s.coverage_pct != null ? `${s.coverage_pct}%` : '—', covColor)}
             {chip(`MAPE @ ${horizon}wk`, s.mape_pct != null ? `${s.mape_pct}%` : '—', s.mape_pct != null ? mapeColor(s.mape_pct) : '#64748b')}
             {chip('Bias', biasStr, s.bias_pct == null ? '#64748b' : Math.abs(s.bias_pct) < 5 ? '#10b981' : '#f59e0b')}
           </div>
+          <details style={{ fontSize: 11, color: '#94a3b8', marginBottom: 14 }}>
+            <summary style={{ cursor: 'pointer' }}>Scored weeks and methodology</summary>
+            <p>Source: {data.source_detail} · Model: {data.source_model}. Latest actuals may include revisions.
+              {' '}MAPE/bias use {s.mape_weeks_scored} nonzero-actual week(s); coverage uses {s.band_weeks_scored} week(s) with valid published bounds.
+              {' '}No nominal 80% coverage is assumed. This weekly backtest is separate from the quarterly-error summary above.</p>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+                <thead><tr>{['Target week (UTC)', 'Published (UTC)', 'Lead days', 'Forecast', 'Actual'].map(label => <th key={label} style={{ padding: 6 }}>{label}</th>)}</tr></thead>
+                <tbody>{rows.map(row => <tr key={row.ds}>
+                  <td style={{ padding: 6 }}>{row.ds}</td><td style={{ padding: 6 }}>{row.origin_ts}</td><td style={{ padding: 6 }}>{row.lead_days}</td>
+                  <td style={{ padding: 6 }}>{row.predicted.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: 6 }}>{row.actual.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </details>
 
           <div style={{ fontSize: 10, color: '#475569', marginBottom: 8, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span><span style={{ color: '#f59e0b' }}>─</span> Actual (closed)</span>
-            <span><span style={{ color: '#e2e8f0' }}>- -</span> Predicted {horizon}wk prior</span>
-            <span style={{ color: '#3b82f6' }}>▒ Predicted 80% band</span>
+            <span><span style={{ color: '#e2e8f0' }}>- -</span> Retained forecast ({(horizon - 1) * 7 + 1}–{horizon * 7} days ahead)</span>
+            <span style={{ color: '#3b82f6' }}>▒ Published historical bounds</span>
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={rows} margin={{ top: 12, right: 20, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="btBandFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={bandId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.20} />
                   <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.04} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-              <XAxis dataKey="ds" tickFormatter={fmtDate} tick={{ fill: '#475569', fontSize: 10 }}
+              <XAxis dataKey="ds" tickFormatter={backtestDate} tick={{ fill: '#475569', fontSize: 10 }}
                      axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis tickFormatter={v => fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
+              <YAxis tickFormatter={v => v === 0 ? '$0' : fmtM(v)} tick={{ fill: '#475569', fontSize: 10 }}
                      axisLine={false} tickLine={false} width={78}
                      label={{ value: 'Weekly Growth ARR ($)', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 10, style: { textAnchor: 'middle' } }} />
-              <Tooltip content={<DarkTip />} />
+                <Tooltip labelFormatter={backtestDate} formatter={(value, name) => [typeof value === 'number' ? value.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '—', name]}
+                     contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }} />
               <Area type="monotone" dataKey="bandFloor" stackId="bt" stroke="none" fill="transparent"
-                    legendType="none" connectNulls dot={false} name="P10" />
-              <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill="url(#btBandFill)"
-                    legendType="none" connectNulls dot={false} name="P10–P90 range" />
-              <Line type="monotone" dataKey="predicted" name={`Predicted (${horizon}wk prior)`} stroke="#e2e8f0"
+                  legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published lower bound" />
+              <Area type="monotone" dataKey="bandRange" stackId="bt" stroke="none" fill={`url(#${bandId})`}
+                  legendType="none" tooltipType="none" connectNulls={false} dot={false} name="Published bound span" />
+                <Line type="monotone" dataKey="predicted" name={`Forecast (${(horizon - 1) * 7 + 1}–${horizon * 7} days ahead)`} stroke="#e2e8f0"
                     strokeWidth={2} strokeDasharray="6 4" dot={{ r: 2.5, fill: '#e2e8f0' }} connectNulls />
               <Line type="monotone" dataKey="actual" name="Actual" stroke="#f59e0b"
                     strokeWidth={2.5} dot={{ r: 3, fill: '#f59e0b' }} connectNulls />
@@ -1380,6 +1419,28 @@ const BacktestSection = ({ model, prodLine, salesMarket }) => {
 };
 
 // ── Model Lab: per-model P10/P50/P90 from V5 notebook tables ──────────────────
+const BacktestComparison = ({ model, prodLine, salesMarket, refreshVersion }) => {
+  const [horizon, setHorizon] = useState(4);
+  const products = accuracyProducts(prodLine);
+  return <section aria-label="Forecast vs Reality comparison">
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '4px 0 14px' }}>
+      <span style={{ color: '#94a3b8', fontSize: 12 }}>Forecast horizon{products.length > 1 ? ' · shared across both products' : ''}:</span>
+      {HORIZONS.map(h => <button key={h} onClick={() => setHorizon(h)} aria-pressed={horizon === h}
+        style={{ padding: '6px 12px', borderRadius: 999, cursor: 'pointer', fontSize: 12,
+          border: `1px solid ${horizon === h ? '#3b82f6' : '#ffffff20'}`, background: horizon === h ? '#172554' : 'transparent', color: horizon === h ? '#bfdbfe' : '#94a3b8' }}>
+        {h} wk ahead
+      </button>)}
+    </div>
+    {products.length > 1 && <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>UCC and ITSG are scored separately at the same horizon. Available weeks may differ; neither errors nor uncertainty bands are combined.</p>}
+    <div style={{ display: 'grid', gridTemplateColumns: products.length > 1 ? 'repeat(auto-fit, minmax(min(100%, 480px), 1fr))' : 'minmax(0, 1fr)', gap: 16 }}>
+      {products.map(product => <div key={product} style={{ minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere' }}>
+        <BacktestSection model={model} prodLine={product} salesMarket={salesMarket} refreshVersion={refreshVersion}
+          horizon={horizon} setHorizon={setHorizon} comparison={products.length > 1} />
+      </div>)}
+    </div>
+  </section>;
+};
+
 // Module-level pill style (the main panel has its own identical local copy;
 // module-level components like ModelLabSection can't see that closure).
 const pillStyle = (active, color) => ({
@@ -1405,10 +1466,12 @@ const ModelLabSection = ({ product, salesMarket }) => {
 
   useEffect(() => {
     let cancelled = false;
+    const batch = createForecastRequests(apiService.get).start();
     (async () => {
       setMlLoading(true); setMlError(null);
+      setData(null);
       try {
-        const res = await apiService.getForecastV2ModelLab(product, grain, salesMarket);
+        const res = await createApiService(batch).getForecastV2ModelLab(product, grain, salesMarket);
         if (cancelled) return;
         setData(res);
         setSel((prev) => (res?.models?.includes(prev) ? prev : (res?.recommended_model || res?.models?.[0] || null)));
@@ -1418,7 +1481,7 @@ const ModelLabSection = ({ product, salesMarket }) => {
         if (!cancelled) setMlLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; batch.cancel(); };
   }, [product, grain, salesMarket]);
 
   const rows = data?.rows || [];
@@ -1680,7 +1743,68 @@ const _buildDemoLeaderboard = () => [
   { product: 'ITSG',  sales_market: 'Total', Ensemble: 31.9, ETS: 34.1, Prophet: 35.3, MSTL_v2: 40.8, DHR_ARIMA: 40.0, LightGBM: 117.0, best_mape: 31.9, best_model: 'Ensemble' },
 ];
 
+// ── Executive Summary — deterministic, computed straight from the numbers ─────
+// Answers leadership's three questions with zero LLM text:
+//   1) what is the expected finish   2) how accurate is it   3) next quarter.
+// Every figure traces to an endpoint already rendered elsewhere on the page, so
+// there is nothing here that can "go off the rails."
+
+// Per-quarter landing for a given year, replicating QuarterlyBarChart exactly
+// (actuals + open-week forecast; bands combined in quadrature, not summed).
+const _quarterLandings = (yearRows, year) => {
+  if (!yearRows || yearRows.length === 0) return null;
+  const today   = new Date();
+  const curQtr  = Math.floor(today.getMonth() / 3) + 1;
+  const curYear = today.getFullYear();
+  const qtrs = [1, 2, 3, 4].map(q => {
+    const rows = yearRows.filter(r => {
+      const d = new Date(r.date);
+      return d.getFullYear() === year && Math.floor(d.getMonth() / 3) + 1 === q;
+    });
+    const actual   = rows.reduce((s, r) => s + (r.arr_actual ?? 0), 0);
+    const landing  = rows.reduce((s, r) => {
+      const act = r.arr_actual ?? 0;
+      return s + (act > 0 ? act : (r.arr_likely ?? 0));
+    }, 0);
+    const forecast = Math.max(0, landing - actual);
+    const loSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, lk - (r.arr_worst ?? lk)) ** 2 : s;
+    }, 0);
+    const upSq = rows.reduce((s, r) => {
+      const lk = r.arr_likely ?? null;
+      return lk != null ? s + Math.max(0, (r.arr_best ?? lk) - lk) ** 2 : s;
+    }, 0);
+    const isPast    = year < curYear || (year === curYear && q < curQtr);
+    const isCurrent = year === curYear && q === curQtr;
+    return {
+      q, actual, forecast, landing,
+      worst: !isPast && landing > 0 ? Math.max(0, landing - Math.sqrt(loSq)) : null,
+      best:  !isPast && landing > 0 ? landing + Math.sqrt(upSq) : null,
+      isPast, isCurrent, isFuture: !isPast && !isCurrent, weeks: rows.length,
+    };
+  });
+  const fyLanding = qtrs.reduce((s, q) => s + (q.landing ?? 0), 0);
+  const fyActual  = qtrs.reduce((s, q) => s + (q.actual  ?? 0), 0);
+  return { qtrs, fyLanding, fyActual, curQtr, curYear };
+};
+
+// Mean sMAPE for the Ensemble across the closed quarters in the accuracy matrix.
+const _historicalAccuracy = (accuracyByQtr) => {
+  if (!accuracyByQtr || !Array.isArray(accuracyByQtr.models)) return null;
+  const ens = accuracyByQtr.models.find(m => /ensemble/i.test(m.model)) || accuracyByQtr.models[0];
+  if (!ens || !Array.isArray(ens.values)) return null;
+  const vals = ens.values.filter(v => v != null && !Number.isNaN(Number(v))).map(Number);
+  if (!vals.length) return null;
+  const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return { avgSmape: avg, nQuarters: vals.length, isDemo: accuracyByQtr.source === 'demo' };
+};
+
 const ForecastingPanel = () => {
+  const [publicationVersion, setPublicationVersion] = useState(0);
+  const [accuracyCheckedAt, setAccuracyCheckedAt] = useState(null);
+  const [accuracyRefreshError, setAccuracyRefreshError] = useState(null);
+  useEffect(() => subscribePublicationRefresh(() => setPublicationVersion(value => value + 1)), []);
   const [tab,         setTab]         = useState('Overview');
   const [model,       setModel]       = useState('ensemble');
   const [prodLine,    setProdLine]    = useState('All');
@@ -1689,36 +1813,50 @@ const ForecastingPanel = () => {
   const [multiYearView, setMultiYearView] = useState('overlay'); // 'overlay' | 'timeline'
   const [modelsOpen, setModelsOpen] = useState(false); // non-ensemble model pills expanded
   const [salesMarket, setSalesMarket] = useState('All'); // region filter (All/NA/EMEA/APAC/LATAM)
+  const [includeMiradore, setIncludeMiradoreState] = useState(() => getIncludeMiradore());
+  const [miradoreScope, setMiradoreScope] = useState(null); // `scope` object from the latest forecast response
+  const toggleMiradore = useCallback(() => {
+    // Update the module flag first so requests built by the re-render already carry it.
+    setIncludeMiradoreState(persistIncludeMiradore(!getIncludeMiradore()));
+  }, []);
 
   const [weekly,      setWeekly]      = useState(null);
   const [weeklyKpis,  setWeeklyKpis]  = useState(null);
+  const [quarterlySummary, setQuarterlySummary] = useState(null);
   const [ytd,         setYtd]         = useState(null);
   const [historical,  setHistorical]  = useState(null);
+  const [historicalMeta, setHistoricalMeta] = useState(null);
   const [byProduct,   setByProduct]   = useState(null);
   const [monthly,     setMonthly]     = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
-  const [accuracyByQtr, setAccuracyByQtr] = useState({
-    source: 'demo',
-    quarters: ['Q1 2025', 'Q2 2025', 'Q3 2025', 'Q4 2025', 'Q1 2026', 'Q2 2026'],
-    models: [
-      { model: 'Ensemble',  values: [18.2, 16.4, 21.1, 14.8, 17.3, 19.6] },
-      { model: 'Prophet',   values: [22.1, 19.8, 24.3, 18.2, 21.0, 23.5] },
-      { model: 'ETS',       values: [25.4, 21.3, 27.8, 20.1, 24.2, 26.1] },
-      { model: 'LightGBM',  values: [20.3, 18.1, 22.6, 16.9, 19.8, 21.4] },
-      { model: 'MSTL',      values: [23.7, 20.4, 25.9, 19.3, 22.5, 24.8] },
-      { model: 'DHR-ARIMA', values: [26.8, 23.2, 29.1, 21.7, 25.6, 27.9] },
-    ],
-  });
-  const [allModels,   setAllModels]   = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiService.getForecastV2Leaderboard().then(response => {
+      if (cancelled) return;
+      if (response?.source !== 'live' || !Array.isArray(response.data)) {
+        setLeaderboard([]);
+        setAccuracyRefreshError('Published accuracy is unavailable; retrying automatically.');
+        return;
+      }
+      setLeaderboard(response.data);
+      setAccuracyCheckedAt(new Date().toISOString());
+      setAccuracyRefreshError(null);
+    }).catch(() => {
+      if (cancelled) return;
+      setLeaderboard([]);
+      setAccuracyRefreshError('Could not refresh published accuracy; retrying automatically.');
+    });
+    return () => { cancelled = true; };
+  }, [publicationVersion]);
   const [yearRows,    setYearRows]    = useState(null);   // full-year rolling+roy for quarterly bars
   const [modelRegistry, setModelRegistry] = useState([]);
   const [freshness,   setFreshness]   = useState(null);
   const [confidence,  setConfidence]  = useState(null);
   const [driverBridge, setDriverBridge] = useState(null);
+  const [paceOutlook, setPaceOutlook] = useState(null);
   const [riskRadar,   setRiskRadar]   = useState([]);
   const [meetingMode, setMeetingMode] = useState(null);
   const [confidenceBands, setConfidenceBands] = useState(null);
-  const [trust,       setTrust]       = useState(null);   // band-coverage stats (backtest @4wk)
   const [runDelta,    setRunDelta]    = useState(null);   // what changed since last run
   const [actions,     setActions]     = useState([]);
   const [governanceLog, setGovernanceLog] = useState([]);
@@ -1732,10 +1870,12 @@ const ForecastingPanel = () => {
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
   const [source,      setSource]      = useState(null);
-  const [loadedTabs,  setLoadedTabs]  = useState(new Set());
-  const loadedTabsRef = useRef(new Set());
-  const tabLoadInFlightRef = useRef(new Set());
-  const hasHydratedFiltersRef = useRef(false);
+  const [settledFields, setSettledFields] = useState(new Set());
+  const [dataScope, setDataScope] = useState(null);
+  const loadedTabsRef = useRef(new Map());
+  const dataScopeRef = useRef(null);
+  const requestsRef = useRef(null);
+  const activeBatchRef = useRef(null);
 
   const [simWinRate, setSimWinRate] = useState(31.8);
   const [simCycle, setSimCycle] = useState(45);
@@ -1746,159 +1886,128 @@ const ForecastingPanel = () => {
   const activeGeo = salesMarket !== 'All' ? salesMarket : null;
   const yearOptions = useMemo(() => {
     const current = new Date().getFullYear();
-    return [current + 1, current, current - 1, current - 2];
+    // current + 2: the 18-month forecast horizon reaches into the year after next.
+    return [current + 2, current + 1, current, current - 1, current - 2];
   }, []);
   const isQuarterView = selectedQuarter != null;
   const fcType = isQuarterView ? 'rolling' : 'roy';
   const apiYear = selectedYear;
   const apiQuarter = selectedQuarter;
 
-  const fetchOverviewData = useCallback(async () => {
-    const [wk, yt, modelsRes, fr, cb, rd, am, yrRoll, yrRoy] = await Promise.allSettled([
-      apiService.getForecastV2Weekly(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
-      apiService.getForecastV2YTD(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
-      apiService.getForecastV2Models(),
-      apiService.getForecastV2Freshness(),
-      apiService.getForecastV2ConfidenceBands(fcType, activePl, apiYear, apiQuarter, model),
-      apiService.getForecastV2RunDelta(activePl, activeGeo),
-      apiService.getForecastV2WeeklyAllModels(activePl, apiYear, apiQuarter),
-      // Full-year rows for the Quarterly Summary bars: rolling covers only the
-      // next 13 weeks (which truncated Q4 to a few October weeks — why Q4 looked
-      // low); roy has the remaining weeks. Year-scoped, ignores quarter filter.
-      apiService.getForecastV2Weekly(model, 'rolling', null, activePl, activeGeo, selectedYear, null),
-      apiService.getForecastV2Weekly(model, 'roy', null, activePl, activeGeo, selectedYear, null),
-    ]);
+  const scopeKey = JSON.stringify([model, fcType, activePl, activeGeo, apiYear, apiQuarter, includeMiradore]);
+  const isFieldLoading = field => loading && !settledFields.has(field);
 
-    if (wk.status === 'fulfilled') {
-      setWeekly(wk.value?.rows ?? []);
-      setWeeklyKpis(wk.value?.kpis ?? null);
-      setSource(wk.value?.source ?? null);
-      if ((wk.value?.source ?? null) === 'demo' && wk.value?.error) {
-        setError(`Forecast data fallback: ${wk.value.error}`);
-      }
+  const fetchTabData = useCallback((targetTab, { force = false } = {}) => {
+    requestsRef.current ??= createForecastRequests(apiService.get);
+    const batch = requestsRef.current.start({ force });
+    activeBatchRef.current = batch;
+    if (dataScopeRef.current !== scopeKey) {
+      dataScopeRef.current = scopeKey;
+      loadedTabsRef.current.clear();
+      setWeekly(null);
+      setWeeklyKpis(null);
+      setQuarterlySummary(null);
+      setYtd(null);
+      setYearRows(null);
+      setHistorical(null);
+      setHistoricalMeta(null);
+      setByProduct(null);
+      setMonthly(null);
+      setConfidence(null);
+      setDriverBridge(null);
+      setPaceOutlook(null);
+      setRiskRadar([]);
+      setMeetingMode(null);
+      setConfidenceBands(null);
+      setRunDelta(null);
+      setActions([]);
+      setGovernanceLog([]);
+      setScenarioGrid([]);
+      setSensitivityData([]);
+      setModelScenarios([]);
+      setHistoricalScenarios([]);
+      setSelectedScenario(null);
+      setSource(null);
+      setMiradoreScope(null);
     }
-    if (yt.status === 'fulfilled') setYtd(yt.value?.rows ?? []);
-    if (modelsRes.status === 'fulfilled') setModelRegistry(modelsRes.value?.models ?? []);
-    if (fr.status === 'fulfilled') setFreshness(fr.value ?? null);
-    if (cb.status === 'fulfilled') setConfidenceBands(cb.value ?? null);
-    if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-    if (am.status === 'fulfilled') setAllModels(am.value?.rows ?? null);
-    {
-      const base = yrRoll.status === 'fulfilled' ? (yrRoll.value?.rows ?? []) : [];
-      const roy  = yrRoy.status === 'fulfilled' ? (yrRoy.value?.rows ?? []).filter(r => r.type === 'forecast') : [];
-      setYearRows(base.length || roy.length ? [...base, ...roy] : null);
-    }
-
-    const firstReject = [wk, yt].find((r) => r.status === 'rejected');
-    if (firstReject) {
-      setSource('demo');
-      setError(firstReject.reason?.message || 'Some endpoints failed to load');
-    }
-  }, [model, fcType, activePl, activeGeo, apiYear, apiQuarter, selectedYear]);
-
-  const fetchTabData = useCallback(async (targetTab, { force = false } = {}) => {
-    if (tabLoadInFlightRef.current.has(targetTab)) return;
-    if (!force && loadedTabsRef.current.has(targetTab)) return;
-
-    tabLoadInFlightRef.current.add(targetTab);
-    setLoading(true);
+    setDataScope(scopeKey);
     setError(null);
-    try {
-      if (targetTab === 'Overview') {
-        await fetchOverviewData();
-      } else if (targetTab === 'Multi-Year') {
-        const [hs] = await Promise.allSettled([
-          apiService.getForecastV2Historical(null, activePl, activeGeo),
-        ]);
-        if (hs.status === 'fulfilled') setHistorical(hs.value?.rows ?? []);
-      } else if (targetTab === 'By Product') {
-        const [bp] = await Promise.allSettled([
-          apiService.getForecastV2ByProduct(model, fcType, null, activePl, activeGeo, apiYear, apiQuarter),
-        ]);
-        if (bp.status === 'fulfilled') setByProduct(bp.value ?? null);
-      } else if (targetTab === 'Monthly') {
-        const [mo] = await Promise.allSettled([
-          apiService.getForecastV2Monthly(fcType, null, activePl, activeGeo, apiYear, apiQuarter, model),
-        ]);
-        if (mo.status === 'fulfilled') setMonthly(mo.value?.months ?? []);
-      } else if (targetTab === 'Accuracy') {
-        const [lb, bt, aqtr] = await Promise.allSettled([
-          apiService.getForecastV2Leaderboard(),
-          apiService.getForecastV2Backtest(4, model, activePl, activeGeo),
-          apiService.getForecastV2AccuracyByQuarter(activePl),
-        ]);
-        if (lb.status === 'fulfilled') setLeaderboard(lb.value?.data ?? []);
-        if (bt.status === 'fulfilled') setTrust(bt.value ?? null);
-        if (aqtr.status === 'fulfilled') setAccuracyByQtr(aqtr.value ?? null);
-      } else if (targetTab === 'Plan Tracking') {
-        await fetchOverviewData();
-        const [bridge] = await Promise.allSettled([
-          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
-        ]);
-        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
-      } else if (targetTab === 'Exec Mode') {
-        const [conf, bridge, radar, meeting, act, gov, rd, sg, sens, ms, hs] = await Promise.allSettled([
-          apiService.getForecastV2Confidence(model, apiYear, apiQuarter),
-          apiService.getForecastV2DriverBridge(apiYear, apiQuarter, model),
-          apiService.getForecastV2RiskRadar(fcType, apiYear, apiQuarter, 20, model),
-          apiService.getForecastV2MeetingMode(model, apiYear, apiQuarter),
-          apiService.getActions('pending'),
-          apiService.getForecastV2GovernanceLog(),
-          apiService.getForecastV2RunDelta(activePl, activeGeo),
-          apiService.getForecastV2ScenarioGrid(activePl, activeGeo, apiQuarter),
-          apiService.getForecastV2Sensitivity(activePl, activeGeo),
-          apiService.getForecastV2ModelScenarios(activePl),
-          apiService.getForecastV2HistoricalScenarios(activePl, activeGeo, apiYear),
-        ]);
-        if (conf.status === 'fulfilled') setConfidence(conf.value ?? null);
-        if (bridge.status === 'fulfilled') setDriverBridge(bridge.value ?? null);
-        if (radar.status === 'fulfilled') setRiskRadar(radar.value?.items ?? []);
-        if (meeting.status === 'fulfilled') setMeetingMode(meeting.value ?? null);
-        if (act.status === 'fulfilled') setActions(act.value?.data ?? []);
-        if (gov.status === 'fulfilled') setGovernanceLog(gov.value?.data ?? []);
-        if (rd.status === 'fulfilled') setRunDelta(rd.value ?? null);
-        if (sg.status === 'fulfilled') setScenarioGrid(sg.value?.data ?? sg.value?.rows ?? []);
-        if (sens.status === 'fulfilled') setSensitivityData(sens.value?.data ?? sens.value?.rows ?? []);
-        if (ms.status === 'fulfilled') setModelScenarios(ms.value?.data ?? ms.value?.rows ?? []);
-        if (hs.status === 'fulfilled') setHistoricalScenarios(hs.value?.data ?? hs.value?.rows ?? []);
-      }
-
-      loadedTabsRef.current.add(targetTab);
-      setLoadedTabs(new Set(loadedTabsRef.current));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      tabLoadInFlightRef.current.delete(targetTab);
+    setSettledFields(new Set());
+    const loadedAt = loadedTabsRef.current.get(targetTab);
+    if (!force && loadedAt && Date.now() - loadedAt < 300_000) {
       setLoading(false);
+      return;
     }
-  }, [
-    model,
-    fcType,
-    activePl,
-    activeGeo,
-    apiYear,
-    apiQuarter,
-    fetchOverviewData,
-  ]);
+    loadedTabsRef.current.delete(targetTab);
+    setLoading(true);
+    let failed = false;
+    let yearSummary = null;
+    const settle = field => setSettledFields(previous => new Set([...previous, field]));
+    const publish = (field, value) => {
+      if (!batch.isCurrent()) return;
+      if (value?.scope && typeof value.scope === 'object') setMiradoreScope(value.scope);
+      switch (field) {
+        case 'weekly':
+          setWeekly(value?.rows ?? []);
+          setWeeklyKpis(value?.kpis ?? null);
+          setQuarterlySummary(yearSummary ?? value?.quarterly_summary ?? null);
+          setSource(value?.source ?? null);
+          if (value?.source === 'demo' && value?.error) setError(`Forecast data fallback: ${value.error}`);
+          break;
+        case 'ytd': setYtd(value?.rows ?? []); break;
+        case 'models': setModelRegistry(value?.models ?? []); break;
+        case 'freshness': setFreshness(value ?? null); break;
+        case 'confidenceBands': setConfidenceBands(value ?? null); break;
+        case 'runDelta': setRunDelta(value ?? null); break;
+        case 'yearRows': {
+          const base = value.rolling?.rows ?? [];
+          const roy = (value.roy?.rows ?? []).filter(row => row.type === 'forecast');
+          setYearRows(base.length || roy.length ? [...base, ...roy] : null);
+          yearSummary = value.rolling?.quarterly_summary ?? null;
+          if (yearSummary) setQuarterlySummary(yearSummary);
+          break;
+        }
+        case 'historical': setHistorical(value?.rows ?? []); setHistoricalMeta(value ?? null); break;
+        case 'byProduct': setByProduct(value ?? null); break;
+        case 'monthly': setMonthly(value?.months ?? []); break;
+        case 'confidence': setConfidence(value ?? null); break;
+        case 'driverBridge': setDriverBridge(value ?? null); break;
+        case 'paceOutlook': setPaceOutlook(value ?? null); break;
+        case 'riskRadar': setRiskRadar(value?.items ?? []); break;
+        case 'meetingMode': setMeetingMode(value ?? null); break;
+        case 'actions': setActions(value?.data ?? []); break;
+        case 'governanceLog': setGovernanceLog(value?.data ?? []); break;
+        case 'scenarioGrid': setScenarioGrid(value?.data ?? value?.rows ?? []); break;
+        case 'sensitivity': setSensitivityData(value?.data ?? value?.rows ?? []); break;
+        case 'modelScenarios': setModelScenarios(value?.data ?? value?.rows ?? []); break;
+        case 'historicalScenarios': setHistoricalScenarios(value?.data ?? value?.rows ?? []); break;
+      }
+      if (value?.source === 'demo' || value?.error) failed = true;
+      settle(field);
+    };
+    const onError = (field, failure) => {
+      if (!batch.isCurrent()) return;
+      failed = true;
+      setError(previous => previous ?? `${field}: ${failure.message || 'Could not load forecast data'}`);
+      settle(field);
+    };
+    loadForecastTab(createApiService(batch), {
+      tab: targetTab, model, forecastType: fcType, productLine: activePl,
+      salesMarket: activeGeo, year: apiYear, quarter: apiQuarter,
+    }, publish, onError).then(() => {
+      if (!batch.isCurrent()) return;
+      if (!failed) loadedTabsRef.current.set(targetTab, Date.now());
+      setLoading(false);
+    });
+  }, [scopeKey, model, fcType, activePl, activeGeo, apiYear, apiQuarter]);
 
   useEffect(() => {
     fetchTabData(tab);
+    return () => activeBatchRef.current?.cancel();
   }, [tab, fetchTabData]);
 
-  useEffect(() => {
-    if (!hasHydratedFiltersRef.current) {
-      hasHydratedFiltersRef.current = true;
-      return;
-    }
-    loadedTabsRef.current = new Set();
-    setLoadedTabs(new Set());
-    const timer = setTimeout(() => {
-      fetchTabData(tab, { force: true });
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [model, fcType, activePl, activeGeo, selectedYear, selectedQuarter, fetchTabData]);
-
   const refreshCurrentTab = useCallback(() => {
+    setPublicationVersion(value => value + 1);
     fetchTabData(tab, { force: true });
   }, [tab, fetchTabData]);
 
@@ -1917,38 +2026,13 @@ const ForecastingPanel = () => {
     color:       active ? (color ?? '#f1f5f9') : '#475569',
   });
 
-  const isDemo  = source !== 'live';
-  const demoPayload = useMemo(() => {
-    const dWeekly = _buildDemoWeekly(fcType);
-    return {
-      weekly: dWeekly,
-      ytd: _buildDemoYtd(dWeekly),
-      monthly: _buildDemoMonthly(),
-      historical: _buildDemoHistorical(),
-      byProduct: _buildDemoByProduct(),
-      leaderboard: _buildDemoLeaderboard(),
-    };
-  }, [fcType]);
-
-  const weeklyView = (weekly && weekly.length > 0) ? weekly : (isDemo ? demoPayload.weekly : []);
-  const ytdView = (ytd && ytd.length > 0) ? ytd : (isDemo ? demoPayload.ytd : []);
-  const monthlyView = (monthly && monthly.length > 0) ? monthly : (isDemo ? demoPayload.monthly : []);
-  const historicalView = (historical && historical.length > 0) ? historical : (isDemo ? demoPayload.historical : []);
-  const byProductView = (byProduct && byProduct.by_product?.length > 0) ? byProduct : (isDemo ? demoPayload.byProduct : null);
-  const leaderboardView = (leaderboard && leaderboard.length > 0) ? leaderboard : demoPayload.leaderboard;
-
-
-  // Per-model MAPE for pill badges (Total/All slice)
-  const modelMapes = useMemo(() => {
-    const totalRow = (leaderboardView || []).find(r =>
-      (r.product === 'Total' || r.product === 'All') &&
-      (r.sales_market === 'Total' || r.sales_market === 'All')
-    );
-    return totalRow
-      ? { ETS: totalRow.ETS, Prophet: totalRow.Prophet, LightGBM: totalRow.LightGBM, MSTL_v2: totalRow.MSTL_v2, DHR_ARIMA: totalRow.DHR_ARIMA, Ensemble: totalRow.Ensemble }
-      : {};
-  }, [leaderboardView]);
-
+  const isDemo  = dataScope === scopeKey && source === 'demo';
+  const weeklyView = weekly || [];
+  const ytdView = ytd || [];
+  const monthlyView = monthly || [];
+  const historicalView = historical || [];
+  const historicalData = historicalMeta;
+  const byProductView = byProduct?.by_product?.length ? byProduct : null;
   const isEmpty = !loading && weeklyView !== null && weeklyView.length === 0;
 
   const simulatedScenario = useMemo(() => {
@@ -2094,7 +2178,7 @@ const ForecastingPanel = () => {
               className="select-dark"
               style={{ padding: '4px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
                        color: '#f1f5f9', fontSize: 11, cursor: 'pointer' }}>
-              <option value="">Full Year</option>
+              <option value="">Year</option>
               <option value="1">Q1 (Jan–Mar)</option>
               <option value="2">Q2 (Apr–Jun)</option>
               <option value="3">Q3 (Jul–Sep)</option>
@@ -2105,19 +2189,17 @@ const ForecastingPanel = () => {
         <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
 
         {/* ── Group 3: MODEL — Ensemble recommended; others expand on hover/click ── */}
-        <div>
+        <div style={{ minWidth: 0, maxWidth: '100%' }}>
           <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>FORECAST MODEL</div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
                onMouseLeave={() => setModelsOpen(false)}>
-            <button onClick={() => setModel('ensemble')} style={pill(model === 'ensemble', '#00FF88')}>
+            <button onClick={() => setModel('ensemble')} style={{ ...pill(model === 'ensemble', '#00FF88'), flexWrap: 'wrap', maxWidth: '100%' }}>
               Ensemble ★
               <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.8 }}>recommended</span>
-              {modelMapes.Ensemble != null && modelMapes.Ensemble < 100 && (
-                <span style={{ fontSize: 9, color: model === 'ensemble' ? mapeColor(modelMapes.Ensemble) : '#475569',
+                <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'normal', maxWidth: 220,
                                background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                  {Number(modelMapes.Ensemble).toFixed(1)}%
+                  {quarterlyPill(leaderboard, prodLine, 'Ensemble')}
                 </span>
-              )}
             </button>
             {/* Symmetric hover: expands on hover/click, collapses when the pointer
                 leaves the group. Stays pinned open while a non-ensemble model is
@@ -2126,16 +2208,13 @@ const ForecastingPanel = () => {
               MODELS.filter(m => m !== 'ensemble').map(m => {
                 const meta  = MODEL_KEY_META[m] ?? { label: m, color: '#f1f5f9' };
                 const lbKey = MODEL_LB_KEY[m];
-                const mape  = lbKey ? modelMapes[lbKey] : null;
                 return (
-                  <button key={m} onClick={() => setModel(m)} style={pill(model === m, meta.color)}>
+                  <button key={m} onClick={() => setModel(m)} style={{ ...pill(model === m, meta.color), flexWrap: 'wrap', maxWidth: '100%' }}>
                     {meta.label}
-                    {mape != null && mape < 100 && (
-                      <span style={{ fontSize: 9, color: model === m ? mapeColor(mape) : '#475569',
+                      <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'normal', maxWidth: 220,
                                      background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 8 }}>
-                        {Number(mape).toFixed(1)}%
+                        {quarterlyPill(leaderboard, prodLine, lbKey)}
                       </span>
-                    )}
                   </button>
                 );
               })
@@ -2148,6 +2227,21 @@ const ForecastingPanel = () => {
             )}
           </div>
         </div>
+
+        {/* ── Group 4: Miradore estimate (ITSG / All only; default ON, persisted) ── */}
+        {showMiradoreToggle(prodLine) && (
+          <>
+            <div style={{ width: 1, height: 32, background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 8, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 4 }}>MIRADORE</div>
+              <button type="button" role="switch" aria-checked={includeMiradore} onClick={toggleMiradore}
+                title="Add the estimated Miradore bookings to ITSG (and Total). Model-specific views stay Salesforce-only."
+                style={pill(includeMiradore, '#10b981')}>
+                {includeMiradore ? '✓ ' : ''}{MIRADORE_LABEL}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Status banners ─────────────────────────────────────────────────── */}
@@ -2191,7 +2285,7 @@ const ForecastingPanel = () => {
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: '#93c5fd' }}>
-          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `Full Year ${selectedYear}`}
+          {selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `${selectedYear} Year`}
         </span>
         <span style={{ color: '#334155' }}>·</span>
         <span style={{ fontSize: 12, color: '#94a3b8' }}>{activeModelDisplay} model</span>
@@ -2199,6 +2293,19 @@ const ForecastingPanel = () => {
           change via Product / Time Period selectors above
         </span>
       </div>
+      {(() => {
+        const note = miradoreNote({ productLine: prodLine, includeMiradore, scope: miradoreScope, model, tab });
+        if (!note) return null;
+        const warn = note.kind === 'unavailable';
+        return (
+          <div data-testid="miradore-note" style={{ padding: '6px 14px', marginBottom: 10, borderRadius: 8, fontSize: 11,
+                        color: warn ? '#f59e0b' : '#6ee7b7',
+                        background: warn ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.07)',
+                        border: `1px solid ${warn ? 'rgba(245,158,11,0.2)' : 'rgba(16,185,129,0.2)'}` }}>
+            {warn ? '⚠ ' : 'ⓘ '}{note.text}
+          </div>
+        );
+      })()}
 
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
       <div role="tablist" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', overflowX: 'auto' }}>
@@ -2227,12 +2334,30 @@ const ForecastingPanel = () => {
 
       {/* ── Tab content ────────────────────────────────────────────────────── */}
       <div style={{ paddingTop: 16 }}>
-        <TabErrorBoundary key={tab}>
+        {dataScope !== scopeKey ? <Skeleton height={300} /> : <TabErrorBoundary key={tab}>
 
           {tab === 'Overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {!isFieldLoading('weekly') && weeklyKpis && (() => {
+                const ml = weeklyKpis.most_likely ?? 0;
+                const wc = weeklyKpis.worst_case ?? null;
+                const bc = weeklyKpis.best_case ?? null;
+                const ytdActual = weeklyKpis.ytd_actuals ?? 0;
+                const pctBooked = ml > 0 ? Math.round((ytdActual / ml) * 100) : 0;
+                const periodLabel = selectedQuarter ? `Q${selectedQuarter} ${selectedYear}` : `FY${selectedYear}`;
+                if (ml === 0) return null;
+                return (
+                  <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 6, lineHeight: 1.6, padding: '2px 2px 0' }}>
+                    <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{periodLabel} tracking to {fmtM(ml)}</span>
+                    {' '}{wc != null && bc != null ? `(range ${fmtM(wc)}–${fmtM(bc)})` : '(range not published for this model)'}.{' '}
+                    <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtM(ytdActual)} booked</span>
+                    {' '}= {pctBooked}% realized.
+                  </div>
+                );
+              })()}
+
               {/* Hero KPI cards */}
-              {loading
+              {isFieldLoading('weekly')
                 ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                     {[0,1,2,3].map(i => <Skeleton key={i} height={72} />)}
                   </div>
@@ -2243,8 +2368,8 @@ const ForecastingPanel = () => {
                       // Use authoritative backend KPI totals (pre-aggregated server-side,
                       // not summed from weekly chart rows which would over-count ARR weeks)
                       const ml  = kp?.most_likely ?? 0;
-                      const bc  = kp?.best_case   ?? 0;
-                      const wc  = kp?.worst_case  ?? 0;
+                      const bc  = kp?.best_case   ?? null;
+                      const wc  = kp?.worst_case  ?? null;
                       const ytdActual = kp?.ytd_actuals
                         ?? [...(ytdView || [])].reverse().find(r => r.ytd_actual != null)?.ytd_actual
                         ?? 0;
@@ -2276,7 +2401,7 @@ const ForecastingPanel = () => {
                                           display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                               <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.5 }}>
                                 Forecast range not available — all {selectedQuarter ? `Q${selectedQuarter}` : 'selected'} weeks are closed actuals.
-                                Select a future quarter or <b style={{color:'#f59e0b'}}>Full Year</b> to see scenario bands.
+                                Select a future quarter to see scenario bands.
                               </div>
                             </div>
                           </div>
@@ -2287,21 +2412,24 @@ const ForecastingPanel = () => {
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
                           {[
                             { label: 'Most Likely',  val: ml,         color: '#f1f5f9', sub: `${periodShort} outlook — planning center` },
-                            { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · 1-in-5 upside (P90)` },
-                            { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · 1-in-10 downside (P10)` },
+                            { label: 'Stretch Case', val: bc,         color: '#10b981', sub: `${periodShort} · upside (P75, 1-in-4)` },
+                            { label: 'Risk Floor',   val: wc,         color: '#ef4444', sub: `${periodShort} · downside (P25, 1-in-4)` },
                             { label: selectedQuarter ? 'Actuals (QTD)' : 'Actuals YTD', val: ytdActual, color: '#f59e0b',
                               sub: selectedQuarter ? `Realized so far in Q${selectedQuarter} ${selectedYear}` : `Realized so far in ${selectedYear}` },
                           ].map(({ label, val, color, sub }) => (
                             <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}>
                                <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>{label}</div>
-                               <div style={{ fontSize: 28, fontWeight: 900, color, letterSpacing: -0.8, lineHeight: 1 }}>{fmtM(val)}</div>
-                               <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>{sub}</div>
+                               <div style={{ fontSize: 28, fontWeight: 900, color, letterSpacing: -0.8, lineHeight: 1 }}>{val == null ? 'n/a' : fmtM(val)}</div>
+                               <div style={{ fontSize: 10, color: '#334155', marginTop: 6 }}>{val == null ? `${periodShort} · band not published for this model` : sub}</div>
                             </div>
                           ))}
                         </div>
                       );
                   })()
               }
+
+              {/* In-quarter pace outlook (validated backtest; informational) */}
+              <PaceOutlookCard pace={paceOutlook} fmt={fmtM} miradoreOn={includeMiradore && showMiradoreToggle(prodLine)} />
 
               {/* What changed since last run — compares the two latest retained vintages */}
               {runDelta?.available && runDelta?.total && (() => {
@@ -2353,7 +2481,8 @@ const ForecastingPanel = () => {
               {/* Quarterly bar chart — full-year rows (rolling+roy) so Q4 isn't
                   truncated by the 13-week window; current quarter stacks
                   realized (orange) + remaining forecast (blue) */}
-              {(yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
+              {isFieldLoading('yearRows') && <Skeleton height={260} />}
+              {!isFieldLoading('yearRows') && (yearRows || weeklyView) && (yearRows || weeklyView).length > 0 && (
                 <CardWrap downloadName="quarterly_summary"
                           explainKey="quarterly_outlook" explainProductLine={prodLine}
                           explainRegion={salesMarket} explainYear={selectedYear}>
@@ -2366,41 +2495,9 @@ const ForecastingPanel = () => {
                     <span><span style={{ color: '#3b82f6' }}>■</span> Forecast — Most Likely</span>
                     <span style={{ color: '#334155' }}>In-progress quarter stacks realized + remaining forecast</span>
                   </div>
-                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} year={selectedYear} />
+                  <QuarterlyBarChart weeklyRows={yearRows || weeklyView} quarterlyData={quarterlySummary} year={selectedYear} />
                 </CardWrap>
               )}
-
-              <CardWrap downloadName="weekly_forecast_vs_actuals" explainKey="weekly" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <SectionTitle>Weekly Forecast vs Actuals</SectionTitle>
-                  {(() => {
-                    // Interval trust badge — empirical band coverage from /backtest @4wk horizon
-                    const cov = trust?.summary?.coverage_pct;
-                    const n   = trust?.summary?.weeks_scored;
-                    if (cov == null || !n) return null;
-                    const covColor = cov >= 70 && cov <= 92 ? '#10b981' : cov >= 50 ? '#f59e0b' : '#ef4444';
-                    return (
-                      <span title={`Over the last ${n} closed weeks, the actual landed inside the 80% band ${cov}% of the time (forecasts made 4 weeks ahead). Calibrated bands should be near ~80% — much higher means the bands are too wide, much lower means too narrow.`}
-                        style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 20, marginBottom: 10,
-                                 color: covColor, background: `${covColor}14`, border: `1px solid ${covColor}40`,
-                                 cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        🛡 Bands caught {cov}% of last {n} actuals
-                        <span style={{ fontWeight: 400, opacity: 0.75 }}>· target ~80%</span>
-                        {trust?.source === 'demo' && <span style={{ fontWeight: 400, opacity: 0.6 }}>· demo</span>}
-                      </span>
-                    );
-                  })()}
-                </div>
-                <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                  <span><span style={{ color: '#f59e0b' }}>─</span> Actuals</span>
-                  <span><span style={{ color: '#ef4444' }}>- -</span> Risk Floor (1-in-10 downside)</span>
-                  <span><span style={{ color: '#ffffff' }}>─</span> Most Likely</span>
-                  <span><span style={{ color: '#10b981' }}>- -</span> Stretch Case (1-in-5 upside)</span>
-                  <span style={{ color: '#22d3ee' }}>▒ 50% band (approx.)</span>
-                  <span style={{ color: '#3b82f6' }}>▒ 80% band (model P10–P90)</span>
-                </div>
-                {loading ? <Skeleton height={260} /> : weeklyView && weeklyView.length > 0 ? <WeeklyChart rows={weeklyView} /> : <EmptyState />}
-              </CardWrap>
 
               <CardWrap downloadName="ytd_cumulative" explainKey="ytd" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
                 <SectionTitle>
@@ -2408,24 +2505,9 @@ const ForecastingPanel = () => {
                   {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
                   {salesMarket && salesMarket !== 'All' ? ` · ${salesMarket}` : ''}
                 </SectionTitle>
-                {loading ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+                {isFieldLoading('ytd') ? <Skeleton height={200} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
-              {/* Multi-model cumulative — only show if data exists */}
-              {allModels && allModels.length > 0 && (
-                <CardWrap downloadName="multi_model_cumulative"
-                          explainKey="multi_model" explainProductLine={prodLine}
-                          explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-                  <SectionTitle>
-                    All Models — Cumulative {selectedQuarter ? `Q${selectedQuarter}` : 'YTD'} {selectedYear}
-                    {' · '}{prodLine === 'All' ? 'All Products' : prodLine}
-                  </SectionTitle>
-                  <div style={{ fontSize: 10, color: '#475569', marginBottom: 4 }}>
-                    Cumulative running total per model — shows where each forecast lands relative to actuals.
-                  </div>
-                  {loading ? <Skeleton height={260} /> : <MultiModelCumulativeChart rows={allModels} />}
-                </CardWrap>
-              )}
             </div>
           )}
 
@@ -2446,12 +2528,17 @@ const ForecastingPanel = () => {
               {multiYearView === 'overlay' && (
                 <CardWrap downloadName="historical_seasonality" explainKey="seasonality" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear}>
                   <SectionTitle>Historical Seasonality — by ISO Week (1–52)</SectionTitle>
+                  {historicalData?.data_health && !historicalData.data_health.sufficient_for_yoy && (
+                    <div style={{ fontSize: 10, color: '#f59e0b', padding: '6px 12px', borderRadius: 6, background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.15)', marginBottom: 8 }}>
+                      Limited data: {historicalData.data_health.min_year_weeks} weeks in some years — YoY comparisons may be unreliable.
+                    </div>
+                  )}
                   <div style={{ fontSize: 10, color: '#475569', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {[...new Set((historicalView||[]).map(r=>r.year))].sort().map(yr => (
                       <span key={yr}><span style={{ color: YEAR_COLORS[yr] ?? '#94a3b8' }}>─</span> {yr}</span>
                     ))}
                   </div>
-                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} /> : <EmptyState />}
+                  {loading ? <Skeleton height={260} /> : historicalView && historicalView.length > 0 ? <MultiYearChart rows={historicalView} data={historicalData} /> : <EmptyState />}
                 </CardWrap>
               )}
 
@@ -2472,18 +2559,22 @@ const ForecastingPanel = () => {
                 </CardWrap>
               )}
 
-              {/* 2027 Forward Outlook — derived from forward_1yr forecast rows */}
+              {/* Forward Outlook beyond the current fiscal year — derived from forward_1yr forecast rows (18-month horizon: next year plus part of the one after) */}
               {weeklyView && (() => {
-                const fwd = (weeklyView || []).filter(r => r.type === 'forecast' && new Date(r.date) > new Date('2026-12-28'));
+                const fyEnd = new Date(`${new Date().getFullYear()}-12-31`);
+                const fwd = (weeklyView || []).filter(r => r.type === 'forecast' && new Date(r.date) > fyEnd);
                 if (fwd.length === 0) return null;
                 const fwdTotal = fwd.reduce((s, r) => s + (r.arr_likely ?? 0), 0);
                 const fwdWorst = fwd.reduce((s, r) => s + (r.arr_worst ?? r.arr_likely ?? 0), 0);
                 const fwdBest  = fwd.reduce((s, r) => s + (r.arr_best ?? r.arr_likely ?? 0), 0);
                 const fwdWeeks = fwd.length;
+                const fwdFirstYear = new Date(fwd[0].date).getFullYear();
+                const fwdLastYear = new Date(fwd[fwd.length - 1].date).getFullYear();
+                const fwdLabel = fwdFirstYear === fwdLastYear ? `${fwdFirstYear}` : `${fwdFirstYear}–${fwdLastYear}`;
                 return (
-                  <CardWrap downloadName="forward_outlook_2027">
-                    <SectionTitle>2027 Forward Outlook</SectionTitle>
-                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>Model-projected Growth ARR beyond current fiscal year ({fwdWeeks} weeks into 2027). Early directional estimate only.</div>
+                  <CardWrap downloadName="forward_outlook">
+                    <SectionTitle>{fwdLabel} Forward Outlook</SectionTitle>
+                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>Model-projected Growth ARR beyond current fiscal year ({fwdWeeks} weeks, {fwdLabel}). Early directional estimate only; uncertainty widens the further out it goes.</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
                       <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.18)' }}>
                         <div style={{ fontSize: 9, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Most Likely</div>
@@ -2559,21 +2650,22 @@ const ForecastingPanel = () => {
 
           {tab === 'Accuracy' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Quarterly MAPE Matrix — primary view */}
-              <CardWrap explainKey="accuracy" explainProductLine={prodLine}>
-                <SectionTitle>Forecast Accuracy by Quarter — Model Comparison</SectionTitle>
-                <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
-                  Each cell shows the{' '}
-                  <abbr title="sMAPE = Symmetric Mean Absolute Percentage Error. Computed from weeks where both forecast and actual are known. Lower = better." style={{ cursor:'help', borderBottom:'1px dotted #475569', textDecoration:'none' }}>sMAPE</abbr>
-                  {' '}for that model against closed actuals in each backtested quarter —
-                  using each week's first-published forecast (one vintage per week, no re-forecast averaging).
-                  The current quarter appears as "(QTD)" and scores only its elapsed weeks; recorded forecast
-                  history begins mid-June 2026, so earlier quarters appear as they close.
-                </div>
-                {loading ? <Skeleton height={200} /> : <QuarterlyMapeMatrix data={accuracyByQtr} />}
+              <QuarterlyActualVsForecast prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
+              <CardWrap>
+                <SectionTitle>{prodLine === 'All' ? 'Published quarterly error by product' : `Published quarterly error · ${prodLine}`}</SectionTitle>
+                <p style={{ color: accuracyRefreshError ? '#fbbf24' : '#64748b', fontSize: 11, marginBottom: 12 }}>
+                  {accuracyRefreshError || `Auto-checks every 5 minutes while visible · ${accuracyCheckedAt ? `Last checked ${new Date(accuracyCheckedAt).toLocaleString()}` : 'Checking publication…'}`}
+                </p>
+                <QuarterlyAccuracySummary rows={leaderboard} product={prodLine} models={MODELS} modelKeys={MODEL_LB_KEY} modelMeta={MODEL_KEY_META} color={mapeColor} />
+                <details style={{ marginTop: 10, color: '#64748b', fontSize: 11 }}>
+                  <summary style={{ cursor: 'pointer' }}>Quarterly error basis</summary>
+                  Latest published values for the selected product across all regions, not the selected period.
+                  The publisher may supply estimates or weighted blends; these are not automatically verified closed-quarter errors.
+                  Missing quarterly values show —, without substituting weekly or demo values.
+                </details>
               </CardWrap>
               {/* Backtest chart — secondary context */}
-              <BacktestSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
+              <BacktestComparison model={model} prodLine={prodLine} salesMarket={salesMarket} refreshVersion={publicationVersion} />
             </div>
           )}
 
@@ -2592,7 +2684,7 @@ const ForecastingPanel = () => {
 
           {tab === 'AI Insights' && (
             <CardWrap explainKey="ai_insights" explainProductLine={prodLine} explainRegion={salesMarket} explainYear={selectedYear} explainQuarter={selectedQuarter}>
-              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} />
+              <AiInsightsSection model={model} prodLine={prodLine} salesMarket={salesMarket} leaderboard={leaderboard} includeMiradore={includeMiradore} />
             </CardWrap>
           )}
 
@@ -2600,7 +2692,7 @@ const ForecastingPanel = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <CardWrap>
                 <SectionTitle>Plan Attainment</SectionTitle>
-                {loading ? <Skeleton height={150} /> : (() => {
+                {isFieldLoading('weekly') ? <Skeleton height={150} /> : !weeklyKpis ? <EmptyState /> : (() => {
                   const ytd = weeklyKpis?.ytd_actuals ?? 0;
                   const plan = weeklyKpis?.most_likely ?? 0;
                   const pct = plan > 0 ? Math.min((ytd / plan) * 100, 100) : 0;
@@ -2633,36 +2725,12 @@ const ForecastingPanel = () => {
 
               <CardWrap>
                 <SectionTitle>Actuals vs Planned Pace</SectionTitle>
-                {loading ? <Skeleton height={220} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
+                {isFieldLoading('ytd') ? <Skeleton height={220} /> : ytdView && ytdView.length > 0 ? <RunningTotalsChart rows={ytdView} /> : <EmptyState />}
               </CardWrap>
 
               <CardWrap>
                 <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
-                {loading ? <Skeleton height={160} /> : (
-                  <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {(driverBridge?.components || []).slice(0, 6).map((c, i) => {
-                        const positive = (c.value || 0) >= 0;
-                        const denom = Math.max(1, Math.abs(driverBridge?.variance || 1));
-                        const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / denom * 100));
-                        return (
-                          <div key={i} style={{ display: 'grid', gridTemplateColumns: '220px 1fr 80px', gap: 8, alignItems: 'center' }}>
-                            <div style={{ fontSize: 11, color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.driver || `Driver ${i + 1}`}</div>
-                            <div style={{ height: 10, background: 'rgba(255,255,255,0.06)', borderRadius: 6, overflow: 'hidden' }}>
-                              <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
-                            </div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: positive ? '#10b981' : '#ef4444', textAlign: 'right' }}>{fmtM(c.value || 0)}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                {isFieldLoading('driverBridge') ? <Skeleton height={160} /> : !driverBridge ? <EmptyState /> : <DriverBridgeSummary bridge={driverBridge} fmt={fmtM} maxComponents={6} />}
               </CardWrap>
             </div>
           )}
@@ -2762,6 +2830,7 @@ const ForecastingPanel = () => {
                     {confidence?.confidence_score ?? '—'}
                   </div>
                   <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{confidence?.confidence_label || 'Unknown'} confidence</div>
+                  <ConfidenceNotes confidence={confidence} />
                   <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {(confidence?.reasons || []).slice(0, 3).map((r, i) => (
                       <div key={i} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>• {r}</div>
@@ -2779,29 +2848,8 @@ const ForecastingPanel = () => {
               </div>
 
               <CardWrap>
-                <SectionTitle>Driver Bridge (Plan vs Actual)
-                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
-                </SectionTitle>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {(driverBridge?.components || []).map((c, i) => {
-                    const positive = (c.value || 0) >= 0;
-                    const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / Math.max(1, Math.abs(driverBridge?.variance || 1)) * 100));
-                    return (
-                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 100px', gap: 8, alignItems: 'center' }}>
-                        <div style={{ fontSize: 11, color: '#cbd5e1' }}>{c.name}</div>
-                        <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                          <div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} />
-                        </div>
-                        <div style={{ textAlign: 'right', fontSize: 11, color: positive ? '#10b981' : '#ef4444' }}>{fmtM(c.value)}</div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+                {!driverBridge ? <EmptyState /> : <DriverBridgeSummary bridge={driverBridge} fmt={fmtM} />}
               </CardWrap>
 
               <CardWrap>
@@ -3036,7 +3084,7 @@ const ForecastingPanel = () => {
             </div>
           )}
 
-        </TabErrorBoundary>
+        </TabErrorBoundary>}
       </div>
 
       <style>{`

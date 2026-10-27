@@ -16,6 +16,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
+
 logger = logging.getLogger(__name__)
 
 # DDL executed once to bootstrap the tables if they don't exist.
@@ -69,8 +71,7 @@ class UserPreferencesService:
         if self._bootstrapped:
             return
         try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
+            with self._get_connection() as conn, conn.cursor() as cur:
                 cur.execute(_DDL_PREFS.format(
                     catalog=self._catalog, schema=self._schema))
                 cur.execute(_DDL_ACTIONS.format(
@@ -78,23 +79,24 @@ class UserPreferencesService:
             self._bootstrapped = True
             logger.info("User preferences tables ready.")
         except Exception as exc:
-            logger.warning("Could not bootstrap prefs tables (continuing): %s", exc)
+            logger.error("Could not bootstrap prefs tables: %s", exc)
+            raise HTTPException(status_code=503, detail="Preferences storage unavailable") from exc
 
     def _exec(self, sql: str, params: tuple = ()):
         try:
             self._bootstrap()
-            conn = self._get_connection()
-            with conn.cursor() as cur:
+            with self._get_connection() as conn, conn.cursor() as cur:
                 cur.execute(sql, params)
-                try:
-                    rows = cur.fetchall()
-                    cols = [d[0] for d in cur.description] if cur.description else []
-                    return [dict(zip(cols, row)) for row in rows]
-                except Exception:
+                if not cur.description:
                     return []
+                rows = cur.fetchall()
+                cols = [column[0] for column in cur.description]
+                return [dict(zip(cols, row)) for row in rows]
+        except HTTPException:
+            raise
         except Exception as exc:
-            logger.warning("UserPrefs SQL error: %s", exc)
-            return []
+            logger.error("UserPrefs SQL error: %s", exc)
+            raise HTTPException(status_code=503, detail="Preferences storage unavailable") from exc
 
     # ── Filter presets ─────────────────────────────────────────────────────────
 
@@ -147,32 +149,27 @@ class UserPreferencesService:
         fqn = self._fqn(self._prefs_table)
         encoded = json.dumps(value)
         now = datetime.utcnow().isoformat()
-        rows = self._exec(
-            f"SELECT 1 FROM {fqn} WHERE user_id = ? AND pref_key = ?",
-            (user_id, key)
+        self._exec(
+            f"MERGE INTO {fqn} AS target "
+            "USING (SELECT ? AS user_id, ? AS pref_key, ? AS pref_value, CAST(? AS TIMESTAMP) AS updated_at) AS incoming "
+            "ON target.user_id = incoming.user_id AND target.pref_key = incoming.pref_key "
+            "WHEN MATCHED THEN UPDATE SET pref_value = incoming.pref_value, updated_at = incoming.updated_at "
+            "WHEN NOT MATCHED THEN INSERT (user_id, pref_key, pref_value, updated_at) "
+            "VALUES (incoming.user_id, incoming.pref_key, incoming.pref_value, incoming.updated_at)",
+            (user_id, key, encoded, now),
         )
-        if rows:
-            self._exec(
-                f"UPDATE {fqn} SET pref_value = ?, updated_at = ? "
-                "WHERE user_id = ? AND pref_key = ?",
-                (encoded, now, user_id, key)
-            )
-        else:
-            self._exec(
-                f"INSERT INTO {fqn} (user_id, pref_key, pref_value, updated_at) "
-                "VALUES (?, ?, ?, ?)",
-                (user_id, key, encoded, now)
-            )
         return True
 
     # ── Executive actions ──────────────────────────────────────────────────────
 
     def list_actions(self, user_id: Optional[str] = None,
                      status: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not user_id:
+            return []
         fqn = self._fqn(self._actions_table)
         wheres, params = [], []
         if user_id:
-            wheres.append("(user_id = ? OR user_id IS NULL)")
+            wheres.append("user_id = ?")
             params.append(user_id)
         if status:
             wheres.append("status = ?")
@@ -200,30 +197,38 @@ class UserPreferencesService:
                 "status": "pending", "priority": priority, "source": source,
                 "created_at": now}
 
+    def _owns_action(self, user_id: str, action_id: str) -> bool:
+        if not user_id:
+            return False
+        return bool(self._exec(
+            f"SELECT action_id FROM {self._fqn(self._actions_table)} WHERE action_id = ? AND user_id = ?",
+            (action_id, user_id),
+        ))
+
     def update_action_status(self, action_id: str, status: str,
-                             owner: Optional[str] = None) -> bool:
+                             owner: Optional[str] = None, *, user_id: str) -> bool:
+        if not self._owns_action(user_id, action_id):
+            return False
+        if status not in ("pending", "done"):
+            raise ValueError("Invalid action status")
         fqn = self._fqn(self._actions_table)
-        now = datetime.utcnow().isoformat()
-        if status == "done":
-            self._exec(
-                f"UPDATE {fqn} SET status = ?, completed_at = ? WHERE action_id = ?",
-                (status, now, action_id)
-            )
-        else:
-            self._exec(
-                f"UPDATE {fqn} SET status = ? WHERE action_id = ?",
-                (status, action_id)
-            )
+        completed_at = datetime.utcnow().isoformat() if status == "done" else None
+        assignments = "status = ?, completed_at = ?"
+        params = [status, completed_at]
         if owner is not None:
-            self._exec(
-                f"UPDATE {fqn} SET owner = ? WHERE action_id = ?",
-                (owner, action_id)
-            )
+            assignments += ", owner = ?"
+            params.append(owner)
+        self._exec(
+            f"UPDATE {fqn} SET {assignments} WHERE action_id = ? AND user_id = ?",
+            tuple(params + [action_id, user_id]),
+        )
         return True
 
-    def delete_action(self, action_id: str) -> bool:
+    def delete_action(self, action_id: str, *, user_id: str) -> bool:
+        if not self._owns_action(user_id, action_id):
+            return False
         fqn = self._fqn(self._actions_table)
-        self._exec(f"DELETE FROM {fqn} WHERE action_id = ?", (action_id,))
+        self._exec(f"DELETE FROM {fqn} WHERE action_id = ? AND user_id = ?", (action_id, user_id))
         return True
 
     # ── Action metadata + governance log (JSON in prefs table) ──────────────
@@ -242,6 +247,8 @@ class UserPreferencesService:
         return self.list_action_metadata(user_id).get(action_id, {})
 
     def upsert_action_metadata(self, user_id: str, action_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._owns_action(user_id, action_id):
+            raise LookupError("Action not found")
         all_meta = self.list_action_metadata(user_id)
         current = all_meta.get(action_id, {})
         merged = {**current, **{k: v for k, v in metadata.items() if v is not None}}

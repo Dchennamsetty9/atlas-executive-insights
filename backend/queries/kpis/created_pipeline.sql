@@ -2,7 +2,7 @@
 -- Opportunities created and associated pipeline value in the given date range.
 -- Source: federated.sales.metis_opened_opps_fact
 --
--- Placeholders: {start_date}, {end_date}, {filter_clause}
+-- Bound parameters: start_date, end_date.
 -- Note: {filter_clause} is constructed from VALIDATED whitelist values only.
 WITH latest AS (
     SELECT MAX(data_date) AS max_date
@@ -14,5 +14,5 @@ SELECT
 FROM federated.sales.metis_opened_opps_fact o
 CROSS JOIN latest ld
 WHERE o.data_date             = ld.max_date
-  AND o.pipeline_entered_date BETWEEN DATE('{start_date}') AND DATE('{end_date}')
+    AND o.pipeline_entered_date BETWEEN DATE(?) AND DATE(?)
   {filter_clause}

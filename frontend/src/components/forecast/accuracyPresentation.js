@@ -1,0 +1,100 @@
+// Presentation only: never synthesize combined errors or substitute weekly values.
+export const accuracyProducts = product => ['All', 'Total', '', null, undefined].includes(product) ? ['UCC', 'ITSG'] : [product];
+
+export const quarterlyRow = (rows, product) => (rows || []).find(row =>
+  row.product === product && ['Total', 'All'].includes(row.sales_market));
+
+export const quarterlyValue = (rows, product, model) => {
+  const value = quarterlyRow(rows, product)?.quarterly_errors?.[model];
+  return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value))
+    ? Number(value) : null;
+};
+
+export const errorPercent = value => value == null ? '—' : `${value.toFixed(1)}%`;
+
+export const quarterlyEvidence = (rows, product, model) => {
+  if (quarterlyValue(rows, product, model) == null) return { status: 'unavailable' };
+  const evidence = quarterlyRow(rows, product)?.quarterly_provenance?.[model];
+  return ['measured', 'estimated', 'blended', 'unverified'].includes(evidence?.status)
+    ? evidence : { status: 'unverified' };
+};
+
+export const quarterlyBasis = (rows, product, model) => {
+  const evidence = quarterlyEvidence(rows, product, model);
+  if (evidence.status === 'measured') {
+    const count = evidence.quarters_evaluated;
+    return `Measured · ${evidence.quarter} · ${count} quarter${count === 1 ? '' : 's'}`;
+  }
+  return { estimated: 'Estimated from weekly error', blended: 'Weighted blend',
+    unverified: 'Evaluation basis unverified', unavailable: 'Not available' }[evidence.status];
+};
+
+export const quarterlyPill = (rows, product, model) => {
+  const products = accuracyProducts(product);
+  const label = selected => {
+    const value = quarterlyValue(rows, selected, model);
+    const status = quarterlyEvidence(rows, selected, model).status;
+    const qualifier = value == null || status === 'measured' ? '' : ` (${status})`;
+    return `${errorPercent(value)}${qualifier}`;
+  };
+  return products.length > 1
+    ? `Qtr · ${products.map(productName => `${productName} ${label(productName)}`).join(' · ')}`
+    : `Qtr ${label(product)}`;
+};
+
+// Preserve source date precision; do not label a browser retrieval time as publication time.
+export const sourceDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:$|[T ])/.test(value) && Number.isFinite(Date.parse(value))
+  ? value : 'Not supplied by source';
+
+export const backtestFreshness = rows => {
+  const latest = field => (rows || []).map(row => row[field]).filter(value => sourceDate(value) !== 'Not supplied by source')
+    .sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1);
+  return { forecast: sourceDate(latest('origin_ts')), actual: sourceDate(latest('actual_run_date')) };
+};
+
+export const backtestGuidance = reason => ({
+  combined_history_unverified: 'Select UCC or ITSG. A combined backtest requires aligned forecast origins and target weeks, not averaged errors.',
+  region_history_unverified: 'Select All regions to view verified product-total history.',
+  model_history_unverified: 'Select a model with verified retained history, such as Ensemble. Native Prophet is not the retained Prophet trend model.',
+  no_matched_history: 'Try a shorter horizon. More history requires retained forecasts and closed actual weeks; the next daily run may not supply a match.',
+  invalid_history: 'The source history needs review. Ambiguous or invalid pairs are excluded rather than scored.',
+  source_query_failed: 'Refresh to retry the source read. Previously loaded or demo values are not substituted.',
+  source_unavailable: 'Live history must be connected before these results can be shown.',
+}[reason] || 'No verified history is available for this selection. No other product’s results are substituted.');
+
+// Colour thresholds for an error percentage (shared by the Historical accuracy card).
+export const accuracyColor = pct => pct < 15 ? '#10b981' : pct < 25 ? '#f59e0b' : '#ef4444';
+
+// Historical-accuracy insight card. Leads with the QUARTER-LEVEL error (the same
+// leaderboard figure shown in the model pills); the weekly sMAPE average is context
+// only, never presented as the quarter's error. Returns null when nothing is usable.
+// weekly: { avgSmape, nQuarters } | null.
+export const historicalAccuracyCard = (rows, product, weekly) => {
+  const weeklyOk = weekly && Number.isFinite(weekly.avgSmape);
+  const weeklyPct = weeklyOk ? Math.round(weekly.avgSmape) : null;
+  const weeklyScope = weeklyOk && weekly.nQuarters > 1 ? `across the last ${weekly.nQuarters} closed quarters` : 'in the latest closed quarter';
+
+  const entries = accuracyProducts(product)
+    .map(name => ({ name, value: quarterlyValue(rows, name, 'Ensemble'), evidence: quarterlyEvidence(rows, name, 'Ensemble') }))
+    .filter(entry => entry.value != null);
+
+  if (!entries.length) {
+    if (!weeklyOk) return null;
+    return { color: accuracyColor(weekly.avgSmape),
+      text: `Week by week, Ensemble forecasts have missed by about ${weeklyPct}% on average ${weeklyScope}. A full-quarter error figure is not available for this selection.` };
+  }
+
+  const multi = entries.length > 1;
+  const figure = entry => `${errorPercent(entry.value)}${entry.evidence.status === 'measured' ? '' : ` (${entry.evidence.status})`}`;
+  const figures = multi ? entries.map(entry => `${entry.name} ${figure(entry)}`).join(' and ') : figure(entries[0]);
+  const quarters = entries.find(entry => entry.evidence.status === 'measured')?.evidence.quarters_evaluated;
+  const scope = quarters > 1 ? `across the last ${quarters} evaluated quarters` : 'in the latest closed quarter';
+  let text = `The Ensemble's full-quarter forecast landed within about ${figures} of the actual ${scope}.`;
+  if (weeklyOk) {
+    const worst = Math.max(...entries.map(entry => entry.value));
+    text += weekly.avgSmape > worst
+      ? ` Week by week the typical miss is larger (about ${weeklyPct}%) because weekly swings partly offset across a quarter.`
+      : ` Week by week the typical miss is about ${weeklyPct}%.`;
+  }
+  return { color: accuracyColor(Math.max(...entries.map(entry => entry.value))), text };
+};

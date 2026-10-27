@@ -31,11 +31,13 @@ Fallback chain
 
 import asyncio
 import logging
+import json
 import os
 from typing import Any, Dict, Optional
 import re
 
 from config.settings import settings
+from services.ai_sql_policy import MAX_ROWS, prepare_read_only_sql
 
 logger = logging.getLogger(__name__)
 
@@ -239,29 +241,11 @@ class AIService:
 
     @staticmethod
     def _is_safe_read_only_sql(statement: str) -> bool:
-        """Allow only single-statement SELECT/CTE queries and reject mutating SQL."""
-        if not statement or not statement.strip():
+        try:
+            prepare_read_only_sql(statement)
+            return True
+        except ValueError:
             return False
-
-        # Strip /* */ and -- comments before safety checks.
-        no_block_comments = re.sub(r"/\*.*?\*/", " ", statement, flags=re.S)
-        no_line_comments = re.sub(r"--.*?$", " ", no_block_comments, flags=re.M)
-        normalized = no_line_comments.strip()
-
-        # Allow at most one trailing semicolon, but disallow chained statements.
-        stripped_trailing = normalized.rstrip(";").strip()
-        if ";" in stripped_trailing:
-            return False
-
-        upper_stmt = stripped_trailing.upper()
-        if not (upper_stmt.startswith("SELECT") or upper_stmt.startswith("WITH")):
-            return False
-
-        forbidden = r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|CALL)\b"
-        if re.search(forbidden, upper_stmt):
-            return False
-
-        return True
 
     # ── Generic multi-turn LLM helpers ──────────────────────────────────────
 
@@ -331,29 +315,12 @@ class AIService:
 
     def _execute_sql_sync(self, query: str) -> list:
         """Run a SQL query against the Databricks SQL warehouse and return rows as dicts."""
-        w = self._get_client()
-        if w is None:
-            raise RuntimeError("WorkspaceClient unavailable")
+        from services.databricks_connection import execute_query
 
-        if not self._is_safe_read_only_sql(query):
-            raise ValueError("Only single-statement read-only SELECT queries are allowed")
-
-        warehouse_id = self._warehouse_id_from_http_path(settings.databricks_http_path)
-
-        result = w.statement_execution.execute_statement(
-            warehouse_id=warehouse_id,
-            statement=query,
-            wait_timeout="30s",
-        )
-        state = result.status.state.value if result.status and result.status.state else "UNKNOWN"
-        if state != "SUCCEEDED":
-            raise RuntimeError(f"SQL execution failed (state={state}): {result.status.error if result.status else 'unknown'}")
-
-        columns = [col.name for col in result.manifest.schema.columns]
-        rows = []
-        if result.result and result.result.data_array:
-            for row in result.result.data_array:
-                rows.append(dict(zip(columns, row)))
+        prepared = prepare_read_only_sql(query)
+        rows = execute_query(prepared, max_attempts=1, max_rows=MAX_ROWS)
+        if len(json.dumps(rows, default=str).encode("utf-8")) > 262144:
+            raise ValueError("Query result exceeds the reporting size limit")
         return rows
 
     # ── Feature 1: Executive Summary Banner ─────────────────────────────────
@@ -770,27 +737,8 @@ class AIService:
             )
         except Exception as exc:
             logger.warning("SQL execution failed: %s", exc)
-            # If generated SQL fails (common: federated UC permissions),
-            # route to Databricks Genie so users still get an answer.
-            try:
-                from services.genie_service import genie_service
-
-                genie_result = await asyncio.wait_for(
-                    genie_service.ask_kpi_question(question),
-                    timeout=45.0,
-                )
-                return {
-                    "answer": genie_result.get("answer") or "Genie returned no answer.",
-                    "sql": genie_result.get("sql") or generated_sql,
-                    "data": genie_result.get("data") or [],
-                    "visualization_hint": viz_hint,
-                    "fallback_used": True,
-                    "source": "genie",
-                }
-            except Exception as genie_exc:
-                logger.warning("Genie fallback failed: %s", genie_exc)
             return {
-                "answer": f"Query generated but failed to execute: {exc}",
+                "answer": "The query could not be run within the approved reporting scope. No alternate data source was used.",
                 "sql":    generated_sql,
                 "data":   [],
                 "visualization_hint": viz_hint,

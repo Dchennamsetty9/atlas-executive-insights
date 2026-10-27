@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from routes import forecast_v2_impl as impl
 from .accuracy import router as accuracy_router
@@ -10,9 +10,20 @@ from .series import router as series_router
 _live = impl._live
 execute_query = impl.execute_query
 
-router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"])
+# Per-request Miradore switch: ?include_miradore=true selects the incl-Miradore snapshot
+# (verified available, else silent fallback reported via the response `scope`).
+for _sub in (series_router, accuracy_router, intelligence_router, governance_router):
+    for _route in _sub.routes:
+        _route.endpoint = impl.with_scope(_route.endpoint)
+
+router = APIRouter(prefix="/api/forecast/v2", tags=["forecast-v2"],
+                   dependencies=[Depends(impl.miradore_scope_dependency)])
 router.include_router(series_router)
 router.include_router(accuracy_router)
 router.include_router(intelligence_router)
 router.include_router(governance_router)
-router.add_api_route("/graph-explanation", impl.get_graph_explanation, methods=["GET"])
+router.add_api_route("/graph-explanation", impl.with_scope(impl.get_graph_explanation), methods=["GET"])
+router.add_api_route("/scenario-grid", impl.with_scope(impl.get_scenario_grid), methods=["GET"])
+router.add_api_route("/sensitivity", impl.with_scope(impl.get_sensitivity_coefficients), methods=["GET"])
+router.add_api_route("/model-scenarios", impl.with_scope(impl.get_model_scenarios), methods=["GET"])
+router.add_api_route("/historical-scenarios", impl.with_scope(impl.get_historical_scenarios), methods=["GET"])

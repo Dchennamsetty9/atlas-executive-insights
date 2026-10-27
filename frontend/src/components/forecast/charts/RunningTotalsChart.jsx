@@ -10,13 +10,13 @@ const RunningTotalsChartTooltip = ({ active, payload, label }) => {
       <div style={{ color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{label}</div>
       {d.ytd_actual != null && <div style={{ color: '#f59e0b', marginBottom: 3 }}>● Actuals YTD: <b>{fmtM(d.ytd_actual)}</b></div>}
       {d.ytd_likely != null && <div style={{ color: '#e2e8f0', marginBottom: 3 }}>● Most Likely YTD: <b>{fmtM(d.ytd_likely)}</b></div>}
-      {d.ytd_best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — 1-in-5 upside: <b>{fmtM(d.ytd_best)}</b></div>}
-      {d.ytd_worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — 1-in-10 downside: <b>{fmtM(d.ytd_worst)}</b></div>}
+      {d.ytd_best != null && <div style={{ color: '#10b981', marginBottom: 3 }}>▲ Stretch Case — upside (P75): <b>{fmtM(d.ytd_best)}</b></div>}
+      {d.ytd_worst != null && <div style={{ color: '#ef4444', marginBottom: 3 }}>▼ Risk Floor — downside (P25): <b>{fmtM(d.ytd_worst)}</b></div>}
     </div>
   );
 };
 
-const RunningTotalsChart = ({ rows }) => {
+const RunningTotalsChart = ({ rows, simplified = false }) => {
   const data = [...rows].sort((a, b) => a.date.localeCompare(b.date)).map((r) => {
     const likely = r.ytd_likely ?? null;
     const worst = r.ytd_worst ?? null;
@@ -57,12 +57,12 @@ const RunningTotalsChart = ({ rows }) => {
         <Tooltip content={<RunningTotalsChartTooltip />} />
         <Area type="monotone" dataKey="bandFloor" stackId="conf" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
         <Area type="monotone" dataKey="bandRange" stackId="conf" stroke="none" fill="url(#ytdBandFill)" legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />
-        <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#ytdInnerBandFill)" legendType="none" connectNulls dot={false} />
+        {!simplified && <Area type="monotone" dataKey="innerFloor" stackId="conf50" stroke="none" fill="transparent" legendType="none" connectNulls dot={false} />}
+        {!simplified && <Area type="monotone" dataKey="innerRange" stackId="conf50" stroke="none" fill="url(#ytdInnerBandFill)" legendType="none" connectNulls dot={false} />}
         <Area type="monotone" dataKey="ytd_actual" name="Actuals YTD" stroke="#f59e0b" strokeWidth={2.5} fill="url(#ytdActualFill)" dot={false} connectNulls={false} />
-        <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {!simplified && <Line type="monotone" dataKey="ytd_worst" name="Risk Floor" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />}
         <Line type="monotone" dataKey="ytd_likely" name="Most Likely" stroke="#e2e8f0" strokeWidth={2.5} dot={false} connectNulls />
-        <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+        {!simplified && <Line type="monotone" dataKey="ytd_best" name="Stretch Case" stroke="#10b981" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />}
       </ComposedChart>
     </ResponsiveContainer>
   );

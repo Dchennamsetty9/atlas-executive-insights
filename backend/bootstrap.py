@@ -72,7 +72,14 @@ app.add_middleware(
 @app.middleware("http")
 async def inject_forwarded_token(request: Request, call_next):
     token = request.headers.get("x-forwarded-access-token", "")
-    set_request_token(token or "")
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    set_request_token(token)
+    if request.url.path.startswith("/api/forecast/"):
+        logger.info(
+            "Forecast request credential source: forwarded_token=%s",
+            bool(token),
+        )
     response = await call_next(request)
     return response
 
@@ -113,6 +120,36 @@ forecasting_service = ForecastingService()
 insights_engine = InsightsEngine()
 metrics_calculator = MetricsCalculator()
 genie_service = GenieService()
+
+
+# ── Startup warmup ─────────────────────────────────────────────────────────────
+# Fire a lightweight SELECT 1 on app start to pre-wake the SQL warehouse.
+# This eliminates the cold-start race: by the time the first real user request
+# arrives, the warehouse is already warmed and connections succeed within 1-2 s.
+@app.on_event("startup")
+async def warmup_sql_warehouse():
+    """Pre-warm the SQL warehouse connection on app startup."""
+    import asyncio
+    from services.databricks_connection import token_available, execute_query
+
+    if not token_available():
+        logger.info("[warmup] No credentials available — skipping warehouse warmup.")
+        return
+
+    async def _warmup():
+        try:
+            await asyncio.to_thread(execute_query, "SELECT 1 AS warmup")
+            logger.info("[warmup] SQL warehouse is warm and ready.")
+        except Exception as exc:
+            # Non-fatal: if warmup fails the warehouse may still wake by the
+            # time real requests arrive (the attempt itself triggers the resume).
+            logger.warning("[warmup] Warehouse warmup failed (non-fatal): %s", exc)
+
+    # Run warmup in background so it doesn't block the startup sequence.
+    # The warehouse resume is triggered by the connection attempt regardless
+    # of whether the query completes within the timeout.
+    asyncio.create_task(_warmup())
+
 
 # Mount API routers
 app.include_router(genie_router)

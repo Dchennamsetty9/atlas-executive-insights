@@ -31,6 +31,8 @@ const MAIN_VIEWS = [
   { id: 'extended', label: 'Extended Analysis', icon: '✨' },
 ];
 
+const FORECAST_ONLY_MODE = import.meta.env.VITE_FORECAST_ONLY !== 'false';
+
 // ── Quarter-end countdown helper ──────────────────────────────────────────────
 function getQuarterCountdown() {
   const now = new Date();
@@ -57,7 +59,7 @@ function AppInner() {
   // Force dark as the persisted default; never restore light mode from storage.
   const [theme,         setTheme]           = useState('dark');
   const [aiOpen,        setAiOpen]          = useState(false);
-  const [activeView,    setActiveView]      = useState('business');
+  const [activeView,    setActiveView]      = useState(FORECAST_ONLY_MODE ? 'forecast' : 'business');
   const [countdown,     setCountdown]       = useState(getQuarterCountdown);
   const [shareCopied,   setShareCopied]     = useState(false);
   const { enabled: soundEnabled, toggle: toggleSound, play } = useUISound();
@@ -70,7 +72,7 @@ function AppInner() {
     kpiError,
     loadKpis,
     handleRefreshNow,
-  } = useDashboardData(filters, play);
+  } = useDashboardData(filters, play, !FORECAST_ONLY_MODE);
 
   // URL ↔ filter sync
   useUrlFilters();
@@ -221,27 +223,27 @@ function AppInner() {
               {shareCopied ? 'Copied!' : 'Share'}
             </button>
 
-            {/* Notification bell */}
-            <NotificationBell />
+            {!FORECAST_ONLY_MODE && <NotificationBell />}
 
-            {/* Refresh button */}
-            <button
-              onClick={handleRefreshNow}
-              disabled={isLoadingKpis}
-              title="Refresh data"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                padding: '4px 10px',
-                background: 'rgba(59,130,246,0.08)',
-                border: '1px solid rgba(59,130,246,0.2)',
-                borderRadius: 6, color: '#3b82f6',
-                fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                opacity: isLoadingKpis ? 0.5 : 1,
-              }}
-            >
-              <RefreshCw size={11} style={{ animation: isLoadingKpis ? 'spin 1s linear infinite' : 'none' }} />
-              Refresh
-            </button>
+            {!FORECAST_ONLY_MODE && (
+              <button
+                onClick={handleRefreshNow}
+                disabled={isLoadingKpis}
+                title="Refresh data"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '4px 10px',
+                  background: 'rgba(59,130,246,0.08)',
+                  border: '1px solid rgba(59,130,246,0.2)',
+                  borderRadius: 6, color: '#3b82f6',
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                  opacity: isLoadingKpis ? 0.5 : 1,
+                }}
+              >
+                <RefreshCw size={11} style={{ animation: isLoadingKpis ? 'spin 1s linear infinite' : 'none' }} />
+                Refresh
+              </button>
+            )}
 
             {/* Sound toggle */}
             <button
@@ -283,7 +285,7 @@ function AppInner() {
             }} />
 
             {/* AIOrb */}
-            <AIOrb kpis={kpis} backendStatus={backendStatus} isAnalyzing={isAnalyzing} />
+            {!FORECAST_ONLY_MODE && <AIOrb kpis={kpis} backendStatus={backendStatus} isAnalyzing={isAnalyzing} />}
           </div>
         </div>
       </header>
@@ -302,7 +304,7 @@ function AppInner() {
             border: '1px solid rgba(255,255,255,0.08)',
             backdropFilter: 'blur(12px)',
           }}>
-            {MAIN_VIEWS.map(view => {
+            {MAIN_VIEWS.filter(view => !FORECAST_ONLY_MODE || view.id === 'forecast').map(view => {
               const isActive = activeView === view.id;
               return (
                 <button
@@ -490,15 +492,16 @@ function AppInner() {
         <KPIDetailModal kpi={selectedKpi} onClose={() => setSelectedKpi(null)} />
       )}
 
-      {/* ── Floating AI Chat Panel ───────────────────────────────────── */}
-      <AIChatPanel
-        onAnalyzingChange={setIsAnalyzing}
-        externalOpen={aiOpen}
-        onOpenChange={setAiOpen}
-      />
+      {!FORECAST_ONLY_MODE && (
+        <AIChatPanel
+          onAnalyzingChange={setIsAnalyzing}
+          externalOpen={aiOpen}
+          onOpenChange={setAiOpen}
+        />
+      )}
 
       {/* ── First-visit onboarding tour ──────────────────────────────── */}
-      <OnboardingTour onOpenAI={() => { setAiOpen(true); play('open'); }} />
+      {!FORECAST_ONLY_MODE && <OnboardingTour onOpenAI={() => { setAiOpen(true); play('open'); }} />}
     </div>
   );
 }

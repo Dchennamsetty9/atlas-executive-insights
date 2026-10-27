@@ -4,9 +4,10 @@ uvicorn[standard]==0.27.0
 python-multipart>=0.0.18   # CVE-2024-53981 + ReDoS + arbitrary-file-write + unbounded-headers/preamble DoS
 
 # Database drivers
-databricks-sql-connector==3.0.0
-databricks-sdk==0.20.0
+databricks-sql-connector>=3.1.0,<4.0.0  # Pin to 3.x — 4.x triggers interactive OAuth U2M in Apps
+databricks-sdk>=0.33.0
 sqlalchemy==2.0.25
+sqlglot==27.29.0
 
 # ML and Forecasting
 prophet==1.1.5

@@ -54,12 +54,19 @@ export const MODEL_LABELS = {
 
 export const formatModelLabel = (name) => MODEL_LABELS[name] || (name ? name.replace(/_/g, ' ') : 'Unknown');
 
-// Dynamic year range: current year - 2 to current year + 1 (future-proof to 2027+)
+// Dynamic year range: current year - 2 through current year + 2 so 2027+ is available.
 const currentYear = new Date().getFullYear();
-const yearRange = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
-const yearColorPalette = ['#64748b', '#06b6d4', '#3b82f6', '#f59e0b'];
+export const getForecastYearOptions = (baseYear = currentYear) => {
+  const years = [];
+  for (let year = baseYear - 2; year <= baseYear + 2; year += 1) {
+    years.push(year);
+  }
+  return years;
+};
+export const FORECAST_YEAR_OPTIONS = getForecastYearOptions();
+const yearColorPalette = ['#64748b', '#06b6d4', '#3b82f6', '#f59e0b', '#f97316'];
 export const YEAR_COLORS = Object.fromEntries(
-  yearRange.map((year, idx) => [year, yearColorPalette[idx]])
+  FORECAST_YEAR_OPTIONS.map((year, idx) => [year, yearColorPalette[idx % yearColorPalette.length]])
 );
 export const MODEL_COLORS = { ETS: '#94a3b8', Prophet: '#f59e0b', LightGBM: '#3b82f6', Mstl_v2: '#a78bfa', Dhr_arima: '#fb923c', Ensemble: '#00FF88' };
 export const MODEL_KEY_META = {

@@ -1,4 +1,5 @@
 import { CardWrap, SectionTitle, fmtM } from '../common';
+import { DriverBridgeSummary, ConfidenceNotes } from '../DriverBridgeSummary';
 
 const ExecModeTab = ({
   confidenceBands,
@@ -116,6 +117,7 @@ const ExecModeTab = ({
           <SectionTitle>Forecast Confidence Score</SectionTitle>
           <div style={{ fontSize: 30, fontWeight: 800, color: confidence?.confidence_score >= 85 ? '#10b981' : confidence?.confidence_score >= 65 ? '#f59e0b' : '#ef4444' }}>{confidence?.confidence_score ?? '—'}</div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{confidence?.confidence_label || 'Unknown'} confidence</div>
+          <ConfidenceNotes confidence={confidence} />
           <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>{(confidence?.reasons || []).slice(0, 3).map((r, i) => <div key={i} style={{ fontSize: 11, color: '#cbd5e1', lineHeight: 1.5 }}>• {r}</div>)}</div>
         </CardWrap>
 
@@ -127,27 +129,8 @@ const ExecModeTab = ({
       </div>
 
       <CardWrap downloadName="driver_bridge">
-        <SectionTitle>Driver Bridge (Plan vs Actual)
-          <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 400, letterSpacing: 0, textTransform: 'none', marginLeft: 8 }}>— Illustrative breakdown; driver attribution requires source data</span>
-        </SectionTitle>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Plan: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.plan_total)}</span></div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Actual: <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{fmtM(driverBridge?.actual_total)}</span></div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Variance: <span style={{ color: (driverBridge?.variance || 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>{fmtM(driverBridge?.variance)}</span></div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {(driverBridge?.components || []).map((c, i) => {
-            const positive = (c.value || 0) >= 0;
-            const widthPct = Math.min(100, Math.max(4, Math.abs(c.value || 0) / Math.max(1, Math.abs(driverBridge?.variance || 1)) * 100));
-            return (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 100px', gap: 8, alignItems: 'center' }}>
-                <div style={{ fontSize: 11, color: '#cbd5e1' }}>{c.name}</div>
-                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}><div style={{ width: `${widthPct}%`, height: '100%', background: positive ? '#10b981' : '#ef4444' }} /></div>
-                <div style={{ textAlign: 'right', fontSize: 11, color: positive ? '#10b981' : '#ef4444' }}>{fmtM(c.value)}</div>
-              </div>
-            );
-          })}
-        </div>
+        <SectionTitle>Driver Bridge (Plan vs Actual)</SectionTitle>
+        {!driverBridge ? <div style={{ fontSize: 11, color: '#64748b' }}>No plan data loaded.</div> : <DriverBridgeSummary bridge={driverBridge} fmt={fmtM} maxComponents={6} />}
       </CardWrap>
 
       <CardWrap downloadName="pipeline_sensitivity_simulator">

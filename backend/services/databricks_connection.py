@@ -4,11 +4,14 @@ Lightweight connection module for Databricks SQL Warehouse.
 Shared by data_fetcher and gaim_data_service.
 
 Auth priority (first usable wins):
-    1. Request/user token via x-forwarded-access-token
-    2. PAT via DATABRICKS_TOKEN / DATABRICKS_ACCESS_TOKEN
-    3. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
+    1. Dedicated SQL PAT via GAIM_SQL_PAT
+    2. Databricks SDK auto-discovery (Apps service principal)
+    3. Request/user token via x-forwarded-access-token or legacy PAT env vars
+    4. OAuth M2M via DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
 """
 
+import hashlib
+import json
 import logging
 import os
 import time
@@ -23,6 +26,12 @@ try:
 except ImportError:
     DATABRICKS_AVAILABLE = False
 
+try:
+    from databricks.sdk.core import Config as _SdkConfig
+    _SDK_AVAILABLE = True
+except ImportError:
+    _SDK_AVAILABLE = False
+
 HOST      = os.getenv("DATABRICKS_SERVER_HOSTNAME") \
          or os.getenv("DATABRICKS_HOST", "goto-data-dock.cloud.databricks.com")
 # Strip https:// prefix — the SDK expects a bare hostname
@@ -31,10 +40,9 @@ HTTP_PATH = os.getenv("DATABRICKS_SQL_WAREHOUSE_PATH") \
          or os.getenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/c24ee33594e13e93")
 
 # Maximum total time the SDK retry loop will run before giving up.
-# Default is 900 s — far too long for a web request; cap at 12 s so a failed
-# connection fails fast and the caller can fall back to demo data.
-# On Databricks Apps (warm warehouse, local network) this is plenty.
-_RETRY_TIMEOUT = 12.0
+# Default is 900 s — far too long for an interactive request. Keep a generous
+# interactive default for cold warehouses, but allow deployments to override it.
+_RETRY_TIMEOUT = float(os.getenv("DATABRICKS_QUERY_TIMEOUT_SECONDS", "45"))
 
 # Per-request token (set by inject_forwarded_token middleware in main.py).
 # Databricks Apps forwards the active user's OAuth token as
@@ -74,14 +82,71 @@ def _resolve_token() -> str:
     return token or ""
 
 
+def _resolve_sql_pat() -> str:
+    """Return the dedicated SQL PAT when configured for warehouse access."""
+    return os.environ.get("GAIM_SQL_PAT", "")
+
+
 def _oauth_m2m_available() -> bool:
     """Return True when service-principal OAuth credentials are configured."""
     return bool(os.environ.get("DATABRICKS_CLIENT_ID") and os.environ.get("DATABRICKS_CLIENT_SECRET"))
 
 
+def _sdk_credentials_provider():
+    """Return (access_token, hostname) via the Databricks SDK, or (None, None).
+
+    In Databricks Apps the SDK auto-discovers the service-principal credentials
+    injected by the runtime, eliminating the need for a static DATABRICKS_TOKEN
+    or explicit M2M secrets.  Returns a fresh bearer token string rather than
+    a credentials_provider callable — this avoids the 'dict' object is not
+    callable incompatibility between SDK 0.140+ and sql-connector 4.x.
+    """
+    if not _SDK_AVAILABLE:
+        return None, None
+    try:
+        cfg = _SdkConfig()
+        try:
+            headers = cfg.authenticate()
+        except TypeError:
+            headers = {}
+            cfg.authenticate(headers)
+        auth_value = headers.get("Authorization", "")
+        if not auth_value:
+            return None, None
+        token = auth_value.removeprefix("Bearer ").strip()
+        if not token:
+            return None, None
+        host = (cfg.host or "").removeprefix("https://").removeprefix("http://").rstrip("/")
+        return token, host
+    except Exception:
+        return None, None
+
+
 def token_available() -> bool:
-    """Return True if PAT/user-token auth or OAuth M2M auth is configured."""
-    return DATABRICKS_AVAILABLE and (bool(_resolve_token()) or _oauth_m2m_available())
+    """Return True if PAT/user-token, OAuth M2M, or SDK auto-auth is configured."""
+    if not DATABRICKS_AVAILABLE:
+        return False
+    if bool(_resolve_sql_pat()) or bool(_resolve_token()) or _oauth_m2m_available():
+        return True
+    provider, _ = _sdk_credentials_provider()
+    return provider is not None
+
+
+def query_cache_scope() -> str | None:
+    sql_pat = _resolve_sql_pat()
+    token = _resolve_token()
+    if sql_pat:
+        credentials = ("gaim-sql-pat", sql_pat)
+    elif _sdk_credentials_provider()[0] is not None:
+        credentials = ("sdk-auto",)
+    elif token:
+        credentials = ("token", token)
+    elif _oauth_m2m_available():
+        credentials = ("oauth-m2m", os.environ["DATABRICKS_CLIENT_ID"], os.environ["DATABRICKS_CLIENT_SECRET"])
+    else:
+        return None
+    identity = json.dumps((HOST, HTTP_PATH, credentials)).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
 
 
 def get_connection():
@@ -100,14 +165,39 @@ def get_connection():
             "Run: pip install databricks-sql-connector"
         )
 
+    # 1. Dedicated SQL PAT from secret scope — avoids the reserved
+    #    DATABRICKS_TOKEN name that the Apps runtime may overwrite.
+    sql_pat = _resolve_sql_pat()
+    if sql_pat:
+        return sql.connect(
+            server_hostname=HOST,
+            http_path=HTTP_PATH,
+            access_token=sql_pat,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # 2. SDK auto-discovery: the app SP token is the reliable auth path in
+    #    Databricks Apps when the forwarded user token lacks SQL warehouse scope.
+    sdk_token, sdk_host = _sdk_credentials_provider()
+    if sdk_token:
+        return sql.connect(
+            server_hostname=sdk_host or HOST,
+            http_path=HTTP_PATH,
+            access_token=sdk_token,
+            _socket_timeout=10,
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
+        )
+
+    # 3. Fallback: per-request user token or legacy PAT env vars
     token = _resolve_token()
     if token:
         return sql.connect(
             server_hostname=HOST,
             http_path=HTTP_PATH,
             access_token=token,
-            _socket_timeout=5,                       # 5 s per socket op — fail fast locally
-            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 12 s total retry budget
+            _socket_timeout=10,                      # 10 s per socket op (was 5; tolerates cold-start)
+            _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,  # 45 s total retry budget
         )
 
     if _oauth_m2m_available():
@@ -117,7 +207,7 @@ def get_connection():
             auth_type="oauth-m2m",
             oauth_client_id=os.environ.get("DATABRICKS_CLIENT_ID"),
             oauth_client_secret=os.environ.get("DATABRICKS_CLIENT_SECRET"),
-            _socket_timeout=5,
+            _socket_timeout=10,
             _retry_stop_after_attempts_duration=_RETRY_TIMEOUT,
         )
 
@@ -131,8 +221,9 @@ def execute_query(
     query: str,
     params=None,
     *,
-    max_attempts: int = 1,   # No retries on hot-path; fail fast → demo data
-    backoff: float = 2.0,
+    max_attempts: int = 2,   # Retry once on cold-start failures (was 1)
+    backoff: float = 3.0,
+    max_rows: int | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Execute a SQL query and return results as a list of dicts.
@@ -146,10 +237,14 @@ def execute_query(
         params:       Optional list of parameter values.
         max_attempts: Total number of attempts before re-raising the error.
         backoff:      Base delay in seconds; actual delay = backoff * attempt_number.
+        max_rows:     Optional positive bound on fetched rows; callers must also
+                  constrain SQL when a server-side result limit is required.
 
     Returns:
         List of dicts, one per row, keyed by column name.
     """
+    if max_rows is not None and (not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows <= 0):
+        raise ValueError("max_rows must be a positive integer")
     _TRANSIENT_SIGNALS = ("timeout", "connection", "reset", "unavailable", "retry", "refused", "broken pipe")
 
     last_exc: Exception | None = None
@@ -162,7 +257,7 @@ def execute_query(
                     else:
                         cursor.execute(query)
                     columns = [desc[0] for desc in cursor.description]
-                    rows = cursor.fetchall()
+                    rows = cursor.fetchmany(max_rows) if max_rows is not None else cursor.fetchall()
                     return [dict(zip(columns, row)) for row in rows]
         except Exception as exc:
             msg = str(exc).lower()

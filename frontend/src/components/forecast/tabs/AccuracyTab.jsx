@@ -37,8 +37,34 @@ const AccuracyTab = ({ loading, leaderboardView, graphInsights, model, prodLine,
     return diff_b - diff_a;
   });
 
+  // Monthly WAPE from leaderboard view (computed from vintage predictions vs actuals)
+  const monthlyWape = (leaderboardView || []).reduce((acc, r) => {
+    if (r.monthly_wape_ensemble && Number(r.monthly_wape_ensemble) < 100) {
+      acc[r.product] = Number(r.monthly_wape_ensemble).toFixed(1);
+    }
+    return acc;
+  }, {});
+  const hasMonthly = Object.keys(monthlyWape).length > 0;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {hasMonthly && (
+        <CardWrap downloadName="monthly_accuracy_summary">
+          <SectionTitle>Monthly Forecast Accuracy (Ensemble)</SectionTitle>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>
+            Measured from first-published weekly vintage predictions aggregated to monthly totals vs closed actuals.
+          </div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            {Object.entries(monthlyWape).map(([product, wape]) => (
+              <div key={product} style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 600 }}>{product}</span>
+                <span style={{ fontSize: 20, fontWeight: 800, color: Number(wape) < 12 ? '#10b981' : Number(wape) < 18 ? '#f59e0b' : '#ef4444' }}>{wape}%</span>
+                <span style={{ fontSize: 10, color: '#64748b' }}>monthly WAPE</span>
+              </div>
+            ))}
+          </div>
+        </CardWrap>
+      )}
       {rank.length > 0 && (
         <CardWrap downloadName="model_rank_by_mape">
           <SectionTitle>Model Rank by MAPE (Lower Is Better)</SectionTitle>

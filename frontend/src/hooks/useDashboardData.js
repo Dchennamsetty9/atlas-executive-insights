@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiService } from '../services/api';
 
-export function useDashboardData(filters, play) {
+export function useDashboardData(filters, play, enabled = true) {
   const [backendStatus, setBackendStatus] = useState('checking');
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [kpis, setKpis] = useState([]);
@@ -95,6 +95,8 @@ export function useDashboardData(filters, play) {
   }, [loadKpis]);
 
   useEffect(() => {
+    if (!enabled) return undefined;
+
     checkBackendHealth();
     loadKpis();
     connectWS();
@@ -112,13 +114,14 @@ export function useDashboardData(filters, play) {
       wsRef.current?.close();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (kpis.length > 0) {
       loadKpiInsights(kpis);
     }
-  }, [kpis]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [enabled, kpis]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRefreshNow = useCallback(async () => {
     play('click');
